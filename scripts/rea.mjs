@@ -106,7 +106,12 @@ if (!(await compiledRuntimeExists(runtimeFiles))) {
     },
     process.stdout.isTTY === true,
   );
-  const configurationError = cliConfigurationError(process.env);
+  const { environmentWithUserConfig } =
+    await import("../dist/cli-runtime/cli.js");
+  const userConfig = await environmentWithUserConfig(process.env);
+  const configurationError = userConfig.ok
+    ? cliConfigurationError(process.env)
+    : userConfig.error;
   let dispatchFailure;
   let closeCliJavaScriptResources;
   // Incur can exit from the callback below before this function returns.
@@ -136,8 +141,14 @@ if (!(await compiledRuntimeExists(runtimeFiles))) {
         await import("../dist/cli-runtime/cliResultOutput.js");
       let wroteOutput = false;
       const resultOutput = createCliResultOutput(outputOptions, process.stdout);
+      // Doctor keeps running on a broken config file so it can report the
+      // problem; it then falls back to the raw environment, like the
+      // configuration gate above.
+      const cliEnvironment = userConfig.ok
+        ? userConfig.environment
+        : process.env;
       try {
-        await createCli(process.env, resultOutput).serve(cliArgs, {
+        await createCli(cliEnvironment, resultOutput).serve(cliArgs, {
           stdout: (output) => {
             if (resultOutput?.handled) {
               if (resultOutput.failed && !stdoutClosed)

@@ -5,6 +5,8 @@ import { registerSignalCommands } from "./cli/signalCommands.js";
 import { registerWasmCommands } from "./cli/wasmCommands.js";
 import { registerApkSignatureCommands } from "./cli/apkSignatureCommands.js";
 import { snapshotEnvironment } from "./process/snapshotEnvironment.js";
+import { mergeUserConfig, readUserConfig } from "./config/userConfig.js";
+import { projectAnalysisError } from "./domain/analysisErrorProjection.js";
 import { createDirectAnalysis } from "./composition/directAnalysis.js";
 import { registerEvmCommands } from "./cli/evmCommands.js";
 import { registerDesktopApplicationCommands } from "./cli/desktopApplicationCommands.js";
@@ -67,6 +69,31 @@ import { presentCliArgumentErrors } from "./cli/argumentErrors.js";
 import { createCliCompletions } from "./cli/completions.js";
 
 export { closeCliJavaScriptResources } from "./cli/javascriptApplicationAnalysis.js";
+
+/**
+ * Overlay the user config file onto a raw environment before the CLI is
+ * created. The production dispatcher (scripts/rea.mjs) calls this so env
+ * vars keep winning (`env > config file > auto-detect`) while tests can
+ * keep injecting a plain environment dictionary.
+ */
+export const environmentWithUserConfig = async (
+  selectedEnvironment: Readonly<NodeJS.ProcessEnv>,
+): Promise<
+  | { ok: true; environment: Readonly<NodeJS.ProcessEnv> }
+  | { ok: false; error: string }
+> => {
+  const contents = await readUserConfig(selectedEnvironment);
+  const merged = mergeUserConfig(
+    snapshotEnvironment(selectedEnvironment),
+    contents,
+  );
+  if (!merged.ok)
+    return {
+      ok: false,
+      error: projectAnalysisError(merged.error).message,
+    };
+  return { ok: true, environment: merged.value };
+};
 
 /**
  * Build the one-shot Incur CLI without starting Hopper at import time.
