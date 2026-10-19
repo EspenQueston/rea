@@ -296,10 +296,14 @@ also passed. The TypeScript client's separate URL-encoding regression and fix
 are tracked in [upstream PR #187](https://github.com/radareorg/radare2-r2pipe/pull/187).
 The Python async client's separate `quit()` lifecycle correction is tracked in
 [upstream PR #188](https://github.com/radareorg/radare2-r2pipe/pull/188).
-The TypeScript client's shutdown correction was merged in
-[upstream PR #196](https://github.com/radareorg/radare2-r2pipe/pull/196): `quit()`
+The TypeScript client's shutdown correction from
+[upstream PR #196](https://github.com/radareorg/radare2-r2pipe/pull/196) is published
+in [r2pipe-ts 0.4.0](https://www.npmjs.com/package/r2pipe-ts/v/0.4.0): `quit()`
 waits for child closure, escalates to SIGKILL after the grace period, and retains
-the child for retry when shutdown cannot be confirmed. REA's experiment uses
+the child for retry when shutdown cannot be confirmed. The published tarball's
+SHA-512 matched npm's integrity metadata. Two separate package smoke checks passed
+on macOS arm64 with Node 24.18.0: normal radare2 shutdown and SIGKILL escalation
+for a synthetic child that ignores SIGINT and stdin EOF. REA's experiment uses
 its own r2pipe2 adapter and does not depend on `r2pipe-ts`; an upstream client
 release does not change this branch's runtime or its recorded measurements.
 
