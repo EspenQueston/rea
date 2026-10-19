@@ -4,6 +4,7 @@ import { McpServer } from "@modelcontextprotocol/server";
 import { StdioServerTransport } from "@modelcontextprotocol/server/stdio";
 import { z } from "zod";
 import { connectionSchema } from "./probe.mjs";
+import { entrypointLifetime } from "./entrypoint-lifetime.mjs";
 import { viewObservation } from "./analysis-view.mjs";
 import { byteInputSchema } from "./native-bytes.mjs";
 import { projectAnalysisError } from "../../dist/domain/analysisErrorProjection.js";
@@ -14,6 +15,7 @@ import {
   traceInputSchema,
 } from "./analysis.mjs";
 
+const lifetime = entrypointLifetime();
 const config = z
   .strictObject({
     connection: connectionSchema,
@@ -22,11 +24,21 @@ const config = z
   .parse(JSON.parse(await readFile(process.argv[2], "utf8")));
 const experiment = createAnalysisExperiment(config.connection, {
   prelude: config.prelude,
+  signal: lifetime.signal,
 });
 const server = new McpServer({
   name: "radare2-analysis-experiment",
   version: "0",
 });
+server.server.onclose = () =>
+  lifetime.abort(new Error("MCP connection closed"));
+lifetime.signal.addEventListener(
+  "abort",
+  () => {
+    void server.close();
+  },
+  { once: true },
+);
 const outputSchema = z.object({ observation: z.unknown() });
 const annotations = {
   readOnlyHint: false,

@@ -18,6 +18,13 @@ import {
   AnalysisResourceConstraintError,
 } from "../../dist/domain/analysisErrorCore.js";
 import { projectAnalysisError } from "../../dist/domain/analysisErrorProjection.js";
+import { analysisErrorWithCleanupFailure } from "../../dist/domain/analysisErrorCleanup.js";
+import {
+  AnalysisCleanupLease,
+  AnalysisCleanupLeaseGroup,
+} from "../../dist/artifacts/AnalysisCleanupLease.js";
+import { observationError } from "./observation-error.mjs";
+import { entrypointLifetime } from "./entrypoint-lifetime.mjs";
 import { err, ok } from "../../dist/domain/result.js";
 import {
   jsonValueValidationIssue,
@@ -25,6 +32,7 @@ import {
 } from "../../dist/domain/jsonValue.js";
 import {
   OwnedCommandFailure,
+  ownedCommandResources,
   runOwnedCommand,
 } from "../../dist/process/OwnedCommand.js";
 import {
@@ -32,6 +40,10 @@ import {
   spawnOwnedProviderProcess,
 } from "../../dist/process/ProviderProcess.js";
 import { cleanupOwnedProcessGroup } from "../../dist/process/ProcessOwnership.js";
+import {
+  ABORTED,
+  waitForAbortable,
+} from "../../dist/process/AbortablePromise.js";
 
 // Match the existing reverse-command capture budget; this is not a token budget.
 const MAX_BYTES = 16 * 1024 * 1024;
@@ -72,15 +84,71 @@ const inputSchema = z.discriminatedUnion(
   "transport",
   connectionSchema.options.map((schema) => schema.extend(batch)),
 );
-const retainedOwners = new Set();
+const retainedOwners = new Map();
+let cleanupTimer;
+let probeTail = Promise.resolve();
+
+function scheduleCleanup() {
+  if (cleanupTimer || !retainedOwners.size) return;
+  // A referenced retry keeps the only live evidence ledger alive, including
+  // after standalone output or MCP disconnect. Never replay provider commands.
+  cleanupTimer = setTimeout(async () => {
+    try {
+      await retryCleanup();
+    } finally {
+      cleanupTimer = undefined;
+      scheduleCleanup();
+    }
+  }, 1_000);
+}
+
+function retainOwner(owner, resources) {
+  if (!retainedOwners.has(owner)) {
+    const lease = new AnalysisCleanupLease(async () => {
+      const stopped = await owner.stop();
+      if (stopped.status === "incomplete") throw new Error(stopped.reason);
+    }, resources);
+    retainedOwners.set(owner, lease);
+  }
+  scheduleCleanup();
+}
+
+function cleanupFailure(primary) {
+  const leases = [...retainedOwners.values()];
+  const cleanup = new AnalysisOutputError(
+    "radare2_probe",
+    "Owned provider cleanup remains incomplete",
+    {
+      cleanup: {
+        reason:
+          "Cleanup is retried automatically; retryCleanup() can also retry these exact owners",
+        resources: leases.flatMap((lease) => lease.cleanupResources),
+      },
+    },
+  );
+  new AnalysisCleanupLeaseGroup(cleanup, leases);
+  return primary === undefined
+    ? cleanup
+    : analysisErrorWithCleanupFailure(
+        primary,
+        cleanup,
+        "radare2_probe",
+      ).bindCleanupDependencies([primary, cleanup]);
+}
 
 /** Retry rather than discard an owner whose cleanup could not be verified. */
 export async function retryCleanup() {
-  for (const owner of retainedOwners) {
-    const stopped = await owner.stop();
-    if (stopped.status !== "incomplete") {
+  for (const [owner, lease] of retainedOwners) {
+    try {
+      await lease.release();
       retainedOwners.delete(owner);
+    } catch {
+      // Retain the same identity evidence and every dependent error for retry.
     }
+  }
+  if (!retainedOwners.size) {
+    clearTimeout(cleanupTimer);
+    cleanupTimer = undefined;
   }
   return retainedOwners.size;
 }
@@ -92,6 +160,16 @@ function decoded(bytes) {
     bytes: bytes.length,
     invalid_utf8,
     ...(invalid_utf8 ? { base64: bytes.toString("base64") } : {}),
+  };
+}
+
+function processObservation(snapshot) {
+  if (snapshot == null) return null;
+  const { exitCode, signal, ...output } = snapshot;
+  return {
+    ...output,
+    ...(exitCode === undefined ? {} : { exitCode }),
+    ...(signal === undefined ? {} : { signal }),
   };
 }
 
@@ -236,6 +314,7 @@ function frames(stream, separator) {
             "transport",
             "Provider frame queue exceeds capture budget",
             { max_bytes: MAX_BYTES, max_pending_frames: 16 },
+            { partialObservation: partial() },
           ),
         );
         return;
@@ -323,7 +402,7 @@ async function withOwned(
     command: executable,
     arguments: args,
     runId: randomUUID(),
-    env: environment,
+    hostEnvironment: environment,
     stdin: "pipe",
     signal,
   });
@@ -350,23 +429,30 @@ async function withOwned(
   await owner.waitForExit(1_000);
   const stopped = await owner.stop();
   if (stopped.status === "incomplete") {
-    retainedOwners.add(owner);
-    owner.unref();
-    throw new AnalysisOutputError(
-      "radare2_probe",
-      "Owned provider cleanup remains incomplete",
-      {
-        cause: failure,
-        partialObservation: {
+    if (failure === undefined && signal.aborted)
+      failure = new AnalysisCancelledError("radare2_probe", {
+        cause: signal.reason,
+      });
+    retainOwner(owner, ownedCommandResources(launched.ownership));
+    throw cleanupFailure(
+      observationError(
+        failure,
+        "radare2_probe",
+        "Owned provider cleanup remains incomplete",
+        {
           cleanup: stopped,
-          diagnostics: owner.snapshot(),
+          diagnostics: processObservation(owner.snapshot()),
           primary_failure: failure?.message ?? null,
           primary_partial: failure?.partialObservation ?? null,
         },
-      },
+      ),
     );
   }
-  record({ provider_diagnostics: owner.snapshot() });
+  try {
+    record({ provider_diagnostics: processObservation(owner.snapshot()) });
+  } catch (cause) {
+    failure ??= cause;
+  }
   if (failure !== undefined) throw failure;
   return result;
 }
@@ -388,6 +474,24 @@ function httpEndpoint(source) {
 
 async function httpCommand(endpoint, command, signal, authorization) {
   return new Promise((accept, reject) => {
+    let snapshot;
+    let settled = false;
+    const fail = (cause) => {
+      if (settled) return;
+      settled = true;
+      reject(
+        observationError(
+          cause.code === "ABORT_ERR" && signal.aborted
+            ? new AnalysisCancelledError("radare2_probe", {
+                cause: signal.reason,
+              })
+            : cause,
+          "radare2_probe",
+          "HTTP command completion is unknown; do not retry automatically",
+          snapshot?.(),
+        ),
+      );
+    };
     // r2 6.2.5 emits LF-only headers. Use Node's format-aware compatibility parser.
     // This is restricted to an explicit loopback peer and never follows redirects.
     const request = httpRequest(
@@ -407,6 +511,10 @@ async function httpCommand(endpoint, command, signal, authorization) {
       (response) => {
         const parts = [];
         let size = 0;
+        snapshot = () => ({
+          status: response.statusCode,
+          output: decoded(Buffer.concat(parts, size)),
+        });
         response.on("data", (bytes) => {
           if (size + bytes.length > MAX_BYTES) {
             response.destroy(
@@ -422,39 +530,15 @@ async function httpCommand(endpoint, command, signal, authorization) {
           parts.push(bytes);
           size += bytes.length;
         });
-        response.once("error", (cause) =>
-          reject(
-            new AnalysisOutputError(
-              "radare2_probe",
-              "HTTP command completion is unknown; do not retry automatically",
-              {
-                cause,
-                partialObservation: {
-                  status: response.statusCode,
-                  output: decoded(Buffer.concat(parts, size)),
-                },
-              },
-            ),
-          ),
-        );
-        response.once("end", () =>
-          accept({
-            status: response.statusCode,
-            headers: response.rawHeaders,
-            output: decoded(Buffer.concat(parts, size)),
-          }),
-        );
+        response.once("error", fail);
+        response.once("end", () => {
+          if (settled) return;
+          settled = true;
+          accept({ ...snapshot(), headers: response.rawHeaders });
+        });
       },
     );
-    request.once("error", (cause) =>
-      reject(
-        cause.code === "ABORT_ERR" && signal.aborted
-          ? new AnalysisCancelledError("radare2_probe", {
-              cause: signal.reason,
-            })
-          : cause,
-      ),
-    );
+    request.once("error", fail);
     request.end(command);
   });
 }
@@ -469,8 +553,25 @@ export async function probe(input, options = {}) {
     AbortSignal.timeout(options.timeoutMs ?? 120_000),
     ...(options.signal === undefined ? [] : [options.signal]),
   ]);
+  const pending = waitForAbortable(probeTail, signal).then((ready) =>
+    ready === ABORTED
+      ? err(
+          new AnalysisCancelledError("radare2_probe", { cause: signal.reason }),
+        )
+      : observeBatch(selected, { ...options, environment, signal }),
+  );
+  // A cancelled waiter can settle immediately, but cannot release an earlier
+  // active batch's admission to the next caller.
+  probeTail = Promise.all([probeTail, pending]).then(
+    () => {},
+    () => {},
+  );
+  return pending;
+}
+
+async function observeBatch(selected, options) {
+  const { environment, signal } = options;
   const transcript = [];
-  const priorOwners = new Set(retainedOwners);
   let observedBytes = 0;
   const record = (value) => {
     const bytes = Buffer.byteLength(JSON.stringify(value));
@@ -485,6 +586,7 @@ export async function probe(input, options = {}) {
     transcript.push(value);
   };
   try {
+    if (await retryCleanup()) throw cleanupFailure();
     if (signal.aborted)
       throw new AnalysisCancelledError("radare2_probe", {
         cause: signal.reason,
@@ -522,7 +624,7 @@ export async function probe(input, options = {}) {
               command: executable,
               arguments: [...flags, "-c", encode(command), path],
               runId: randomUUID(),
-              env: environment,
+              hostEnvironment: environment,
             },
             {
               timeoutMs: options.timeoutMs ?? 120_000,
@@ -530,9 +632,6 @@ export async function probe(input, options = {}) {
             },
             {
               signal,
-              retainCleanup: (owner) => {
-                retainedOwners.add(owner);
-              },
             },
           );
           record({ command, output });
@@ -676,11 +775,6 @@ export async function probe(input, options = {}) {
         );
       }
     }
-    if ([...retainedOwners].some((owner) => !priorOwners.has(owner)))
-      throw new AnalysisOutputError(
-        "radare2_probe",
-        "Cleanup owner retained for retry",
-      );
     const observation = {
       transport: selected.transport,
       input: selected,
@@ -703,11 +797,12 @@ export async function probe(input, options = {}) {
     return ok(observation);
   } catch (cause) {
     if (cause instanceof OwnedCommandFailure && cause.cleanupOwner)
-      retainedOwners.add(cause.cleanupOwner);
+      retainOwner(cause.cleanupOwner, cause.resources);
     const partialObservation = {
       transport: selected.transport,
       transcript,
-      provider_partial: cause?.partialObservation ?? cause?.snapshot ?? null,
+      provider_partial:
+        cause?.partialObservation ?? processObservation(cause?.snapshot),
       failure: {
         tag: cause?._tag ?? cause?.name ?? "unknown",
         message: cause?.message ?? "unknown",
@@ -715,45 +810,48 @@ export async function probe(input, options = {}) {
       cleanup_owners_retained: retainedOwners.size,
       completion: "unknown",
     };
-    const cancelled =
-      cause instanceof AnalysisCancelledError
-        ? { reason: cause.cause }
-        : cause instanceof OwnedCommandFailure &&
-            cause.reason === "cancelled" &&
-            !cause.cleanupFailure
-          ? cause.cancellation
-          : undefined;
-    if (
-      cancelled &&
-      ![...retainedOwners].some((owner) => !priorOwners.has(owner))
-    )
-      return err(
-        new AnalysisCancelledError("radare2_probe", {
-          cause: cancelled.reason,
-          partialObservation,
-        }),
-      );
+    let primary = cause;
+    if (cause instanceof OwnedCommandFailure) {
+      if (
+        cause.cancellation &&
+        (cause.reason === "cancelled" ||
+          (cause.cleanupOwner && cause.cause === undefined))
+      )
+        primary = new AnalysisCancelledError("radare2_probe", {
+          cause: cause.cancellation.reason,
+        });
+      else if (cause.reason === "output-limit")
+        primary = new AnalysisResourceConstraintError(
+          "radare2_probe",
+          "transport",
+          cause.message,
+          { max_bytes: MAX_BYTES },
+          { cause },
+        );
+    }
+    const failure = observationError(
+      primary,
+      "radare2_probe",
+      "Transport probe failed; command effects may be incomplete",
+      partialObservation,
+    );
     return err(
-      new AnalysisOutputError(
-        "radare2_probe",
-        "Transport probe failed; command effects may be incomplete",
-        {
-          cause,
-          partialObservation,
-        },
-      ),
+      cause instanceof OwnedCommandFailure && cause.cleanupOwner
+        ? cleanupFailure(failure)
+        : failure,
     );
   }
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  const lifetime = entrypointLifetime();
   let input;
   try {
     input = JSON.parse(process.argv[2] ?? "null");
   } catch {
     input = null;
   }
-  const result = await probe(input);
+  const result = await probe(input, { signal: lifetime.signal });
   console.log(
     JSON.stringify(
       result.ok
@@ -761,5 +859,5 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
         : { ok: false, error: projectAnalysisError(result.error) },
     ),
   );
-  if (!result.ok) process.exitCode = 1;
+  if (!result.ok) process.exitCode ||= 1;
 }

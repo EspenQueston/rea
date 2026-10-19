@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { test } from "node:test";
+import fs from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { digestTarget, retryNativeByteCleanup } from "./native-bytes.mjs";
+import { projectAnalysisError } from "../../dist/domain/analysisErrorProjection.js";
 import { sliceNativeEsil } from "./native-esil.mjs";
 import {
   AnalysisCancelledError,
@@ -209,7 +215,9 @@ test("changed artifacts fail, external HTTP identity stays unknown and cancellat
     unverified.value.result.target_consistency.status,
     "unverified-external-core",
   );
+  const reason = { opaque: "caller reason" };
   const error = new AnalysisCancelledError("native_read", {
+    cause: reason,
     partialObservation: { interrupted: true },
   });
   let calls = 0;
@@ -220,6 +228,7 @@ test("changed artifacts fail, external HTTP identity stays unknown and cancellat
   );
   assert.notEqual(cancelled.error, error);
   assert.equal(cancelled.error._tag, "AnalysisCancelledError");
+  assert.equal(cancelled.error.cause, reason);
   assert.equal(
     cancelled.error.partialObservation.failure_observation.interrupted,
     true,
@@ -229,6 +238,57 @@ test("changed artifacts fail, external HTTP identity stays unknown and cancellat
     cancelled.error.partialObservation.instruction_observation.replies[0].res,
     instructions,
   );
+});
+
+test("a second ESIL read keeps the exact file cleanup dependency through retry", async (context) => {
+  const root = await fs.mkdtemp(join(tmpdir(), "rea-esil-cleanup-"));
+  const path = join(root, "target");
+  await fs.writeFile(path, "selected bytes");
+  const open = fs.open;
+  let denied = true;
+  const intercepted = context.mock.method(fs, "open", async (...args) => {
+    const handle = await open(...args);
+    const close = handle.close.bind(handle);
+    handle.close = async () => {
+      if (denied) throw new Error("injected file close denial");
+      return close();
+    };
+    return handle;
+  });
+  syncBuiltinESMExports();
+  try {
+    let calls = 0;
+    const result = await sliceNativeEsil(input, async () => {
+      if (++calls === 1) return { ok: true, value: observation(instructions) };
+      try {
+        await digestTarget(path);
+      } catch (error) {
+        return { ok: false, error };
+      }
+      assert.fail("Expected file cleanup failure");
+    });
+    assert.equal(projectAnalysisError(result.error).code, "cleanup_incomplete");
+    assert.deepEqual(result.error.cleanupResources, [path]);
+    assert.equal(await retryNativeByteCleanup(), 1);
+    denied = false;
+    assert.equal(await retryNativeByteCleanup(), 0);
+    assert.equal(result.error.cleanupIncomplete, false);
+    assert.deepEqual(result.error.cleanupResources, []);
+    assert.notEqual(
+      projectAnalysisError(result.error).code,
+      "cleanup_incomplete",
+    );
+    assert.deepEqual(
+      result.error.partialObservation.instruction_observation.replies[0].res,
+      instructions,
+    );
+  } finally {
+    denied = false;
+    await retryNativeByteCleanup();
+    intercepted.mock.restore();
+    syncBuiltinESMExports();
+    await fs.rm(root, { recursive: true, force: true });
+  }
 });
 
 test("resource failures preserve their tag and limits without mutating the read owner's error", async () => {

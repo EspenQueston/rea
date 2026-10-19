@@ -1,13 +1,8 @@
 // Isolated native ESIL DFG experiment; no Ghidra plugin or target execution.
 import { z } from "zod";
-import {
-  AnalysisCancelledError,
-  AnalysisInputError,
-  AnalysisOutputError,
-  AnalysisResourceConstraintError,
-  AnalysisTimeoutError,
-} from "../../dist/domain/analysisErrorCore.js";
+import { AnalysisInputError } from "../../dist/domain/analysisErrorCore.js";
 import { err, ok } from "../../dist/domain/result.js";
+import { observationError } from "./observation-error.mjs";
 
 const OPERATION = "radare2_native_esil_slice";
 const ADDRESS_LIMIT = 1n << 64n;
@@ -268,42 +263,16 @@ export async function sliceNativeEsil(input, read) {
     const reduced = await read([{ cmd: command, json: false }]);
     if (!reduced.ok) {
       const failure = reduced.error;
-      const options = {
-        cause: failure,
-        diagnostics: failure.diagnostics,
-        capturedOutput: failure.capturedOutput,
-        cleanup: failure.cleanup,
-        partialObservation: {
-          input: selected,
-          instruction_observation: decoded.value,
-          failure_observation: failure.partialObservation ?? null,
-        },
-      };
-      if (failure._tag === "AnalysisCancelledError")
-        return err(new AnalysisCancelledError(failure.operation, options));
-      if (failure._tag === "AnalysisResourceConstraintError")
-        return err(
-          new AnalysisResourceConstraintError(
-            failure.operation,
-            failure.resource,
-            failure.reason,
-            failure.reportedLimits,
-            { ...options, remediationAction: failure.remediationAction },
-          ),
-        );
-      if (failure._tag === "AnalysisTimeoutError")
-        return err(
-          new AnalysisTimeoutError(
-            failure.operation,
-            failure.timeoutMs,
-            options,
-          ),
-        );
       return err(
-        new AnalysisOutputError(
+        observationError(
+          failure,
           OPERATION,
           "Native DFG reduction read failed; the earlier instruction observation is retained",
-          options,
+          {
+            input: selected,
+            instruction_observation: decoded.value,
+            failure_observation: failure.partialObservation ?? null,
+          },
         ),
       );
     }
@@ -317,16 +286,14 @@ export async function sliceNativeEsil(input, read) {
     });
   } catch (cause) {
     return err(
-      new AnalysisOutputError(
+      observationError(
+        cause,
         OPERATION,
         cause?.message ?? "Cannot interpret native ESIL reduction",
         {
-          cause,
-          partialObservation: {
-            input: selected,
-            expression: expression ?? null,
-            observations,
-          },
+          input: selected,
+          expression: expression ?? null,
+          observations,
         },
       ),
     );

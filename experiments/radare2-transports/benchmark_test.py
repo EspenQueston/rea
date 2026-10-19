@@ -101,6 +101,41 @@ class BenchmarkCleanupTest(unittest.TestCase):
         finally:
             owner.close()
 
+    def test_unacknowledged_shutdown_consumes_late_receipt_without_resending(self):
+        owner = OwnershipSession("node")
+        try:
+            with patch.object(owner, "_response", side_effect=TimeoutError("delayed close receipt")):
+                with self.assertRaises(TimeoutError):
+                    owner.close()
+            owner.helper.stdin.close()  # Permit exit after the real helper sends its late receipt.
+            owner.helper.wait(timeout=5)
+            self.assertFalse(owner.shutdown_acknowledged)
+            with patch.object(owner.helper.stdin, "write", side_effect=AssertionError("close must not be replayed")):
+                owner.close()
+            self.assertTrue(owner.shutdown_acknowledged)
+            self.assertTrue(owner.closed)
+            self.assertEqual(owner.sequence, 1)
+        finally:
+            if not owner.closed:
+                owner.helper.stdin.close()
+                owner.helper.wait(timeout=5)
+                owner._release_streams()
+
+    def test_explicit_close_refusal_releases_only_the_pending_request(self):
+        owner = OwnershipSession("node")
+        try:
+            owner.shutdown_request = owner.sequence = 1
+            owner.pending = b'{"id":1,"error":"injected close refusal"}\n'
+            with self.assertRaisesRegex(RuntimeError, "injected close refusal"):
+                owner.close()
+            self.assertIsNone(owner.shutdown_request)
+            self.assertFalse(owner.closed)
+            owner.close()
+            self.assertTrue(owner.closed)
+            self.assertEqual(owner.sequence, 2)
+        finally:
+            owner.close()
+
     def test_failed_preparation_preserves_diagnostic_and_retries_unbound_reaping(self):
         for interrupt_wait in (False, True):
             with self.subTest(interrupt_wait=interrupt_wait):

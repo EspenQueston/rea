@@ -85,9 +85,17 @@ The verifier also exercises this behavior without changing production REA.
 
 The default deadline is 120 seconds for the whole batch. The programmatic `probe`
 accepts a caller `signal`, `timeoutMs`, captured `environment`, and optional HTTP
-`authorization`; authorization and ambient environment are not persisted. HTTP
-submissions and MCP calls are never automatically replayed. `retryCleanup()`
-retains and retries unresolved process owners within the experiment process.
+`authorization`. A supplied environment replaces the ambient child environment;
+the process supervisor adds its ownership token. Authorization and environment
+values are not persisted. HTTP submissions and MCP calls are never automatically
+replayed. Probe batches share sequential admission within the experiment process;
+queued callers retain their own deadline and cancellation. Failed cleanup stops
+the current batch and blocks admission until the exact retained owners are released.
+`retryCleanup()` retries those owners and resolves their returned errors' live
+cleanup markers after verified release. A referenced one-second retry also keeps
+the experiment alive after standalone output or MCP disconnect. SIGINT/SIGTERM
+cancel active entrypoint work through the same owners; unresolved cleanup can keep
+shutdown pending. Forced process termination cannot preserve its private ledger.
 External HTTP sessions remain unowned. Results explicitly leave target identity
 unverified. Review the proposal's authority and verification gaps before running
 arbitrary commands against a valuable external session.
@@ -128,7 +136,9 @@ python3 experiments/radare2-transports/benchmark_test.py
 The Python checks require `psutil` and the pinned `node` on `PATH`. They exercise
 synthetic process trees, failed/partial manifest writes, failed diagnostic writes,
 inspection denial, attachment timeouts, pretarget failures and interrupted helper
-shutdown. They do not establish engine behavior. One live helper retains the same
+shutdown, including a lost close receipt followed by helper exit. A close retry
+consumes the pending request's receipt and reaps the same helper without replaying
+the request. They do not establish engine behavior. One live helper retains the same
 ownership evidence through retries. If cleanup remains unverified,
 `CleanupIncomplete` retains that owner and the child handle even when neither
 output file was saved. Manifests cannot restore a lost helper's private ledger;

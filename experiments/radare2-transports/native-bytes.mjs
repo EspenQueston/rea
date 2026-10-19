@@ -7,7 +7,7 @@ import {
   AnalysisOutputError,
 } from "../../dist/domain/analysisErrorCore.js";
 import { err, ok } from "../../dist/domain/result.js";
-import { AnalysisError } from "../../dist/domain/analysisErrorBase.js";
+import { observationError } from "./observation-error.mjs";
 import {
   AnalysisCleanupLease,
   AnalysisCleanupLeaseGroup,
@@ -432,24 +432,16 @@ export async function readNativeBytes(input, read, filePath, request = {}) {
         ? { file_observation: cause.partialObservation }
         : {}),
     };
-    const cancelled =
-      cause instanceof AnalysisCancelledError
-        ? { reason: cause.cause }
-        : regularFileCancellation(cause);
-    const failure =
-      cancelled && !cause?.cleanup
-        ? new AnalysisCancelledError(OPERATION, {
-            cause: cancelled.reason,
-            partialObservation,
-            cleanup: cause?.cleanup,
-          })
-        : error("Cannot complete native byte observation", {
-            cause,
-            partialObservation,
-            cleanup: cause?.cleanup,
-          });
-    if (cause instanceof AnalysisError && cause.cleanupIncomplete)
-      failure.bindCleanupDependencies([cause]);
-    return err(failure);
+    const cancelled = regularFileCancellation(cause);
+    return err(
+      observationError(
+        cancelled
+          ? new AnalysisCancelledError(OPERATION, { cause: cancelled.reason })
+          : cause,
+        OPERATION,
+        "Cannot complete native byte observation",
+        partialObservation,
+      ),
+    );
   }
 }

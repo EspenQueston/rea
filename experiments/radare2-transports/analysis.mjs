@@ -4,11 +4,11 @@ import { fileURLToPath } from "node:url";
 import {
   AnalysisCancelledError,
   AnalysisInputError,
-  AnalysisOutputError,
   AnalysisResourceConstraintError,
 } from "../../dist/domain/analysisErrorCore.js";
 import { projectAnalysisError } from "../../dist/domain/analysisErrorProjection.js";
-import { AnalysisError } from "../../dist/domain/analysisErrorBase.js";
+import { observationError } from "./observation-error.mjs";
+import { entrypointLifetime } from "./entrypoint-lifetime.mjs";
 import { err, ok } from "../../dist/domain/result.js";
 import { connectionSchema, probe } from "./probe.mjs";
 import {
@@ -36,32 +36,13 @@ export {
 const OPERATION = "radare2_analysis_experiment";
 
 function failure(cause, message, partialObservation) {
-  const details = { cause, partialObservation, cleanup: cause?.cleanup };
-  if (cause instanceof AnalysisCancelledError)
-    return err(cancellation(cause.cause, partialObservation, cause));
-  if (cause instanceof AnalysisResourceConstraintError)
-    return err(
-      new AnalysisResourceConstraintError(
-        OPERATION,
-        cause.resource,
-        cause.reason,
-        cause.reportedLimits,
-        details,
-      ),
-    );
-  const result = new AnalysisOutputError(OPERATION, message, details);
-  if (cause instanceof AnalysisError && cause.cleanupIncomplete)
-    result.bindCleanupDependencies([cause]);
-  return err(result);
+  return err(observationError(cause, OPERATION, message, partialObservation));
 }
 
-function cancellation(cause, partialObservation, prior) {
+function cancellation(cause, partialObservation) {
   return new AnalysisCancelledError(OPERATION, {
     cause,
     partialObservation,
-    diagnostics: prior?.diagnostics,
-    capturedOutput: prior?.capturedOutput,
-    cleanup: prior?.cleanup,
   });
 }
 
@@ -402,9 +383,11 @@ export function createAnalysisExperiment(inputConnection, options = {}) {
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  const lifetime = entrypointLifetime();
   const input = JSON.parse(process.argv[2] ?? "null");
   const experiment = createAnalysisExperiment(input.connection, {
     prelude: input.prelude,
+    signal: lifetime.signal,
   });
   const operation = {
     analyze_function: experiment.analyze,
@@ -422,5 +405,5 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
         : { ok: false, error: projectAnalysisError(result.error) },
     ),
   );
-  if (!result.ok) process.exitCode = 1;
+  if (!result.ok) process.exitCode ||= 1;
 }

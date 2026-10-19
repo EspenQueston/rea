@@ -275,7 +275,11 @@ Unverified cleanup attempts to write its reason to `resources.json` and raises
 `ownership` and `child` even when manifest or diagnostic writes fail. Python
 callers can retry `error.owner.cleanup()` on that same live session; when its
 returned `cleaned` is true, reap `error.child` if present and call
-`error.owner.close()`. A failed final reap can retry `error.owner.close()` directly.
+`error.owner.close()`. If target cleanup succeeded but the close receipt or final
+reap failed, retry `error.owner.close()` directly. The pending close request keeps
+its identity through a timeout; retry consumes its late receipt without resending
+to the helper, even after the helper exits. An explicit refusal permits a new
+close request. Other commands are refused while close acknowledgement is pending.
 Helper loss leaves cleanup unverified; a saved manifest alone cannot authorize
 recovery. PID reuse or unreadable identity does not authorize signaling. Prompts
 use retained file-backed stdin so a child that does not read cannot block limits.
@@ -346,6 +350,31 @@ available; historical instrumentation also differs. These figures establish no
 speedup and include no new engine or agent benchmark. Model token use is zero for
 these synthetic tasks. Raw measurements are retained locally at
 `/tmp/rea-pr4148-measure.json`.
+
+The later 2026-10-19 transport review follow-up compared `9a5253422` with these
+cleanup/admission fixes on the same macOS arm64 host and Node 24.18.0. Each task
+starts the CLI and r2, requests `pdj 8 @ entry0` on a source-built `fixture.c`,
+receives eight addressed instructions and verifies owned cleanup. Before/after
+runs alternate; no target is executed and no model is invoked.
+
+| Revision | Run      | Elapsed (s) | CPU (s) | Sampled family peak RSS (MiB) | Agent tokens |
+| -------- | -------- | ----------: | ------: | ----------------------------: | -----------: |
+| Before   | First    |       1.187 |   1.226 |                        ≥263.7 |            0 |
+| After    | First    |       1.371 |   1.244 |                        ≥268.6 |            0 |
+| Before   | Repeat 1 |       1.140 |   1.248 |                        ≥270.9 |            0 |
+| After    | Repeat 1 |       1.132 |   1.224 |                        ≥264.1 |            0 |
+| Before   | Repeat 2 |       1.066 |   1.167 |                        ≥263.5 |            0 |
+| After    | Repeat 2 |       1.074 |   1.172 |                        ≥263.2 |            0 |
+
+Elapsed time and reaped child-family CPU include startup, replies and cleanup.
+RSS sampling targets 10 ms; 1–2 denied observations per run make peaks lower
+bounds. The external sampler's CPU/RSS are excluded. All six tasks completed.
+Every CLI/provider process is fresh and host caches are uncontrolled: these are
+first/repeat observations, not controlled cold/warm runs. This small sample
+establishes no speedup; concurrent callers, sustained cleanup failure overhead,
+error-response model tokens and full agent investigations were not measured.
+Raw outputs and measurements remain local under
+`/private/tmp/rea-pr4148-review-20261019/` (`measure.json`).
 
 The configuration keys are `node`, `sdk_driver`, `rea3521`, `r2`, `r2mcp`,
 `ghidra`, `java`, `codex`, `model`, `reasoning`, `output`, `warm_repeats`, `lanes`

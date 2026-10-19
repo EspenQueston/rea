@@ -33,6 +33,7 @@ class OwnershipSession:
         self.cleaned = False
         self.closed = False
         self.shutdown_acknowledged = False
+        self.shutdown_request = None
         self.preparation_failed = False
         self.sequence = 0
         self.pending = b""
@@ -79,6 +80,8 @@ class OwnershipSession:
                         continue  # A timed-out earlier request cannot become this receipt.
                     raise RuntimeError("Ownership helper response identity mismatch")
                 if "error" in result:
+                    if wanted == self.shutdown_request:
+                        self.shutdown_request = None  # A received refusal did not accept close.
                     raise RuntimeError(result["error"])
                 self.coverage = result.get("evidence_coverage", self.coverage)
                 return result
@@ -94,6 +97,10 @@ class OwnershipSession:
                 raise RuntimeError("Ownership helper response exceeds capture budget")
 
     def _request(self, operation):
+        if self.shutdown_request is not None:
+            if operation != "close":
+                raise RuntimeError("Ownership helper shutdown is pending; retry close on this session")
+            return self._response(self.shutdown_request)["result"]
         self.sequence += 1
         request = {"id": self.sequence, "operation": operation}
         if self.child is not None:
@@ -101,6 +108,8 @@ class OwnershipSession:
         message = (json.dumps(request) + "\n").encode()
         if self.helper.stdin.write(message) != len(message):
             raise OSError("Ownership helper request write was incomplete; retain this session")
+        if operation == "close":
+            self.shutdown_request = self.sequence
         return self._response(self.sequence)["result"]
 
     def diagnostics(self):
