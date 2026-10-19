@@ -16,25 +16,29 @@ function select(result, facet) {
 }
 
 function coverage(result) {
-  const flow = result.high_pcode ?? (result.ir ? result : null);
-  if (!flow)
-    return {
-      complete: result.complete ?? null,
-      coverage: result.coverage ?? null,
-      unknowns: result.unknowns ?? [],
-      limitations: result.limitations ?? [],
-    };
-  return {
-    producer: flow.producer,
-    ir: flow.ir,
-    truncated: flow.truncated,
-    source_coverage: flow.source_coverage ?? null,
-    omitted_operations_lower_bound: flow.omitted_operations_lower_bound ?? null,
-    known_omitted_inputs: flow.known_omitted_inputs ?? null,
-    known_omitted_edges: flow.known_omitted_edges ?? null,
-    unknowns: flow.unknowns,
-    limitations: flow.limitations,
-  };
+  const source = result.high_pcode ?? result;
+  // Preserve the owning representation's coverage; an IR name alone does not
+  // make native ESIL instruction coverage into a high-pcode omission model.
+  return Object.fromEntries(
+    [
+      "producer",
+      "ir",
+      "status",
+      "complete",
+      "coverage",
+      "target_consistency",
+      "selection_status",
+      "truncated",
+      "source_coverage",
+      "omitted_operations_lower_bound",
+      "known_omitted_inputs",
+      "known_omitted_edges",
+      "unknowns",
+      "limitations",
+    ]
+      .filter((field) => Object.hasOwn(source, field))
+      .map((field) => [field, source[field]]),
+  );
 }
 
 export function viewObservation(

@@ -211,7 +211,12 @@ function projectSlice({
       },
       command_outcomes: observations.map((observation) => {
         const { error, code, value, command_outcome } = observation.replies[0];
-        return { error, code, value, command_outcome };
+        return {
+          error,
+          code,
+          ...(value === undefined ? {} : { value }),
+          command_outcome,
+        };
       }),
       logs,
       target_consistency: consistency,

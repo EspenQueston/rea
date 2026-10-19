@@ -47,7 +47,7 @@ test(
       );
       const result = await experiment.inspectType({ type: "T" });
       assert.equal(result.ok, false);
-      assert.match(result.error.cause.message, /not a regular file/u);
+      assert.equal(result.error.cause.code, "ENOTFILE");
       assert.equal(await retryNativeByteCleanup(), 0);
     } finally {
       await rm(root, { recursive: true, force: true });

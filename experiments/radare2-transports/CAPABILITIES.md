@@ -89,7 +89,10 @@ Target hashes are read before and after owned observations. This establishes
 the selected file's unchanged bytes; it is not universal process/core identity
 proof. An external HTTP core's selected target remains unverified. The prototype
 does not memoize live analysis across calls. Complete observations are retained
-under a 64 MiB session budget with explicit release; each transport capture is
+under a 64 MiB session budget with explicit release. A retention-capacity failure
+returns the completed observation, including native replies, in the error's partial
+observation. Paged views preserve the result's own coverage, partial reasons and
+target-consistency facts. Each transport capture is
 bounded to 16 MiB.
 
 P-code extraction retains at most 3,000 operations, 64 inputs per operation and

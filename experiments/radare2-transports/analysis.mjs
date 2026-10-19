@@ -8,6 +8,7 @@ import {
   AnalysisResourceConstraintError,
 } from "../../dist/domain/analysisErrorCore.js";
 import { projectAnalysisError } from "../../dist/domain/analysisErrorProjection.js";
+import { AnalysisError } from "../../dist/domain/analysisErrorBase.js";
 import { err, ok } from "../../dist/domain/result.js";
 import { connectionSchema, probe } from "./probe.mjs";
 import {
@@ -35,9 +36,9 @@ export {
 const OPERATION = "radare2_analysis_experiment";
 
 function failure(cause, message, partialObservation) {
-  const details = { cause, partialObservation };
+  const details = { cause, partialObservation, cleanup: cause?.cleanup };
   if (cause instanceof AnalysisCancelledError)
-    return err(cancellation(cause, partialObservation));
+    return err(cancellation(cause.cause, partialObservation, cause));
   if (cause instanceof AnalysisResourceConstraintError)
     return err(
       new AnalysisResourceConstraintError(
@@ -48,16 +49,19 @@ function failure(cause, message, partialObservation) {
         details,
       ),
     );
-  return err(new AnalysisOutputError(OPERATION, message, details));
+  const result = new AnalysisOutputError(OPERATION, message, details);
+  if (cause instanceof AnalysisError && cause.cleanupIncomplete)
+    result.bindCleanupDependencies([cause]);
+  return err(result);
 }
 
-function cancellation(cause, partialObservation = cause?.partialObservation) {
+function cancellation(cause, partialObservation, prior) {
   return new AnalysisCancelledError(OPERATION, {
     cause,
     partialObservation,
-    diagnostics: cause?.diagnostics,
-    capturedOutput: cause?.capturedOutput,
-    cleanup: cause?.cleanup,
+    diagnostics: prior?.diagnostics,
+    capturedOutput: prior?.capturedOutput,
+    cleanup: prior?.cleanup,
   });
 }
 
@@ -66,28 +70,33 @@ function createRetention(maximumBytes, transport) {
   let usedBytes = 0;
   return {
     add(kind, observation) {
-      const bytes = Buffer.byteLength(JSON.stringify(observation));
-      if (bytes + usedBytes > maximumBytes)
-        throw new AnalysisResourceConstraintError(
-          OPERATION,
-          "capacity",
-          "Retained observation capacity reached; release observations before more work",
-          {
-            observed_bytes: bytes,
-            retained_bytes: usedBytes,
-            maximum_bytes: maximumBytes,
-          },
-        );
-      const observation_id = randomUUID();
-      records.set(observation_id, { observation, bytes });
-      usedBytes += bytes;
-      return {
-        observation_id,
-        kind,
-        target: observation.target,
-        transport,
-        observation_kind: "experimental-not-REA-Evidence",
-      };
+      try {
+        const bytes = Buffer.byteLength(JSON.stringify(observation));
+        if (bytes + usedBytes > maximumBytes)
+          throw new AnalysisResourceConstraintError(
+            OPERATION,
+            "capacity",
+            "Retained observation capacity reached; release observations before more work",
+            {
+              observed_bytes: bytes,
+              retained_bytes: usedBytes,
+              maximum_bytes: maximumBytes,
+            },
+          );
+        const observation_id = randomUUID();
+        records.set(observation_id, { observation, bytes });
+        usedBytes += bytes;
+        return ok({
+          observation_id,
+          kind,
+          target: observation.target,
+          transport,
+          observation_kind: "experimental-not-REA-Evidence",
+          result: observation.result,
+        });
+      } catch (cause) {
+        return failure(cause, "Observation retention failed", observation);
+      }
     },
     view(id, section = "result") {
       const record = records.get(id);
@@ -184,7 +193,7 @@ function serialOperations(options) {
           } catch (cause) {
             resolve(
               signal?.aborted
-                ? err(cancellation(cause))
+                ? err(cancellation(signal.reason))
                 : failure(cause, "Experiment operation failed"),
             );
           } finally {
@@ -220,8 +229,7 @@ function createObserver(connection, options) {
         { ...connection, commands: selected },
         { ...options, signal },
       );
-      if (!result.ok)
-        return signal?.aborted ? err(cancellation(result.error)) : result;
+      if (!result.ok) return result;
       const replies = result.value.transcript
         .filter((entry) => entry.r2pipe2)
         .map((entry) => entry.r2pipe2);
@@ -258,9 +266,12 @@ function createObserver(connection, options) {
         );
       return ok(observation);
     } catch (cause) {
-      return signal?.aborted
-        ? err(cancellation(cause, observation))
-        : failure(cause, "Observation failed", observation);
+      return failure(cause, "Observation failed", {
+        ...observation,
+        ...(cause?.partialObservation
+          ? { file_observation: cause.partialObservation }
+          : {}),
+      });
     }
   }
 
@@ -277,10 +288,7 @@ function createTrace(analyze, observe, retained) {
         observe(commands, request),
       );
       if (!sliced.ok) return sliced;
-      return ok({
-        ...retained.add("trace_native_values", sliced.value),
-        result: sliced.value.result,
-      });
+      return retained.add("trace_native_values", sliced.value);
     }
     const { parameter, max_nodes, ir: _ir, ...functionInput } = parsed.data;
     const observed = await analyze(functionInput, request);
@@ -301,7 +309,9 @@ function createTrace(analyze, observe, retained) {
           derivation: "forward traversal of producer varnode def-use edges",
         },
       });
-      return ok({ ...reference, parent_observation_id, result });
+      return reference.ok
+        ? ok({ ...reference.value, parent_observation_id })
+        : reference;
     } catch (cause) {
       return failure(
         cause,
@@ -335,13 +345,10 @@ export function createAnalysisExperiment(inputConnection, options = {}) {
       const { replies, target, raw } = observed.value;
       const result = decodeFunction(parsed.data, replies);
       const observation = { input: parsed.data, target, result, raw };
-      return ok({
-        ...retained.add("analyze_function", observation),
-        result,
-      });
+      return retained.add("analyze_function", observation);
     } catch (cause) {
       return request.signal?.aborted
-        ? err(cancellation(cause, observed.value))
+        ? err(cancellation(request.signal.reason, observed.value))
         : failure(cause, "Cannot interpret native function result", {
             ...observed.value,
             interpretation_failure: cause?.message ?? "unknown",
@@ -364,10 +371,7 @@ export function createAnalysisExperiment(inputConnection, options = {}) {
         parsed.data.type,
       );
       const observation = { input: parsed.data, target, raw, result };
-      return ok({
-        ...retained.add("inspect_native_data_type", observation),
-        result,
-      });
+      return retained.add("inspect_native_data_type", observation);
     } catch (cause) {
       return failure(
         cause,
@@ -384,15 +388,7 @@ export function createAnalysisExperiment(inputConnection, options = {}) {
       connection.path,
       request,
     );
-    if (!observed.ok) return observed;
-    try {
-      return ok({
-        ...retained.add("read_bytes", observed.value),
-        result: observed.value.result,
-      });
-    } catch (cause) {
-      return failure(cause, "Byte retention failed", observed.value);
-    }
+    return observed.ok ? retained.add("read_bytes", observed.value) : observed;
   }
 
   return {

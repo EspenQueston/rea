@@ -1,7 +1,5 @@
 // Isolated byte observation; never registered by REA's production composition.
 import { createHash } from "node:crypto";
-import { constants } from "node:fs";
-import { open } from "node:fs/promises";
 import { z } from "zod";
 import {
   AnalysisCancelledError,
@@ -9,6 +7,18 @@ import {
   AnalysisOutputError,
 } from "../../dist/domain/analysisErrorCore.js";
 import { err, ok } from "../../dist/domain/result.js";
+import { AnalysisError } from "../../dist/domain/analysisErrorBase.js";
+import {
+  AnalysisCleanupLease,
+  AnalysisCleanupLeaseGroup,
+} from "../../dist/artifacts/AnalysisCleanupLease.js";
+import {
+  RegularFileCancelled,
+  RegularFileCleanupFailure,
+  regularFileCancellation,
+  withOwnedRegularFile,
+} from "../../dist/filesystem/OwnedRegularFile.js";
+import { assertRegularFileActive } from "../../dist/filesystem/RegularFile.js";
 
 const OPERATION = "radare2_read_bytes_experiment";
 const UINT64_MAX = 0xffffffffffffffffn;
@@ -142,7 +152,7 @@ async function hashHandle(handle, length, signal) {
   const buffer = Buffer.alloc(64 * 1024);
   let position = 0n;
   while (position < length) {
-    signal?.throwIfAborted();
+    assertRegularFileActive(signal);
     const remaining = length - position;
     const wanted =
       remaining < BigInt(buffer.length) ? Number(remaining) : buffer.length;
@@ -152,7 +162,7 @@ async function hashHandle(handle, length, signal) {
     hash.update(buffer.subarray(0, bytesRead));
     position += BigInt(bytesRead);
   }
-  signal?.throwIfAborted();
+  assertRegularFileActive(signal);
   return hash.digest("hex");
 }
 
@@ -160,7 +170,7 @@ async function fileBytes(handle, offset, length, signal) {
   const bytes = Buffer.alloc(length);
   let returned = 0;
   while (returned < length) {
-    signal?.throwIfAborted();
+    assertRegularFileActive(signal);
     const read = await handle.read(
       bytes,
       returned,
@@ -173,37 +183,73 @@ async function fileBytes(handle, offset, length, signal) {
   return bytes.subarray(0, returned);
 }
 
-async function closeHandle(handle, path) {
-  try {
-    await handle.close();
-    retainedHandles.delete(handle);
-  } catch (cause) {
-    throw error("Independent file-read cleanup remains incomplete", {
-      cause,
-      cleanup: {
-        reason: "FileHandle.close failed; ownership retained for retry",
-        resources: [path],
-      },
-    });
-  }
-}
-
-// Nonblocking open rejects FIFOs/devices before reading, and both digest phases
-// share the independent byte oracle's handle ownership and bounded read loop.
+// Shared file admission and descriptor ownership also own cancellation during
+// final close. Only the retention callback can transfer a failed-close owner.
 async function withRegularFile(path, signal, operation) {
-  signal?.throwIfAborted();
-  const handle = await open(path, constants.O_RDONLY | constants.O_NONBLOCK);
-  retainedHandles.set(handle, path);
+  if (retainedHandles.size) {
+    const blocked = error(
+      "Earlier independent file cleanup remains incomplete",
+      {
+        cleanup: {
+          reason: "Call retryNativeByteCleanup before another file observation",
+          resources: [...retainedHandles.values()].map((entry) => entry.path),
+        },
+      },
+    );
+    new AnalysisCleanupLeaseGroup(
+      blocked,
+      [...retainedHandles.values()].map((entry) => entry.lease),
+    );
+    throw blocked;
+  }
   try {
-    signal?.throwIfAborted();
-    const metadata = await handle.stat({ bigint: true });
-    if (!metadata.isFile())
-      throw error("Selected oracle is not a regular file");
-    const result = await operation(handle, metadata);
-    signal?.throwIfAborted();
-    return result;
-  } finally {
-    await closeHandle(handle, path);
+    return await withOwnedRegularFile(
+      path,
+      {
+        signal,
+        retainFailedClose: (owner) =>
+          retainedHandles.set(owner, {
+            path,
+            lease: AnalysisCleanupLease.forCloseOwner(owner, path),
+          }),
+      },
+      async (handle) => operation(handle, await handle.stat({ bigint: true })),
+    );
+  } catch (cause) {
+    const outcome =
+      cause instanceof RegularFileCancelled ||
+      cause instanceof RegularFileCleanupFailure
+        ? cause.outcome
+        : undefined;
+    const partialObservation = {
+      path,
+      ...(outcome?.kind === "completed" ? { completed: outcome.value } : {}),
+      ...(outcome?.kind === "failed"
+        ? { primary_failure: outcome.cause?.message ?? String(outcome.cause) }
+        : {}),
+    };
+    if (cause instanceof RegularFileCleanupFailure) {
+      const failure = error(
+        "Independent file-read cleanup remains incomplete",
+        {
+          cause,
+          partialObservation,
+          cleanup: {
+            reason: "Owned file close failed; call retryNativeByteCleanup",
+            resources: [path],
+          },
+        },
+      );
+      retainedHandles.get(cause.owner)?.lease.bindCleanupError(failure);
+      throw failure;
+    }
+    const cancelled = regularFileCancellation(cause);
+    if (cancelled)
+      throw new AnalysisCancelledError(OPERATION, {
+        cause: cancelled.reason,
+        partialObservation,
+      });
+    throw cause;
   }
 }
 
@@ -214,9 +260,10 @@ export const digestTarget = (path, signal) =>
 
 /** Retry cleanup without forgetting any file handle whose close still fails. */
 export async function retryNativeByteCleanup() {
-  for (const [handle, path] of retainedHandles) {
+  for (const [owner, { lease }] of retainedHandles) {
     try {
-      await closeHandle(handle, path);
+      await lease.release();
+      retainedHandles.delete(owner);
     } catch {
       /* Ownership stays retained. */
     }
@@ -263,7 +310,7 @@ async function verifyFile({
       };
     });
   } catch (cause) {
-    if (signal?.aborted || cause?.cleanup) throw cause;
+    if (cause instanceof AnalysisCancelledError || cause?.cleanup) throw cause;
     return {
       status: "unavailable",
       path,
@@ -333,7 +380,7 @@ export async function readNativeBytes(input, read, filePath, request = {}) {
   let observation;
   let result;
   try {
-    request.signal?.throwIfAborted();
+    assertRegularFileActive(request.signal);
     const observed = await read(
       [
         { cmd: "iSj", json: true },
@@ -381,11 +428,18 @@ export async function readNativeBytes(input, read, filePath, request = {}) {
         ? { target: observation.target, raw: observation.raw }
         : {}),
       ...(result ? { result } : {}),
+      ...(cause?.partialObservation
+        ? { file_observation: cause.partialObservation }
+        : {}),
     };
-    return err(
-      request.signal?.aborted
+    const cancelled =
+      cause instanceof AnalysisCancelledError
+        ? { reason: cause.cause }
+        : regularFileCancellation(cause);
+    const failure =
+      cancelled && !cause?.cleanup
         ? new AnalysisCancelledError(OPERATION, {
-            cause,
+            cause: cancelled.reason,
             partialObservation,
             cleanup: cause?.cleanup,
           })
@@ -393,7 +447,9 @@ export async function readNativeBytes(input, read, filePath, request = {}) {
             cause,
             partialObservation,
             cleanup: cause?.cleanup,
-          }),
-    );
+          });
+    if (cause instanceof AnalysisError && cause.cleanupIncomplete)
+      failure.bindCleanupDependencies([cause]);
+    return err(failure);
   }
 }

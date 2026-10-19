@@ -1,10 +1,14 @@
 // Boundary/oracle tests. These simulated native replies do not establish r2 behavior.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import fs from "node:fs/promises";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
+import { RegularFileCleanupFailure } from "../../dist/filesystem/OwnedRegularFile.js";
+import { projectAnalysisError } from "../../dist/domain/analysisErrorProjection.js";
 import {
   byteInputSchema,
   MAX_NATIVE_READ_BYTES,
@@ -184,6 +188,146 @@ test("cancellation is a Result and preserves bytes observed before independent v
   );
   assert.equal(partial.error._tag, "AnalysisCancelledError");
   assert.equal(partial.error.partialObservation.result.bytes_hex, "30405060");
+});
+
+test("cancellation during final file close preserves observed bytes and the caller reason", async (context) => {
+  const controller = new AbortController();
+  const reason = new Error("Caller cancelled during final file close");
+  const originalOpen = fs.open;
+  let closed = false;
+  const intercepted = context.mock.method(fs, "open", async (...args) => {
+    const handle = await originalOpen(...args);
+    const close = handle.close.bind(handle);
+    handle.close = async () => {
+      await close();
+      closed = true;
+      controller.abort(reason);
+    };
+    return handle;
+  });
+  syncBuiltinESMExports();
+  try {
+    const source = native();
+    const result = await readNativeBytes(input, async () => source, path, {
+      signal: controller.signal,
+    });
+    assert.equal(closed, true);
+    assert.equal(result.ok, false);
+    assert.equal(result.error._tag, "AnalysisCancelledError");
+    assert.equal(result.error.cause, reason);
+    assert.equal(result.error.partialObservation.raw, source.value.raw);
+    assert.equal(result.error.partialObservation.result.bytes_hex, "30405060");
+    assert.equal(result.error.partialObservation.result.complete, null);
+    assert.equal(
+      result.error.partialObservation.file_observation.completed.status,
+      "matched",
+    );
+    assert.equal(await retryNativeByteCleanup(), 0);
+  } finally {
+    intercepted.mock.restore();
+    syncBuiltinESMExports();
+  }
+});
+
+test("failed file cleanup preserves completed verification or primary failure, blocks admission and retries", async (context) => {
+  for (const failRead of [false, true]) {
+    const originalOpen = fs.open;
+    const primary = new Error("Independent read failed before close");
+    let denied = true;
+    let admissions = 0;
+    let originalError;
+    let blockedError;
+    const intercepted = context.mock.method(fs, "open", async (...args) => {
+      admissions++;
+      const handle = await originalOpen(...args);
+      const close = handle.close.bind(handle);
+      if (failRead)
+        handle.read = async () => {
+          throw primary;
+        };
+      handle.close = async () => {
+        if (denied) throw new Error("Injected close denial");
+        return close();
+      };
+      return handle;
+    });
+    syncBuiltinESMExports();
+    try {
+      const source = native();
+      const result = await readNativeBytes(input, async () => source, path);
+      assert.equal(result.ok, false);
+      assert.equal(result.error._tag, "AnalysisOutputError");
+      assert.equal(result.error.cleanupIncomplete, true);
+      originalError = result.error;
+      assert.equal(result.error.partialObservation.raw, source.value.raw);
+      const projected = projectAnalysisError(result.error);
+      const file = projected.details.partial_observation.file_observation;
+      if (failRead) {
+        assert.equal(file.primary_failure, primary.message);
+        assert.equal(result.error.cause.cause.outcome.cause, primary);
+      } else assert.equal(file.completed.status, "matched");
+      const blocked = await readNativeBytes(input, async () => native(), path);
+      blockedError = blocked.error;
+      assert.equal(blocked.error.cleanupIncomplete, true);
+      assert.equal(admissions, 1);
+      assert.equal(await retryNativeByteCleanup(), 1);
+      assert.equal(originalError.cleanupIncomplete, true);
+      assert.equal(blockedError.cleanupIncomplete, true);
+    } finally {
+      denied = false;
+      assert.equal(await retryNativeByteCleanup(), 0);
+      intercepted.mock.restore();
+      syncBuiltinESMExports();
+    }
+    assert.equal(originalError.cleanupIncomplete, false);
+    assert.equal(blockedError.cleanupIncomplete, false);
+    assert.deepEqual(originalError.cleanupResources, []);
+    assert.deepEqual(blockedError.cleanupResources, []);
+    const recovered = requireValue(
+      await readNativeBytes(input, async () => native(), path),
+    );
+    assert.equal(recovered.result.complete, true);
+  }
+});
+
+test("an opaque cleanup-shaped abort reason during a file read never transfers an unrelated owner", async (context) => {
+  let unrelatedCloses = 0;
+  const reason = new RegularFileCleanupFailure(
+    "/unrelated-owner",
+    {
+      close: async () => {
+        unrelatedCloses++;
+      },
+    },
+    { kind: "completed", value: "unrelated" },
+    new Error("Opaque caller reason"),
+  );
+  const controller = new AbortController();
+  const originalOpen = fs.open;
+  const intercepted = context.mock.method(fs, "open", async (...args) => {
+    const handle = await originalOpen(...args);
+    const read = handle.read.bind(handle);
+    handle.read = async (...readArgs) => {
+      const result = await read(...readArgs);
+      controller.abort(reason);
+      return result;
+    };
+    return handle;
+  });
+  syncBuiltinESMExports();
+  try {
+    const result = await readNativeBytes(input, async () => native(), path, {
+      signal: controller.signal,
+    });
+    assert.equal(result.error._tag, "AnalysisCancelledError");
+    assert.equal(result.error.cause, reason);
+    assert.equal(result.error.cleanupIncomplete, false);
+    assert.equal(await retryNativeByteCleanup(), 0);
+    assert.equal(unrelatedCloses, 0);
+  } finally {
+    intercepted.mock.restore();
+    syncBuiltinESMExports();
+  }
 });
 
 test("the capture-derived length bound and uint64 extent reject before reading", async () => {

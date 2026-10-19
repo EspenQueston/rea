@@ -17,7 +17,7 @@ import {
   spawnOwnedProviderProcess,
 } from "../../dist/process/ProviderProcess.js";
 import { cleanupOwnedProcessGroup } from "../../dist/process/ProcessOwnership.js";
-import { probe, retryCleanup, stopAndDrain } from "./probe.mjs";
+import { probe, retryCleanup } from "./probe.mjs";
 import { createAnalysisExperiment } from "./analysis.mjs";
 
 const root = await mkdtemp(join(tmpdir(), "rea-radare2-probe-"));
@@ -61,7 +61,7 @@ after(async () => {
   const pending = [];
   for (const owner of owners) {
     for (let attempt = 0; attempt < 2; attempt++) {
-      const result = await stopAndDrain(owner);
+      const result = await owner.stop();
       if (result.status !== "incomplete") {
         owners.delete(owner);
         break;

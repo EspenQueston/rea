@@ -9,9 +9,11 @@ import { after, before, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { runOwnedCommand } from "../../dist/process/OwnedCommand.js";
+import { ProviderProcessSupervisor } from "../../dist/process/ProviderProcess.js";
 import { projectAnalysisError } from "../../dist/domain/analysisErrorProjection.js";
 import { probe, retryCleanup } from "./probe.mjs";
 import { createAnalysisExperiment } from "./analysis.mjs";
+import { viewObservation } from "./analysis-view.mjs";
 import { retryNativeByteCleanup } from "./native-bytes.mjs";
 
 const root = await mkdtemp(join(tmpdir(), "rea-transport-faults-"));
@@ -129,6 +131,58 @@ test("blocked pipe write observes the batch deadline", async () => {
   assert.ok(performance.now() - began < 5_000);
 });
 
+test("cancellation after provider cleanup retains completed replies and preserves earlier failures", async (context) => {
+  for (const [mode, surface] of [
+    ["completed", "probe"],
+    ["invalid", "probe"],
+    ["completed", "analysis"],
+    ["invalid", "analysis"],
+  ]) {
+    const { connection, options } = fixture("r2pipe", mode);
+    const controller = new AbortController();
+    const reason = new Error("Caller cancelled after provider cleanup");
+    const stop = ProviderProcessSupervisor.prototype.stop;
+    const intercepted = context.mock.method(
+      ProviderProcessSupervisor.prototype,
+      "stop",
+      async function (...args) {
+        const result = await stop.apply(this, args);
+        controller.abort(reason);
+        return result;
+      },
+    );
+    try {
+      const result =
+        surface === "probe"
+          ? await probe(
+              { ...connection, commands: ["ij"] },
+              { ...options, signal: controller.signal },
+            )
+          : await createAnalysisExperiment(connection, options).inspectType(
+              { type: "T" },
+              { signal: controller.signal },
+            );
+      cleaned(result);
+      if (mode === "completed") {
+        assert.equal(result.error._tag, "AnalysisCancelledError");
+        assert.equal(result.error.cause, reason);
+        assert.equal(result.error.partialObservation.cleanup, "complete");
+        assert.equal(
+          result.error.partialObservation.transcript.find(
+            (entry) => entry.r2pipe2,
+          ).r2pipe2.res,
+          "completed-native-reply",
+        );
+      } else {
+        assert.equal(result.error._tag, "AnalysisOutputError");
+        assert.match(result.error.cause.message, /invalid UTF-8/u);
+      }
+    } finally {
+      intercepted.mock.restore();
+    }
+  }
+});
+
 for (const mode of ["timeout", "missing"]) {
   test(`final hash ${mode} preserves completed replies and leaves verification unknown`, async () => {
     const { connection, options, ready } = fixture(
@@ -222,3 +276,96 @@ for (const transport of ["exec", "r2pipe", "r2mcp", "http"]) {
     }
   });
 }
+
+test("ESIL observations preserve partial coverage in pages and complete replies when retention fills", async () => {
+  const instructions = [
+    {
+      addr: 4096,
+      size: 4,
+      type: "cmov",
+      esil: "zf,?{,1,x0,=,}{,2,x0,=,}",
+    },
+  ];
+  const replies = new Map([
+    ["aoj 1 @ 0x1000", instructions],
+    ['\'aegf "zf,?{,1,x0,=,}{,2,x0,=,}" x0', "1,x0,=\n"],
+  ]);
+  const commands = [];
+  const server = createServer(async (request, response) => {
+    let source = "";
+    for await (const part of request) source += part;
+    const { cmd } = JSON.parse(source);
+    commands.push(cmd);
+    response.end(
+      JSON.stringify({
+        error: !replies.has(cmd),
+        code: replies.has(cmd) ? 0 : 1,
+        res: replies.get(cmd) ?? "Unmodeled command",
+      }),
+    );
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const connection = {
+    transport: "http",
+    endpoint: `http://127.0.0.1:${server.address().port}/cmd`,
+  };
+  const input = {
+    ir: "esil",
+    address: "0x1000",
+    instruction_count: 1,
+    register: "x0",
+  };
+  try {
+    const experiment = createAnalysisExperiment(connection);
+    const observed = await experiment.trace(input);
+    assert.equal(observed.ok, true);
+    const { observation_id, result } = observed.value;
+    const page = viewObservation(experiment, {
+      observation_id,
+      facet: "raw",
+      offset: 0,
+      limit: 100,
+    });
+    assert.equal(page.ok, true);
+    assert.equal(page.value.coverage.status, "partial");
+    assert.equal(page.value.coverage.coverage.instruction_count, 1);
+    assert.deepEqual(page.value.coverage.coverage, result.coverage);
+    assert.ok(page.value.coverage.coverage.partial_reasons.length);
+    assert.deepEqual(
+      page.value.coverage.target_consistency,
+      result.target_consistency,
+    );
+    assert.equal(
+      page.value.coverage.target_consistency.status,
+      "unverified-external-core",
+    );
+    assert.equal(page.value.coverage.truncated, undefined);
+    assert.equal(page.value.next_offset, 100);
+    assert.equal(experiment.release(observation_id), true);
+    assert.equal(experiment.view(observation_id).ok, false);
+
+    const full = createAnalysisExperiment(connection, { maxRetainedBytes: 1 });
+    const rejected = await full.trace(input);
+    assert.equal(rejected.ok, false);
+    assert.equal(rejected.error._tag, "AnalysisResourceConstraintError");
+    assert.equal(rejected.error.reportedLimits.maximum_bytes, 1);
+    const partial = JSON.parse(
+      JSON.stringify(projectAnalysisError(rejected.error)),
+    ).details.partial_observation;
+    assert.deepEqual(partial.result.instructions, instructions);
+    assert.equal(partial.result.reduced_expression, "1,x0,=\n");
+    assert.ok(
+      partial.result.command_outcomes.every(
+        (outcome) => !Object.hasOwn(outcome, "value"),
+      ),
+    );
+    assert.equal(
+      partial.raw.instruction_observation.raw.cleanup,
+      "external_session_unowned",
+    );
+    assert.equal(partial.raw.reduction_observation.replies[0].res, "1,x0,=\n");
+    assert.deepEqual(commands, [...replies.keys(), ...replies.keys()]);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});

@@ -11,6 +11,7 @@ import {
 } from "lossless-json";
 import { z } from "zod";
 import {
+  AnalysisCancelledError,
   AnalysisInputError,
   AnalysisOutputError,
   AnalysisProtocolError,
@@ -22,7 +23,10 @@ import {
   jsonValueValidationIssue,
   MAX_JSON_DEPTH,
 } from "../../dist/domain/jsonValue.js";
-import { runOwnedCommand } from "../../dist/process/OwnedCommand.js";
+import {
+  OwnedCommandFailure,
+  runOwnedCommand,
+} from "../../dist/process/OwnedCommand.js";
 import {
   ProviderProcessSupervisor,
   spawnOwnedProviderProcess,
@@ -70,24 +74,10 @@ const inputSchema = z.discriminatedUnion(
 );
 const retainedOwners = new Set();
 
-/** Settle observed output before stop() releases the supervisor's event listeners. */
-export async function stopAndDrain(owner) {
-  const cleanup = await owner.launch.cleanup();
-  if (!cleanup.cleaned) return { status: "incomplete", reason: cleanup.reason };
-  if (!(await owner.waitForExit(1_000)))
-    return { status: "incomplete", reason: "Provider exit remains unobserved" };
-  if (!(await owner.waitForOutputClose(1_000)))
-    return {
-      status: "incomplete",
-      reason: "Provider output remains unsettled",
-    };
-  return owner.stop({ cleanupResult: cleanup });
-}
-
 /** Retry rather than discard an owner whose cleanup could not be verified. */
 export async function retryCleanup() {
   for (const owner of retainedOwners) {
-    const stopped = await stopAndDrain(owner);
+    const stopped = await owner.stop();
     if (stopped.status !== "incomplete") {
       retainedOwners.delete(owner);
     }
@@ -277,14 +267,10 @@ function frames(stream, separator) {
   return {
     next: (signal) => {
       const interrupted = () =>
-        new AnalysisOutputError(
-          "radare2_probe",
-          "Provider frame read interrupted",
-          {
-            cause: signal.reason,
-            partialObservation: partial(),
-          },
-        );
+        new AnalysisCancelledError("radare2_probe", {
+          cause: signal.reason,
+          partialObservation: partial(),
+        });
       if (signal.aborted) return Promise.reject(interrupted());
       const bytes = queue.shift();
       if (bytes !== undefined) {
@@ -306,14 +292,16 @@ function frames(stream, separator) {
 }
 
 function send(stream, value, signal) {
-  signal.throwIfAborted();
+  const cancelled = () =>
+    new AnalysisCancelledError("radare2_probe", { cause: signal.reason });
+  if (signal.aborted) throw cancelled();
   return new Promise((accept, reject) => {
     const finish = (error) => {
       signal.removeEventListener("abort", abort);
       if (error) reject(error);
       else accept();
     };
-    const abort = () => finish(signal.reason);
+    const abort = () => finish(cancelled());
     signal.addEventListener("abort", abort, { once: true });
     try {
       stream.write(value + "\n", finish);
@@ -360,7 +348,7 @@ async function withOwned(
   }
   launched.process.stdin.end();
   await owner.waitForExit(1_000);
-  const stopped = await stopAndDrain(owner);
+  const stopped = await owner.stop();
   if (stopped.status === "incomplete") {
     retainedOwners.add(owner);
     owner.unref();
@@ -458,7 +446,15 @@ async function httpCommand(endpoint, command, signal, authorization) {
         );
       },
     );
-    request.once("error", reject);
+    request.once("error", (cause) =>
+      reject(
+        cause.code === "ABORT_ERR" && signal.aborted
+          ? new AnalysisCancelledError("radare2_probe", {
+              cause: signal.reason,
+            })
+          : cause,
+      ),
+    );
     request.end(command);
   });
 }
@@ -489,7 +485,10 @@ export async function probe(input, options = {}) {
     transcript.push(value);
   };
   try {
-    signal.throwIfAborted();
+    if (signal.aborted)
+      throw new AnalysisCancelledError("radare2_probe", {
+        cause: signal.reason,
+      });
     if (selected.transport === "http") {
       const endpoint = httpEndpoint(selected.endpoint);
       for (const command of selected.commands) {
@@ -682,7 +681,7 @@ export async function probe(input, options = {}) {
         "radare2_probe",
         "Cleanup owner retained for retry",
       );
-    return ok({
+    const observation = {
       transport: selected.transport,
       input: selected,
       transcript,
@@ -690,27 +689,57 @@ export async function probe(input, options = {}) {
       completion: "responses_received",
       cleanup:
         selected.transport === "http" ? "external_session_unowned" : "complete",
-    });
+    };
+    if (signal.aborted)
+      return err(
+        new AnalysisCancelledError("radare2_probe", {
+          cause: signal.reason,
+          partialObservation: {
+            ...observation,
+            cleanup_owners_retained: retainedOwners.size,
+          },
+        }),
+      );
+    return ok(observation);
   } catch (cause) {
-    if (cause?.cleanupOwner) retainedOwners.add(cause.cleanupOwner);
+    if (cause instanceof OwnedCommandFailure && cause.cleanupOwner)
+      retainedOwners.add(cause.cleanupOwner);
+    const partialObservation = {
+      transport: selected.transport,
+      transcript,
+      provider_partial: cause?.partialObservation ?? cause?.snapshot ?? null,
+      failure: {
+        tag: cause?._tag ?? cause?.name ?? "unknown",
+        message: cause?.message ?? "unknown",
+      },
+      cleanup_owners_retained: retainedOwners.size,
+      completion: "unknown",
+    };
+    const cancelled =
+      cause instanceof AnalysisCancelledError
+        ? { reason: cause.cause }
+        : cause instanceof OwnedCommandFailure &&
+            cause.reason === "cancelled" &&
+            !cause.cleanupFailure
+          ? cause.cancellation
+          : undefined;
+    if (
+      cancelled &&
+      ![...retainedOwners].some((owner) => !priorOwners.has(owner))
+    )
+      return err(
+        new AnalysisCancelledError("radare2_probe", {
+          cause: cancelled.reason,
+          partialObservation,
+        }),
+      );
     return err(
       new AnalysisOutputError(
         "radare2_probe",
         "Transport probe failed; command effects may be incomplete",
         {
           cause,
-          partialObservation: {
-            transport: selected.transport,
-            transcript,
-            provider_partial:
-              cause?.partialObservation ?? cause?.snapshot ?? null,
-            failure: {
-              tag: cause?._tag ?? cause?.name ?? "unknown",
-              message: cause?.message ?? "unknown",
-            },
-            cleanup_owners_retained: retainedOwners.size,
-            completion: "unknown",
-          },
+          partialObservation,
         },
       ),
     );

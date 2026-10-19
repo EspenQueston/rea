@@ -105,6 +105,12 @@ ownership; FIFOs/devices are rejected with a nonblocking open. Cancellation is
 checked between bounded reads. An OS filesystem call already in progress and
 owned cleanup can extend beyond the deadline.
 
+Shared regular-file ownership preserves cancellation during final close, completed
+verification and earlier read failures. Failed file closes block new file admission
+until `retryNativeByteCleanup()` releases the retained owners. Process shutdown uses
+REA's shared supervisor, including bounded late-output drain and explicit incomplete
+output diagnostics; output closure is separate from verified process cleanup.
+
 Completed transport replies, command status, stderr and cleanup remain in the
 error's partial observation if final target hashing is cancelled or fails.
 The initial digest remains available; `sha256_after` stays `null` until that
@@ -120,7 +126,10 @@ python3 experiments/radare2-transports/benchmark_test.py
 ```
 
 The Python checks require `psutil` and the pinned `node` on `PATH`. They exercise
-synthetic process trees, failed/partial manifest writes, failed diagnostic writes
-and injected inspection failure, not engine behavior. Cleanup consumes the live
-ownership record over stdin. If cleanup remains unverified, `CleanupIncomplete`
-retains that record and the child handle even when neither output file was saved.
+synthetic process trees, failed/partial manifest writes, failed diagnostic writes,
+inspection denial, attachment timeouts, pretarget failures and interrupted helper
+shutdown. They do not establish engine behavior. One live helper retains the same
+ownership evidence through retries. If cleanup remains unverified,
+`CleanupIncomplete` retains that owner and the child handle even when neither
+output file was saved. Manifests cannot restore a lost helper's private ledger;
+see [retry and measurement limits](BENCHMARK.md#reproduction-and-limits).

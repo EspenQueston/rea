@@ -36,6 +36,12 @@ int main(void) {
     putchar(0xff);
     for (;;) pause();
   }
+  if (!strcmp(mode, "completed")) {
+    fputs("{\"error\":false,\"code\":0,\"res\":\"completed-native-reply\"}", stdout);
+    if (pipe) putchar(0);
+    while (getchar() != EOF) {}
+    return 0;
+  }
   if (mcp) fputs("{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":\"", stdout);
   else fputs("{\"error\":false,\"code\":0,\"res\":\"", stdout);
   putchar(0xff);
