@@ -267,6 +267,11 @@ psutil supplies workload metrics only. Python retains the helper immediately and
 the target handle before attachment or manifest writes. Normal completion and
 pretarget failures close and reap the helper; interrupted shutdown retains its
 receipt so retry only waits for that same helper.
+Subprocess creation and handle adoption share the same signal deferral as request
+submission. The session is the single child-handle owner even if interruption
+arrives before the attachment handshake or manifest write.
+The helper starts in a separate session: terminal process-group Ctrl-C reaches
+the Python driver, which retains control of the helper's cleanup/reply protocol.
 
 `ownership.json` records selected run metadata for diagnostics. It cannot restore
 the private identity ledger and is never used to create a replacement helper.
@@ -280,8 +285,13 @@ reap failed, retry `error.owner.close()` directly. The pending close request kee
 its identity through a timeout; retry consumes its late receipt without resending
 to the helper, even after the helper exits. An explicit refusal permits a new
 close request. Other commands are refused while close acknowledgement is pending.
-The close identity is retained before writing, so interruption immediately after
-submission also consumes the same receipt. Final stream-close retry uses retained
+On this POSIX harness, temporary SIGINT/SIGTERM handlers defer interruption across
+ownership transitions; OS signals are masked only while those handlers are swapped.
+Children inherit the caller's original signal mask. Deferred signals are delivered
+after handle adoption or request submission, preserving the same close receipt
+without an unsent pending request. Receipt reads and parsing retain their bytes
+or acknowledgement before delivering interruption; waiting for data remains
+interruptible. Final stream-close retry uses retained
 shutdown diagnostics instead of reading an already closed stream.
 
 The direct CLI handles `CleanupIncomplete` by retrying that same owner once per
@@ -441,6 +451,28 @@ tokens); full agent tokens, sustained failed-cleanup cost and error-projection
 cost remain unmeasured. These small samples establish no general speedup.
 Raw results remain local in `measure-round3.json` and `round3-*.stdout`/`.stderr`
 under the same review directory.
+
+The final signal-handling follow-up compared `e9126698f` with separate helper
+sessions and deferred interruption during subprocess adoption, request submission
+and receipt consumption. It repeats the same 8 MiB/250 ms synthetic benchmark CLI
+workload with Node 24.18.0 and Python 3.11. All six tasks completed with verified
+cleanup; before/after runs alternate.
+
+| Run      | Elapsed s, before / after | CPU s, before / after | Sampled family peak MiB, before / after |
+| -------- | ------------------------: | --------------------: | --------------------------------------: |
+| First    |             2.574 / 2.886 |         2.206 / 2.040 |                         ≥280.3 / ≥280.2 |
+| Repeat 1 |             3.511 / 2.916 |         2.061 / 2.026 |                         ≥282.5 / ≥282.3 |
+| Repeat 2 |             3.350 / 3.263 |         2.064 / 1.963 |                         ≥281.4 / ≥282.4 |
+
+Processes are fresh and host caches uncontrolled; these are not controlled
+cold/warm comparisons. The external sampler targets 10 ms and is excluded from
+CPU/RSS. Reaped family CPU and sampled RSS include CLI, workload and helpers;
+67–90 samples and 8–10 denied observations per run make RSS lower bounds.
+No model was invoked (zero model tokens); whole-agent token impact and sustained
+cleanup failure costs remain unmeasured. The small, variable sample establishes
+no speedup or general overhead bound. Final raw results are retained locally in
+`measure-round4-receipts.json` and `round4-receipts-*.stdout`/`.stderr`; earlier
+round-four measurements describe intermediate implementations and are excluded.
 
 The configuration keys are `node`, `sdk_driver`, `rea3521`, `r2`, `r2mcp`,
 `ghidra`, `java`, `codex`, `model`, `reasoning`, `output`, `warm_repeats`, `lanes`

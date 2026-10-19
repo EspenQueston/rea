@@ -28,6 +28,37 @@ if sys.argv[1] != 'exit': time.sleep(30)
 
 
 class BenchmarkCleanupTest(unittest.TestCase):
+    def test_signal_during_spawn_retains_helper_and_target_before_delivery(self):
+        for stage in ("helper", "target"):
+            with self.subTest(stage=stage), tempfile.TemporaryDirectory(prefix="rea-benchmark-spawn-") as root:
+                popen = subprocess.Popen
+                processes = []
+                interrupted = False
+                def signal_after_spawn(command, *args, **kwargs):
+                    nonlocal interrupted
+                    child = popen(command, *args, **kwargs)
+                    processes.append(child)
+                    if not interrupted and (stage == "helper" or command[0] == sys.executable):
+                        interrupted = True
+                        os.kill(os.getpid(), signal.SIGINT)
+                    return child
+                try:
+                    with patch("benchmark.subprocess.Popen", signal_after_spawn):
+                        with self.assertRaises(KeyboardInterrupt):
+                            measure([sys.executable, "-c", SLEEPER], Path(root) / "trial")
+                    self.assertTrue(interrupted)
+                    self.assertEqual(len(processes), 1 if stage == "helper" else 2)
+                    self.assertTrue(all(child.poll() is not None for child in processes))
+                finally:
+                    # The regression fixture retains exact Popen handles even on the old code.
+                    for child in reversed(processes):
+                        if child.poll() is None:
+                            child.terminate()
+                        child.wait(timeout=10)
+                        for stream in (child.stdin, child.stdout):
+                            if stream is not None:
+                                stream.close()
+
     def test_cli_retains_cleanup_through_repeated_signals_and_stops_trials(self):
         for interruption in (False, True):
             with self.subTest(interruption=interruption), tempfile.TemporaryDirectory(prefix="rea-benchmark-cli-") as root:
@@ -62,7 +93,8 @@ sys.argv = ["benchmark.py", {str(config)!r}, "sdk", "--trials", "2"]
 raise SystemExit(benchmark.run_cli())
 '''
                 host = subprocess.Popen([sys.executable, "-c", script], cwd=Path(__file__).parent,
-                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                                        start_new_session=True)
                 try:
                     deadline = time.monotonic() + 10
                     while not state.exists():
@@ -71,6 +103,8 @@ raise SystemExit(benchmark.run_cli())
                         time.sleep(.02)
                     time.sleep(1.2)  # Cross a denied automatic retry.
                     owners = json.loads(state.read_text())
+                    self.assertNotEqual(os.getpgid(owners["helper"]), os.getpgid(host.pid))
+                    os.killpg(host.pid, signal.SIGINT)  # Terminal Ctrl-C targets the entire foreground group.
                     host.send_signal(signal.SIGTERM)
                     host.send_signal(signal.SIGINT)
                     time.sleep(.2)
@@ -85,7 +119,11 @@ raise SystemExit(benchmark.run_cli())
                     self.assertFalse(any(psutil.pid_exists(pid) for pid in owners.values()))
                 finally:
                     release.touch()
-                    host.communicate(timeout=20)
+                    try:
+                        host.communicate(timeout=20)
+                    except subprocess.TimeoutExpired:
+                        host.kill()  # Exact owned test host; helper EOF still owns released cleanup.
+                        host.communicate(timeout=5)
 
     def test_helper_eof_and_graceful_signal_retain_the_same_evidence_owner(self):
         with tempfile.TemporaryDirectory(prefix="rea-benchmark-eof-") as root:
@@ -171,6 +209,66 @@ host.listProcesses = (...args) => {{
             self.assertTrue(owner.closed)
         finally:
             owner.close()
+
+    def test_signal_immediately_before_close_write_is_delivered_after_submission(self):
+        owner = OwnershipSession("node")
+        write = owner.helper.stdin.write
+        before_mask = signal.pthread_sigmask(signal.SIG_BLOCK, set())
+        def interrupt_before_write(message):
+            os.kill(os.getpid(), signal.SIGINT)
+            return write(message)
+        try:
+            with patch.object(owner.helper.stdin, "write", interrupt_before_write):
+                with self.assertRaises(KeyboardInterrupt):
+                    owner.close()
+            self.assertEqual(signal.pthread_sigmask(signal.SIG_BLOCK, set()), before_mask)
+            self.assertEqual(owner.shutdown_request, 1)
+            owner.helper.stdin.close()
+            owner.helper.wait(timeout=5)
+            with patch.object(owner.helper.stdin, "write", side_effect=AssertionError("close must not replay")):
+                owner.close()
+            self.assertTrue(owner.closed)
+        finally:
+            if not owner.helper.stdin.closed:
+                owner.helper.stdin.close()
+            owner.helper.wait(timeout=5)
+            owner._release_streams()
+
+    def test_signal_during_close_receipt_retains_bytes_or_acknowledgement(self):
+        for stage in ("read", "parse"):
+            with self.subTest(stage=stage):
+                owner = OwnershipSession("node")
+                read, loads = os.read, json.loads
+                interrupted = False
+                def interrupt_read(fd, size):
+                    nonlocal interrupted
+                    data = read(fd, size)
+                    if stage == "read" and fd == owner.helper.stdout.fileno() and data:
+                        interrupted = True
+                        os.kill(os.getpid(), signal.SIGINT)
+                    return data
+                def interrupt_parse(data, *args, **kwargs):
+                    nonlocal interrupted
+                    result = loads(data, *args, **kwargs)
+                    if stage == "parse" and result.get("id") == 1:
+                        interrupted = True
+                        os.kill(os.getpid(), signal.SIGINT)
+                    return result
+                try:
+                    with patch("benchmark.os.read", interrupt_read), patch("benchmark.json.loads", interrupt_parse):
+                        with self.assertRaises(KeyboardInterrupt):
+                            owner.close()
+                    self.assertTrue(interrupted)
+                    with patch.object(owner.helper.stdin, "write", side_effect=AssertionError("close must not replay")):
+                        owner.close()
+                    self.assertTrue(owner.shutdown_acknowledged)
+                    self.assertTrue(owner.closed)
+                    self.assertEqual(owner.sequence, 1)
+                finally:
+                    if not owner.helper.stdin.closed:
+                        owner.helper.stdin.close()
+                    owner.helper.wait(timeout=5)
+                    owner._release_streams()
 
     def test_failures_before_target_launch_reap_prepared_helper(self):
         for stage in ("file-open", "prompt-write", "spawn"):
@@ -350,8 +448,13 @@ host.listProcesses = (...args) => {{
                 # retained even after intentional loss of the evidence helper.
                 for owner in owners:
                     owner.child.terminate()
-                    owner.child.wait(timeout=5)
-                    owner._release_streams()
+                    try:
+                        owner.child.wait(timeout=5)
+                    finally:
+                        if owner.child.poll() is None:
+                            owner.child.kill()
+                            owner.child.wait(timeout=5)
+                        owner._release_streams()
                     self.assertTrue(owner.closed)
 
     def test_limits_and_leader_exit_clean_children_including_detached_groups(self):
