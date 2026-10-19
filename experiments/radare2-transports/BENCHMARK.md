@@ -259,27 +259,33 @@ REA dependencies and a built checkout of the pinned PR. Supply installed r2,
 r2ghidra, r2mcp, Codex, Java and Ghidra paths in a JSON configuration; Python
 requires `psutil`. REA setup does not install these engines.
 
-The review cleanup fix gives each trial a run token and retains `ownership.json`
-beside its output. `benchmark-ownership.mjs` reuses REA's process identity and
-cleanup primitives to stop and verify owned groups, including detached children,
-after limits, normal exit or measurement failure. The live in-memory ownership
-record is passed over stdin; cleanup does not depend on saving or rereading the
-manifest. Unverified cleanup attempts to write its reason to `resources.json`
-and raises `CleanupIncomplete`, stopping subsequent trials. That error retains
-`ownership` and `child` even when manifest or diagnostic writes fail. Python
-callers can retry `ownership_command(node, "cleanup", error.ownership)`, then
-reap `error.child` after verified cleanup. A successfully saved manifest also
-supports an explicit retry with
-`node experiments/radare2-transports/benchmark-ownership.mjs cleanup /absolute/path/ownership.json`;
-inspect the returned `cleaned` status before continuing. PID reuse or unreadable
-identity does not authorize signaling. Prompts use retained file-backed stdin
-so a child that does not read cannot block the limit monitor.
+Each trial has one run token and one live `benchmark-ownership.mjs` helper using
+REA's process identity and cleanup primitives. Its `ProcessOwnershipEvidenceOwner`
+retains the same identity facts from initial observation through cleanup retries,
+including detached children. Verified cleanup is owned by that shared boundary;
+psutil supplies workload metrics only. Python retains the helper immediately and
+the target handle before attachment or manifest writes. Normal completion and
+pretarget failures close and reap the helper; interrupted shutdown retains its
+receipt so retry only waits for that same helper.
 
-New `elapsed_seconds` and child CPU totals include the cleanup helper;
-`cleanup_seconds` reports its wall time separately. Ownership preparation runs
-before those measurements. Sampled task-family CPU/RSS still cover the workload,
-not the separate preparation/cleanup helpers. The historical tables above retain
-their original measurements and have not been rerun with this instrumentation.
+`ownership.json` records selected run metadata for diagnostics. It cannot restore
+the private identity ledger and is never used to create a replacement helper.
+Unverified cleanup attempts to write its reason to `resources.json` and raises
+`CleanupIncomplete`, stopping subsequent trials. The error retains `owner`,
+`ownership` and `child` even when manifest or diagnostic writes fail. Python
+callers can retry `error.owner.cleanup()` on that same live session; when its
+returned `cleaned` is true, reap `error.child` if present and call
+`error.owner.close()`. A failed final reap can retry `error.owner.close()` directly.
+Helper loss leaves cleanup unverified; a saved manifest alone cannot authorize
+recovery. PID reuse or unreadable identity does not authorize signaling. Prompts
+use retained file-backed stdin so a child that does not read cannot block limits.
+
+New `elapsed_seconds` and child CPU totals include helper preparation, workload,
+cleanup and helper shutdown. The workload timeout starts at target launch;
+`cleanup_seconds` reports cleanup and shutdown wall time separately. Sampled
+task-family CPU/RSS cover the workload and exclude the sibling ownership helper.
+The historical tables retain their original instrumentation and have not been
+rerun with the persistent helper.
 
 A macOS arm64 harness comparison on 2026-10-16 used the same Python task
 (allocate 8 MiB, sleep 250 ms) before/after this cleanup fix. Each measurement
@@ -319,6 +325,27 @@ cold/warm measurements. Two trials do not establish a performance difference.
 Raw measurements are retained at
 `/private/tmp/rea-pr4148-followup-b_2e63g3/comparison.json`. No new engine/agent
 investigation benchmark or error-response token measurement was performed.
+
+The 2026-10-19 persistent-helper check completed three synthetic 8 MiB/250 ms
+tasks on macOS arm64 with Node 24.18.0. Each exited successfully with verified
+cleanup. These measurements include the Python driver, workload, ownership helper
+and observed descendants through preparation and shutdown; they exclude the
+external sampler's CPU and memory. Its target sampling interval was 10 ms.
+
+| Run      | Elapsed (s) | CPU (s) | Sampled family peak RSS (MiB) | Denied RSS observations | Agent tokens |
+| -------- | ----------: | ------: | ----------------------------: | ----------------------: | -----------: |
+| First    |       1.963 |   1.846 |                        ≥276.5 |                       7 |            0 |
+| Repeat 1 |       1.742 |   1.753 |                        ≥278.0 |                       5 |            0 |
+| Repeat 2 |       1.737 |   1.745 |                        ≥280.4 |                       6 |            0 |
+
+RSS values are lower bounds because some observations were denied. Every run
+started fresh processes with uncontrolled host caches: neither controlled cold
+runs nor persistent-process warm runs were measured. The previous one-shot helper
+cannot complete against the current ownership API, so no equivalent baseline is
+available; historical instrumentation also differs. These figures establish no
+speedup and include no new engine or agent benchmark. Model token use is zero for
+these synthetic tasks. Raw measurements are retained locally at
+`/tmp/rea-pr4148-measure.json`.
 
 The configuration keys are `node`, `sdk_driver`, `rea3521`, `r2`, `r2mcp`,
 `ghidra`, `java`, `codex`, `model`, `reasoning`, `output`, `warm_repeats`, `lanes`

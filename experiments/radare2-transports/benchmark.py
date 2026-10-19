@@ -5,7 +5,9 @@ import json
 import os
 from pathlib import Path
 import resource
+import select
 import subprocess
+import tempfile
 import time
 
 import psutil
@@ -14,26 +16,134 @@ import psutil
 class CleanupIncomplete(RuntimeError):
     """The retained process owner must be settled before another trial."""
 
-    def __init__(self, message, child, ownership):
+    def __init__(self, message, child, ownership, owner):
         super().__init__(message)
         self.child = child  # Retain the direct-child handle for reaping after retry.
         self.ownership = ownership  # Persistence failure cannot release ownership.
+        self.owner = owner  # The helper owns non-serializable identity evidence.
 
 
-def ownership_command(node, operation, ownership=None):
-    command = [node, str(Path(__file__).with_name("benchmark-ownership.mjs")), operation]
-    result = subprocess.run(command, input=json.dumps(ownership) if ownership is not None else None,
-                            capture_output=True, text=True, timeout=60, check=True)
-    return json.loads(result.stdout)
+class OwnershipSession:
+    """One live process owner; never reconstruct a failed trial from its manifest."""
+
+    def __init__(self, node):
+        self.child = None
+        self.ownership = {}
+        self.coverage = None
+        self.cleaned = False
+        self.closed = False
+        self.shutdown_acknowledged = False
+        self.preparation_failed = False
+        self.sequence = 0
+        self.pending = b""
+        self.errors = tempfile.TemporaryFile()
+        try:
+            self.helper = subprocess.Popen(
+                [node, str(Path(__file__).with_name("benchmark-ownership.mjs"))],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self.errors, bufsize=0)
+        except BaseException:
+            self.errors.close()
+            raise
+        try:
+            self.ownership = self._response(0)["ownership"]
+        except BaseException as cause:
+            self.preparation_failed = True
+            try:
+                self.close()
+            except Exception:
+                raise CleanupIncomplete("Ownership helper preparation did not settle", None,
+                                        self.ownership, self) from cause
+            raise
+
+    def _release_streams(self):
+        streams = (self.helper.stdin, self.helper.stdout, self.errors)
+        failure = None
+        for stream in streams:
+            try:
+                stream.close()
+            except Exception as cause:
+                if failure is None:
+                    failure = cause
+        self.closed = all(stream.closed for stream in streams)
+        if failure is not None:
+            raise failure
+
+    def _response(self, wanted, timeout=60):
+        deadline = time.monotonic() + timeout
+        while True:
+            while b"\n" in self.pending:
+                line, self.pending = self.pending.split(b"\n", 1)
+                result = json.loads(line)
+                if result.get("id") != wanted:
+                    if isinstance(result.get("id"), int) and result["id"] < wanted:
+                        continue  # A timed-out earlier request cannot become this receipt.
+                    raise RuntimeError("Ownership helper response identity mismatch")
+                if "error" in result:
+                    raise RuntimeError(result["error"])
+                self.coverage = result.get("evidence_coverage", self.coverage)
+                return result
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or not select.select([self.helper.stdout], [], [], remaining)[0]:
+                raise TimeoutError("Ownership helper response timed out; retain this session")
+            chunk = os.read(self.helper.stdout.fileno(), 65536)
+            if not chunk:
+                raise RuntimeError("Ownership helper disappeared; its evidence cannot be restored from a manifest. "
+                                   + self.diagnostics())
+            self.pending += chunk
+            if len(self.pending) > 16 * 1024**2:
+                raise RuntimeError("Ownership helper response exceeds capture budget")
+
+    def _request(self, operation):
+        self.sequence += 1
+        request = {"id": self.sequence, "operation": operation}
+        if self.child is not None:
+            request["leaderPid"] = self.child.pid
+        message = (json.dumps(request) + "\n").encode()
+        if self.helper.stdin.write(message) != len(message):
+            raise OSError("Ownership helper request write was incomplete; retain this session")
+        return self._response(self.sequence)["result"]
+
+    def diagnostics(self):
+        self.errors.seek(0)
+        return self.errors.read(65536).decode("utf8", errors="replace")
+
+    def attach(self, child):
+        # Retain both handles before any fallible IPC or persistence.
+        self.child = child
+        self.ownership.update(leaderPid=child.pid, processGroupId=child.pid)
+        return self.observe()
+
+    def observe(self):
+        return self._request("observe")
+
+    def cleanup(self):
+        result = self._request("cleanup")
+        self.cleaned = result["cleaned"]
+        return result
+
+    def close(self):
+        if self.closed:
+            return
+        if self.child is not None and not self.cleaned:
+            raise RuntimeError("The retained target must be cleaned before closing its evidence owner")
+        if not self.preparation_failed and not self.shutdown_acknowledged:
+            self._request("close")
+            self.shutdown_acknowledged = True
+        self.helper.stdin.close()
+        code = self.helper.wait(timeout=5)
+        diagnostics = self.diagnostics()
+        self._release_streams()
+        if code != 0 and not self.preparation_failed:
+            raise RuntimeError("Ownership helper shutdown failed: " + diagnostics)
 
 
 def measure(command, directory, prompt=None, timeout=600, *, node="node", memory_limit=6 * 1024**3):
     directory.mkdir(parents=True, exist_ok=False)
-    # Prepare inspection and capture the identity baseline before measuring the task.
-    ownership = ownership_command(node, "prepare")
-    manifest = directory / "ownership.json"
     before = resource.getrusage(resource.RUSAGE_CHILDREN)
     began = time.monotonic()
+    owner = OwnershipSession(node)
+    ownership = owner.ownership
+    manifest = directory / "ownership.json"
     seen = {}
     peak = 0
     sample_count = 0
@@ -41,16 +151,18 @@ def measure(command, directory, prompt=None, timeout=600, *, node="node", memory
     timed_out = False
     cleanup = {"cleaned": False, "reason": "Cleanup has not run"}
     failure = None
-    with (directory / "stdin.txt").open("w+") as input_stream, (directory / "stdout.log").open("w") as output, (directory / "process.stderr.log").open("w") as errors:
-        if prompt:
-            input_stream.write(prompt)
-            input_stream.seek(0)
-        child = subprocess.Popen(command, stdin=input_stream,
-                                 stdout=output, stderr=errors, text=True, start_new_session=True,
-                                 env={**os.environ, "R2_COLOR": "0", "R2_UTF8": "0",
-                                      "REA_PROCESS_RUN_ID": ownership["runId"]})
-        ownership.update(leaderPid=child.pid, processGroupId=child.pid)
-        try:
+    child = None
+    try:
+        with (directory / "stdin.txt").open("w+") as input_stream, (directory / "stdout.log").open("w") as output, (directory / "process.stderr.log").open("w") as errors:
+            if prompt:
+                input_stream.write(prompt)
+                input_stream.seek(0)
+            workload_began = time.monotonic()
+            child = subprocess.Popen(command, stdin=input_stream,
+                                     stdout=output, stderr=errors, text=True, start_new_session=True,
+                                     env={**os.environ, "R2_COLOR": "0", "R2_UTF8": "0",
+                                          "REA_PROCESS_RUN_ID": ownership["runId"]})
+            owner.attach(child)
             manifest.write_text(json.dumps(ownership, indent=2) + "\n")
             while child.poll() is None:
                 try:
@@ -72,37 +184,25 @@ def measure(command, directory, prompt=None, timeout=600, *, node="node", memory
                         denied_observations += 1
                 peak = max(peak, rss)
                 sample_count += 1
-                if time.monotonic() - began > timeout or rss > memory_limit:
+                if time.monotonic() - workload_began > timeout or rss > memory_limit:
                     timed_out = True
                     break
                 time.sleep(0.05)
-        except BaseException as cause:
-            failure = cause
-        finally:
-            cleanup_began = time.monotonic()
-            try:
-                cleanup = ownership_command(node, "cleanup", ownership)
-                if cleanup["cleaned"]:
-                    child.wait(timeout=5)
-            except Exception as cause:
-                cleanup = {"cleaned": False, "reason": str(cause)}
-            cleanup_seconds = time.monotonic() - cleanup_began
-        code = child.poll()
-    after = resource.getrusage(resource.RUSAGE_CHILDREN)
-    remaining = []
-    for pid, created in seen:
-        if pid == child.pid:
-            continue
+    except BaseException as cause:
+        failure = cause
+    finally:
+        cleanup_began = time.monotonic()
         try:
-            process = psutil.Process(pid)
-            if process.create_time() == created and process.status() != psutil.STATUS_ZOMBIE:
-                remaining.append(pid)
-        except psutil.NoSuchProcess:
-            pass
-        except psutil.AccessDenied:
-            cleanup = {"cleaned": False, "reason": f"Cannot inspect observed PID {pid}"}
-    if remaining:
-        cleanup = {"cleaned": False, "reason": "Observed descendants remain alive"}
+            cleanup = owner.cleanup() if child is not None else {"cleaned": True}
+            if cleanup["cleaned"]:
+                if child is not None:
+                    child.wait(timeout=5)
+                owner.close()
+        except Exception as cause:
+            cleanup = {"cleaned": False, "reason": str(cause)}
+        cleanup_seconds = time.monotonic() - cleanup_began
+    code = child.poll() if child is not None else None
+    after = resource.getrusage(resource.RUSAGE_CHILDREN)
     result = {
         "elapsed_seconds": time.monotonic() - began,
         "cpu_user_seconds": after.ru_utime - before.ru_utime,
@@ -110,11 +210,13 @@ def measure(command, directory, prompt=None, timeout=600, *, node="node", memory
         "sampled_family_cpu_seconds": sum(seen.values()),
         "sampled_peak_family_rss_bytes": peak,
         "sample_interval_seconds": 0.05, "samples": sample_count,
-        "observed_processes": len(seen), "remaining_observed_pids": remaining,
+        "observed_processes": len(seen),
         "denied_observations": denied_observations,
         "exit_code": code, "interrupted_by_limit": timed_out,
         "cleanup": cleanup, "cleanup_seconds": cleanup_seconds,
         "ownership_manifest": str(manifest),
+        "ownership_helper_pid": owner.helper.pid,
+        "measurement_scope": "elapsed and child CPU include owner startup/shutdown; sampled family CPU/RSS exclude the ownership helper",
     }
     try:
         (directory / "resources.json").write_text(json.dumps(result, indent=2) + "\n")
@@ -123,8 +225,8 @@ def measure(command, directory, prompt=None, timeout=600, *, node="node", memory
             failure = cause
     if not cleanup["cleaned"]:
         raise CleanupIncomplete(
-            f"Owned cleanup is unverified; stopping trials. Retry with the retained ownership record "
-            f"(manifest may be unavailable at {manifest}): {cleanup}", child, ownership) from failure
+            f"Owned cleanup is unverified; stopping trials. Retry through the retained owner session "
+            f"(manifest at {manifest} cannot restore its evidence): {cleanup}", child, ownership, owner) from failure
     if failure is not None:
         raise failure
     return result

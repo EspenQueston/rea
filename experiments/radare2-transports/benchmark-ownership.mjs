@@ -1,52 +1,97 @@
-// Python's benchmark delegates identity and signaling to REA's process owner.
+// One helper and evidence ledger live for the complete Python benchmark trial.
 import { randomUUID } from "node:crypto";
-import { readFile } from "node:fs/promises";
-import { text } from "node:stream/consumers";
-import { setTimeout as delay } from "node:timers/promises";
+import { createInterface } from "node:readline";
 import {
   cleanupOwnedProcessGroup,
   verifyNoTokenOwnedProcesses,
 } from "../../dist/process/ProcessOwnership.js";
+import { ProcessOwnershipEvidenceOwner } from "../../dist/process/ProcessOwnershipEvidence.js";
 import {
   prepareProcessOwnershipInspection,
   systemProcessOwnershipHost as host,
 } from "../../dist/process/ProcessOwnershipObservation.js";
 
+const send = (value) => process.stdout.write(JSON.stringify(value) + "\n");
+if (process.argv.length !== 2)
+  throw new Error(
+    "This helper requires a live benchmark session; manifests cannot restore ownership evidence",
+  );
+let ownership;
+let cleaned = false;
+let closed = false;
 try {
   await prepareProcessOwnershipInspection();
-  if (process.argv[2] === "prepare") {
-    console.log(
-      JSON.stringify({
-        runId: randomUUID(),
-        expectedParentPid: process.ppid,
-        sweepTokenOwnedProcesses: true,
-        captureBaseline: await host.captureBaseline(),
-      }),
-    );
-  } else if (process.argv[2] === "cleanup") {
-    const ownership = JSON.parse(
-      process.argv[3]
-        ? await readFile(process.argv[3], "utf8")
-        : await text(process.stdin),
-    );
-    let result = await cleanupOwnedProcessGroup(ownership);
-    if (result.cleaned) {
-      for (let attempt = 0; attempt < 20; attempt++) {
-        result = await verifyNoTokenOwnedProcesses(
-          ownership.runId,
-          host,
-          ownership.captureBaseline,
-          ownership,
+  const selected = {
+    runId: randomUUID(),
+    expectedParentPid: process.ppid,
+    sweepTokenOwnedProcesses: true,
+    captureBaseline: await host.captureBaseline(),
+  };
+  const evidenceOwner = new ProcessOwnershipEvidenceOwner();
+  ownership = { ...selected, evidenceOwner };
+  send({ id: 0, ownership: selected });
+  let previousId = 0;
+  for await (const line of createInterface({
+    input: process.stdin,
+    crlfDelay: Infinity,
+  })) {
+    let request;
+    try {
+      request = JSON.parse(line);
+      if (!Number.isSafeInteger(request.id) || request.id <= previousId)
+        throw new Error(
+          "Request identity must increase within this helper session",
         );
-        if (result.cleaned) break;
-        await delay(50);
+      previousId = request.id;
+      if (request.operation === "close") {
+        if (ownership.leaderPid !== undefined && !cleaned)
+          throw new Error(
+            "Cleanup must be verified before closing this evidence owner",
+          );
+        await host.close?.();
+        closed = true;
+        send({ id: request.id, result: { closed: true } });
+        break;
       }
+      if (!["observe", "cleanup"].includes(request.operation))
+        throw new Error("Expected observe, cleanup or close");
+      if (!Number.isSafeInteger(request.leaderPid) || request.leaderPid <= 0)
+        throw new Error("A launched child identity is required");
+      if (
+        ownership.leaderPid !== undefined &&
+        ownership.leaderPid !== request.leaderPid
+      )
+        throw new Error("The trial's selected child cannot change");
+      ownership.leaderPid = request.leaderPid;
+      ownership.processGroupId = request.leaderPid;
+      const result =
+        request.operation === "cleanup"
+          ? await cleanupOwnedProcessGroup(ownership, host)
+          : await verifyNoTokenOwnedProcesses(
+              ownership.runId,
+              host,
+              ownership.captureBaseline,
+              ownership,
+            );
+      if (request.operation === "cleanup") cleaned = result.cleaned;
+      send({
+        id: request.id,
+        result,
+        evidence_coverage: evidenceOwner.coverage,
+      });
+    } catch (cause) {
+      send({ id: request?.id ?? null, error: cause?.message ?? String(cause) });
     }
-    console.log(JSON.stringify(result));
-  } else
-    throw new Error(
-      "Expected prepare or cleanup [ownership.json]; defaults to JSON stdin",
-    );
+  }
+  // An unexpectedly lost parent cannot restore this private ledger from a file.
+  // Make one final attempt on the same owner before reporting its loss.
+  if (!closed && ownership.leaderPid !== undefined && !cleaned) {
+    const result = await cleanupOwnedProcessGroup(ownership, host);
+    if (!result.cleaned) {
+      console.error(JSON.stringify({ ownership_lost: true, cleanup: result }));
+      process.exitCode = 1;
+    }
+  }
 } finally {
-  await host.close?.();
+  if (!closed) await host.close?.();
 }
