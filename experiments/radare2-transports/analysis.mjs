@@ -196,7 +196,7 @@ function createObserver(connection, options) {
     const { signal } = request;
     let observation;
     try {
-      signal?.throwIfAborted();
+      if (signal?.aborted) throw cancellation(signal.reason);
       const before = await digest(signal);
       const prefix = options.prelude ?? [];
       const selected =
@@ -322,7 +322,7 @@ export function createAnalysisExperiment(inputConnection, options = {}) {
     );
     if (!observed.ok) return observed;
     try {
-      request.signal?.throwIfAborted();
+      if (request.signal?.aborted) throw cancellation(request.signal.reason);
       const { replies, target, raw } = observed.value;
       const result = decodeFunction(parsed.data, replies);
       const observation = { input: parsed.data, target, result, raw };

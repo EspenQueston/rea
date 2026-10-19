@@ -96,6 +96,9 @@ cleanup markers after verified release. A referenced one-second retry also keeps
 the experiment alive after standalone output or MCP disconnect. SIGINT/SIGTERM
 cancel active entrypoint work through the same owners; unresolved cleanup can keep
 shutdown pending. Forced process termination cannot preserve its private ledger.
+Cancellation during launch preparation keeps the exact caller reason opaque,
+even when that reason is itself a cleanup-shaped error. Genuine preparation
+cleanup retains only the helper owner's explicit lease and remains retryable.
 External HTTP sessions remain unowned. Results explicitly leave target identity
 unverified. Review the proposal's authority and verification gaps before running
 arbitrary commands against a valuable external session.

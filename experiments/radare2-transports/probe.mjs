@@ -40,6 +40,7 @@ import {
   spawnOwnedProviderProcess,
 } from "../../dist/process/ProviderProcess.js";
 import { cleanupOwnedProcessGroup } from "../../dist/process/ProcessOwnership.js";
+import { DarwinProcessOwnershipInspectionError } from "../../dist/process/DarwinProcessRunTokenReader.js";
 import {
   ABORTED,
   waitForAbortable,
@@ -102,15 +103,50 @@ function scheduleCleanup() {
   }, 1_000);
 }
 
-function retainOwner(owner, resources) {
-  if (!retainedOwners.has(owner)) {
-    const lease = new AnalysisCleanupLease(async () => {
+function retainOwner(owner, lease) {
+  if (!retainedOwners.has(owner)) retainedOwners.set(owner, lease);
+  scheduleCleanup();
+  return retainedOwners.get(owner);
+}
+
+function retainSupervisor(owner, resources) {
+  retainOwner(
+    owner,
+    new AnalysisCleanupLease(async () => {
       const stopped = await owner.stop();
       if (stopped.status === "incomplete") throw new Error(stopped.reason);
-    }, resources);
-    retainedOwners.set(owner, lease);
+    }, resources),
+  );
+}
+
+function preparationError(failure) {
+  const primary = failure.cancellation
+    ? new AnalysisCancelledError("radare2_probe", {
+        cause: failure.cancellation.reason,
+        capturedOutput: failure.capturedOutput,
+      })
+    : new AnalysisOutputError("radare2_probe", failure.message, {
+        cause: failure,
+        capturedOutput: failure.capturedOutput,
+      });
+  const cleanup = failure.cleanupFailure;
+  if (!cleanup?.cleanupIncomplete) return primary;
+  if (failure.cleanupOwner) {
+    const lease = retainOwner(
+      failure.cleanupOwner,
+      new AnalysisCleanupLease(() => failure.cleanupOwner.close(), {
+        get cleanupResources() {
+          return cleanup.cleanupResources;
+        },
+      }),
+    );
+    lease.bindCleanupError(cleanup);
   }
-  scheduleCleanup();
+  return analysisErrorWithCleanupFailure(
+    primary,
+    cleanup,
+    "radare2_probe",
+  ).bindCleanupDependencies([primary, cleanup]);
 }
 
 function cleanupFailure(primary) {
@@ -398,14 +434,23 @@ async function withOwned(
   record,
   operation,
 ) {
-  const launched = await spawnOwnedProviderProcess({
-    command: executable,
-    arguments: args,
-    runId: randomUUID(),
-    hostEnvironment: environment,
-    stdin: "pipe",
-    signal,
-  });
+  let launched;
+  try {
+    launched = await spawnOwnedProviderProcess({
+      command: executable,
+      arguments: args,
+      runId: randomUUID(),
+      hostEnvironment: environment,
+      stdin: "pipe",
+      signal,
+    });
+  } catch (cause) {
+    // This launch boundary can reject with throwIfAborted's raw reason before
+    // returning an owner. A caller's typed error does not transfer ownership.
+    if (signal.aborted && cause === signal.reason)
+      throw new AnalysisCancelledError("radare2_probe", { cause });
+    throw cause;
+  }
   const owner = new ProviderProcessSupervisor(
     {
       ...launched,
@@ -433,7 +478,7 @@ async function withOwned(
       failure = new AnalysisCancelledError("radare2_probe", {
         cause: signal.reason,
       });
-    retainOwner(owner, ownedCommandResources(launched.ownership));
+    retainSupervisor(owner, ownedCommandResources(launched.ownership));
     throw cleanupFailure(
       observationError(
         failure,
@@ -797,7 +842,15 @@ async function observeBatch(selected, options) {
     return ok(observation);
   } catch (cause) {
     if (cause instanceof OwnedCommandFailure && cause.cleanupOwner)
-      retainOwner(cause.cleanupOwner, cause.resources);
+      retainSupervisor(cause.cleanupOwner, cause.resources);
+    const preparation =
+      cause instanceof OwnedCommandFailure
+        ? cause.preparationFailure
+        : cause instanceof DarwinProcessOwnershipInspectionError
+          ? cause
+          : undefined;
+    const preparedFailure =
+      preparation === undefined ? undefined : preparationError(preparation);
     const partialObservation = {
       transport: selected.transport,
       transcript,
@@ -810,8 +863,8 @@ async function observeBatch(selected, options) {
       cleanup_owners_retained: retainedOwners.size,
       completion: "unknown",
     };
-    let primary = cause;
-    if (cause instanceof OwnedCommandFailure) {
+    let primary = preparedFailure ?? cause;
+    if (cause instanceof OwnedCommandFailure && preparedFailure === undefined) {
       if (
         cause.cancellation &&
         (cause.reason === "cancelled" ||

@@ -16,6 +16,9 @@ import {
 import { cleanupOwnedProcessGroup } from "../../dist/process/ProcessOwnership.js";
 import { projectAnalysisError } from "../../dist/domain/analysisErrorProjection.js";
 import { resolvedAnalysisError } from "../../dist/domain/analysisErrorBase.js";
+import { AnalysisOutputError } from "../../dist/domain/analysisErrorCore.js";
+import { systemProcessOwnershipHost } from "../../dist/process/ProcessOwnershipObservation.js";
+import { DarwinProcessOwnershipInspectionError } from "../../dist/process/DarwinProcessRunTokenReader.js";
 import { probe, retryCleanup } from "./probe.mjs";
 import { createAnalysisExperiment } from "./analysis.mjs";
 import { viewObservation } from "./analysis-view.mjs";
@@ -123,6 +126,144 @@ test("captured environments replace ambient variables on every owned transport",
   } finally {
     if (previous === undefined) delete process.env.REA_FAULT_OMITTED;
     else process.env.REA_FAULT_OMITTED = previous;
+  }
+});
+
+test("preparation cancellation never adopts an opaque reason's unrelated cleanup", async (context) => {
+  for (const transport of ["r2pipe", "r2mcp", "exec"]) {
+    const { connection, options, ready } = fixture(transport, "completed");
+    const controller = new AbortController();
+    const reason = new AnalysisOutputError(
+      "unrelated operation",
+      "caller-owned reason",
+      {
+        cleanup: {
+          reason: "unrelated retained owner",
+          resources: ["unrelated-resource"],
+        },
+        partialObservation: { unrelated: true },
+      },
+    );
+    const intercepted = context.mock.method(
+      systemProcessOwnershipHost,
+      "prepare",
+      async (signal) => {
+        controller.abort(reason);
+        signal.throwIfAborted();
+      },
+    );
+    try {
+      const result = await probe(
+        { ...connection, commands: ["ij"] },
+        { ...options, signal: controller.signal },
+      );
+      assert.equal(result.error._tag, "AnalysisCancelledError");
+      assert.equal(result.error.cause, reason);
+      assert.equal(result.error.cleanupIncomplete, false);
+      assert.deepEqual(result.error.cleanupResources, []);
+      assert.equal(result.error.partialObservation.provider_partial, null);
+      assert.equal(result.error.partialObservation.cleanup_owners_retained, 0);
+      assert.equal(await retryCleanup(), 0);
+      assert.equal(reason.cleanupIncomplete, true);
+      assert.ok(
+        !JSON.stringify(projectAnalysisError(result.error)).includes(
+          "unrelated-resource",
+        ),
+      );
+      await assert.rejects(readFile(ready), { code: "ENOENT" });
+    } finally {
+      intercepted.mock.restore();
+    }
+  }
+});
+
+test("a distinct preparation failure stays primary when cancellation follows it", async (context) => {
+  const { connection, options, ready } = fixture("r2pipe", "completed");
+  const controller = new AbortController();
+  const primary = new Error("physical preparation failure");
+  const intercepted = context.mock.method(
+    systemProcessOwnershipHost,
+    "prepare",
+    async () => {
+      controller.abort(new Error("later caller cancellation"));
+      throw primary;
+    },
+  );
+  try {
+    const result = await probe(
+      { ...connection, commands: ["ij"] },
+      { ...options, signal: controller.signal },
+    );
+    assert.equal(result.error._tag, "AnalysisOutputError");
+    assert.equal(result.error.cause, primary);
+    assert.equal(result.error.cleanupIncomplete, false);
+    await assert.rejects(readFile(ready), { code: "ENOENT" });
+  } finally {
+    intercepted.mock.restore();
+  }
+});
+
+test("actual preparation cleanup retains its exact owner separately from the opaque cancellation reason", async (context) => {
+  for (const transport of ["r2pipe", "exec"]) {
+    const { connection, options, ready } = fixture(transport, "completed");
+    const controller = new AbortController();
+    const reason = new AnalysisOutputError("unrelated", "opaque reason", {
+      cleanup: {
+        reason: "unrelated cleanup",
+        resources: ["unrelated-resource"],
+      },
+    });
+    const cleanup = new AnalysisOutputError("prepare", "helper close denied", {
+      cleanup: { reason: "owned helper cleanup", resources: ["owned-helper"] },
+    });
+    let denied = true;
+    let closes = 0;
+    const owner = {
+      close: async () => {
+        closes++;
+        if (denied) throw new Error("injected helper cleanup denial");
+      },
+    };
+    const failure = new DarwinProcessOwnershipInspectionError(
+      "helper preparation cancelled",
+      {
+        cancellation: { reason },
+        cleanupFailure: cleanup,
+        cleanupOwner: owner,
+      },
+    );
+    const intercepted = context.mock.method(
+      systemProcessOwnershipHost,
+      "prepare",
+      async () => {
+        controller.abort(reason);
+        throw failure;
+      },
+    );
+    try {
+      const result = await probe(
+        { ...connection, commands: ["ij"] },
+        { ...options, signal: controller.signal },
+      );
+      assert.equal(
+        projectAnalysisError(result.error).code,
+        "cleanup_incomplete",
+      );
+      assert.deepEqual(result.error.cleanupResources, ["owned-helper"]);
+      assert.equal(await retryCleanup(), 1);
+      denied = false;
+      assert.equal(await retryCleanup(), 0);
+      assert.equal(closes, 2);
+      assert.equal(result.error.cleanupIncomplete, false);
+      assert.equal(cleanup.cleanupIncomplete, false);
+      assert.equal(reason.cleanupIncomplete, true);
+      assert.equal(resolvedAnalysisError(result.error).cause, reason);
+      await assert.rejects(readFile(ready), { code: "ENOENT" });
+    } finally {
+      denied = false;
+      await retryCleanup();
+      intercepted.mock.restore();
+    }
   }
 });
 
