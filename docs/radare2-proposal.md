@@ -296,6 +296,12 @@ also passed. The TypeScript client's separate URL-encoding regression and fix
 are tracked in [upstream PR #187](https://github.com/radareorg/radare2-r2pipe/pull/187).
 The Python async client's separate `quit()` lifecycle correction is tracked in
 [upstream PR #188](https://github.com/radareorg/radare2-r2pipe/pull/188).
+The TypeScript client's shutdown correction was merged in
+[upstream PR #196](https://github.com/radareorg/radare2-r2pipe/pull/196): `quit()`
+waits for child closure, escalates to SIGKILL after the grace period, and retains
+the child for retry when shutdown cannot be confirmed. REA's experiment uses
+its own r2pipe2 adapter and does not depend on `r2pipe-ts`; an upstream client
+release does not change this branch's runtime or its recorded measurements.
 
 The [isolated experiment](../experiments/radare2-transports/README.md) compiles a
 disposable source fixture and exercises actual local r2/r2mcp processes and a
