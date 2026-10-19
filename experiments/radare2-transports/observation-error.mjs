@@ -1,6 +1,7 @@
 import { AnalysisError } from "../../dist/domain/analysisErrorBase.js";
 import {
   AnalysisCancelledError,
+  AnalysisInputError,
   AnalysisOutputError,
   AnalysisResourceConstraintError,
   AnalysisTimeoutError,
@@ -40,21 +41,31 @@ export function observationError(
           ...details,
           cause: cause.cause,
         })
-      : cause instanceof AnalysisResourceConstraintError
-        ? new AnalysisResourceConstraintError(
+      : cause instanceof AnalysisInputError
+        ? new AnalysisInputError(
             cause.operation,
-            cause.resource,
-            cause.reason,
-            cause.reportedLimits,
-            {
-              ...details,
-              remediationAction: cause.remediationAction,
-              retryable: cause.retryable,
-            },
+            { ...details, userMessage: cause.userMessage },
+            cause.issues,
           )
-        : cause instanceof AnalysisTimeoutError
-          ? new AnalysisTimeoutError(cause.operation, cause.timeoutMs, details)
-          : new AnalysisOutputError(operation, message, details);
+        : cause instanceof AnalysisResourceConstraintError
+          ? new AnalysisResourceConstraintError(
+              cause.operation,
+              cause.resource,
+              cause.reason,
+              cause.reportedLimits,
+              {
+                ...details,
+                remediationAction: cause.remediationAction,
+                retryable: cause.retryable,
+              },
+            )
+          : cause instanceof AnalysisTimeoutError
+            ? new AnalysisTimeoutError(
+                cause.operation,
+                cause.timeoutMs,
+                details,
+              )
+            : new AnalysisOutputError(operation, message, details);
   if (cause instanceof AnalysisError) error.bindCleanupDependencies([cause]);
   return error;
 }

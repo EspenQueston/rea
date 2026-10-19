@@ -168,3 +168,56 @@ test("XML capacity rejection is distinct from malformed producer output", () => 
   assert.equal(result.ok, false);
   assert.equal(result.error._tag, "AnalysisResourceConstraintError");
 });
+
+test("operation and input subtrees are bounded during parsing with examined coverage", () => {
+  const graph = value(
+    model(
+      vn(1),
+      Array.from({ length: 30_000 }, (_, i) =>
+        op(i, 10, "<void/>" + ref(1)),
+      ).join(""),
+    ),
+  );
+  assert.equal(graph.summary.total_operations, 30_000);
+  assert.equal(graph.operations.length, 3_000);
+  assert.equal(graph.omitted_operations_lower_bound, 27_000);
+  assert.equal(graph.truncated, true);
+  const wide = value(
+    model(vn(1), op(0, 10, "<void/>" + ref(1).repeat(50_000))),
+  );
+  assert.equal(wide.operations[0].inputs.length, 64);
+  assert.equal(wide.known_omitted_inputs, 50_000 - 64);
+});
+
+test("tree and depth capacity fail before unbounded XML model allocation", () => {
+  for (const xml of [
+    model("<addr/>".repeat(220_000), ""),
+    model(vn(1), "", "<type>".repeat(600) + "</type>".repeat(600)),
+    "<wrapper>".repeat(600) + "</wrapper>".repeat(600),
+  ]) {
+    assert.ok(Buffer.byteLength(xml) < 16 * 1024 * 1024);
+    const result = parseHighPcode(xml);
+    assert.equal(result.error._tag, "AnalysisResourceConstraintError");
+    assert.equal(result.error.partialObservation.coverage, "partial");
+    assert.ok(result.error.partialObservation.retained_nodes <= 216_000);
+  }
+});
+
+test("retained operations follow producer order and unrelated metadata cannot consume their budget", () => {
+  const xml = model(
+    vn(1),
+    op(2, 10, "<void/>" + ref(1)),
+    "<metadata><ast><block>" +
+      op(99, 10, "<void/>") +
+      "</block></ast></metadata>",
+  ).replace(
+    "<ast><varnodes>",
+    "<ast>" + op(1, 10, "<void/>" + ref(1)) + "<varnodes>",
+  );
+  const graph = value(xml);
+  assert.equal(graph.summary.total_operations, 2);
+  assert.deepEqual(
+    graph.operations.map((operation) => operation.sequence),
+    [1, 2],
+  );
+});

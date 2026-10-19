@@ -129,6 +129,66 @@ test("captured environments replace ambient variables on every owned transport",
   }
 });
 
+test("MCP retains exact frames, full envelopes, notifications and catalog-authorized requests", async () => {
+  const { connection, options } = fixture("r2mcp", "mcp-success");
+  const result = await probe({ ...connection, commands: ["ij"] }, options);
+  assert.equal(result.ok, true, JSON.stringify(result));
+  const transcript = result.value.transcript;
+  const frames = transcript
+    .filter((entry) => entry.mcp_frame)
+    .map((entry) => entry.mcp_frame);
+  const envelopes = transcript
+    .filter((entry) => entry.mcp_envelope)
+    .map((entry) => entry.mcp_envelope);
+  assert.equal(frames.length, 5);
+  assert.deepEqual(
+    frames.map((frame) => JSON.parse(frame.text)),
+    envelopes,
+  );
+  assert.ok(frames[0].text.startsWith('{ "jsonrpc"'));
+  assert.equal(envelopes[0].extra, "preserved");
+  assert.equal(envelopes[0].result.serverInfo.name, "fixture");
+  assert.equal(envelopes[0].result.protocolVersion, "2024-11-05");
+  assert.equal(envelopes[1].params.data, "retained notification");
+  const catalog = envelopes[2].result.tools.map((tool) => tool.name);
+  const requests = transcript
+    .filter((entry) => entry.mcp_request)
+    .map((entry) => entry.mcp_request);
+  assert.deepEqual(
+    requests.filter((request) => request.id).map((request) => request.id),
+    [1, 2, 3, 4],
+  );
+  assert.ok(
+    requests
+      .filter((request) => request.method === "tools/call")
+      .every((request) => catalog.includes(request.params.name)),
+  );
+  assert.equal(
+    transcript.find((entry) => entry.r2pipe2).r2pipe2.res,
+    "native reply",
+  );
+});
+
+test("semantic HTTP endpoint refusals remain input errors before dispatch", async () => {
+  for (const endpoint of [
+    "https://127.0.0.1/cmd",
+    "http://example.com/cmd",
+    "http://127.0.0.1/cmd#fragment",
+    "http://user:pass@127.0.0.1/cmd",
+  ]) {
+    const result = await probe({
+      transport: "http",
+      endpoint,
+      commands: ["ij"],
+    });
+    assert.equal(result.error._tag, "AnalysisInputError");
+    assert.equal(projectAnalysisError(result.error).code, "invalid_request");
+    assert.deepEqual(result.error.issues, []);
+    assert.deepEqual(result.error.partialObservation.transcript, []);
+    assert.equal(result.error.partialObservation.cleanup_owners_retained, 0);
+  }
+});
+
 test("preparation cancellation never adopts an opaque reason's unrelated cleanup", async (context) => {
   for (const transport of ["r2pipe", "r2mcp", "exec"]) {
     const { connection, options, ready } = fixture(transport, "completed");
@@ -454,15 +514,21 @@ test("a cancelled queued probe cannot admit a successor before the active owner 
   }
 });
 
-for (const surface of ["probe", "analysis-server"]) {
-  test(`${surface}: shutdown retains the live process owner until cleanup retry succeeds`, async () => {
+for (const [resource, surface] of [
+  ["process", "probe"],
+  ["process", "analysis-server"],
+  ["file", "analysis"],
+  ["file", "analysis-server"],
+]) {
+  test(`${surface}: ${resource} cleanup survives shutdown until retry succeeds`, async () => {
     const { connection, options, ready } = fixture("r2pipe", "linger");
     const release = join(root, randomUUID());
     const stopped = join(root, randomUUID());
     const hook = join(root, randomUUID() + ".mjs");
     await writeFile(
       hook,
-      `
+      resource === "process"
+        ? `
       import { existsSync, writeFileSync } from "node:fs";
       import { ProviderProcessSupervisor } from ${JSON.stringify(new URL("../../dist/process/ProviderProcess.js", import.meta.url).href)};
       const stop = ProviderProcessSupervisor.prototype.stop;
@@ -474,6 +540,27 @@ for (const surface of ["probe", "analysis-server"]) {
         }
         return stop.apply(this, args);
       };
+    `
+        : `
+      import fs from "node:fs/promises";
+      import { existsSync, writeFileSync } from "node:fs";
+      import { syncBuiltinESMExports } from "node:module";
+      const open = fs.open;
+      fs.open = async (...args) => {
+        const handle = await open(...args);
+        if (args[0] === ${JSON.stringify(connection.path)}) {
+          const close = handle.close.bind(handle);
+          handle.close = async () => {
+            if (!existsSync(${JSON.stringify(release)})) {
+              writeFileSync(${JSON.stringify(stopped)}, String(process.pid));
+              throw new Error("injected file close denial until release");
+            }
+            return close();
+          };
+        }
+        return handle;
+      };
+      syncBuiltinESMExports();
     `,
     );
     const configuration = join(root, randomUUID() + ".json");
@@ -486,7 +573,13 @@ for (const surface of ["probe", "analysis-server"]) {
         fileURLToPath(new URL(`./${surface}.mjs`, import.meta.url)),
         surface === "probe"
           ? JSON.stringify({ ...connection, commands: ["ij"] })
-          : configuration,
+          : surface === "analysis"
+            ? JSON.stringify({
+                connection,
+                operation: "inspect_native_data_type",
+                arguments: { type: "T" },
+              })
+            : configuration,
       ],
       runId: randomUUID(),
       hostEnvironment: options.environment,
@@ -538,7 +631,8 @@ for (const surface of ["probe", "analysis-server"]) {
           }) + "\n",
         );
       }
-      const providerPid = await waitReady(ready, 2000);
+      const providerPid =
+        resource === "process" ? await waitReady(ready, 2000) : undefined;
       await waitReady(stopped, 2000);
       for (
         let n = 0;
@@ -549,17 +643,20 @@ for (const surface of ["probe", "analysis-server"]) {
         await delay(10);
       }
       launched.process.stdin.end();
-      if (surface === "probe") launched.process.kill("SIGTERM");
+      if (surface !== "analysis-server") launched.process.kill("SIGTERM");
       await delay(1_200); // Cross an automatic retry with no open client input.
       assert.equal(launched.process.exitCode, null);
-      assert.doesNotThrow(() => process.kill(providerPid, 0));
+      if (providerPid !== undefined)
+        assert.doesNotThrow(() => process.kill(providerPid, 0));
       await writeFile(release, "allow exact-owner cleanup");
       assert.equal(
         await owner.waitForExit(10_000),
         true,
         JSON.stringify(owner.snapshot()),
       );
-      assert.throws(() => process.kill(providerPid, 0), { code: "ESRCH" });
+      if (providerPid !== undefined)
+        assert.throws(() => process.kill(providerPid, 0), { code: "ESRCH" });
+      else await assert.rejects(readFile(ready), { code: "ENOENT" });
       assert.match(owner.snapshot().stdout.text, /cleanup_incomplete/u);
     } finally {
       await writeFile(release, "allow cleanup even if an assertion failed");

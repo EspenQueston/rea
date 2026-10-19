@@ -376,6 +376,36 @@ error-response model tokens and full agent investigations were not measured.
 Raw outputs and measurements remain local under
 `/private/tmp/rea-pr4148-review-20261019/` (`measure.json`).
 
+The next review round compared `c415889ac` with streaming XML budgets and complete
+MCP envelope capture on the same host/toolchain. The XML task reads a 2,539,076-byte
+synthetic document containing 30,000 operations and returns the first 3,000 with
+27,000 counted omissions. Excess operation/input subtrees now remain unmodeled
+and semantically unvalidated; well-formedness still covers the full source.
+The MCP task requests the same eight addressed instructions through an owned
+r2mcp and verifies cleanup. All twelve tasks completed; before/after runs alternate.
+
+| Task | Run      | Elapsed s, before / after | CPU s, before / after | Sampled family peak MiB, before / after |
+| ---- | -------- | ------------------------: | --------------------: | --------------------------------------: |
+| XML  | First    |             0.152 / 0.127 |         0.233 / 0.157 |                            156.5 / 89.0 |
+| XML  | Repeat 1 |             0.149 / 0.125 |         0.236 / 0.151 |                            182.0 / 89.1 |
+| XML  | Repeat 2 |             0.149 / 0.125 |         0.231 / 0.152 |                            174.2 / 88.9 |
+| MCP  | First    |             1.057 / 1.045 |         1.168 / 1.168 |                         ≥263.6 / ≥270.9 |
+| MCP  | Repeat 1 |             1.035 / 1.047 |         1.146 / 1.157 |                         ≥271.1 / ≥263.4 |
+| MCP  | Repeat 2 |             1.043 / 1.042 |         1.175 / 1.168 |                         ≥266.1 / ≥269.9 |
+
+Every process is fresh; host caches are uncontrolled, so these are not controlled
+cold/warm comparisons. CPU includes reaped children; the external sampler is
+excluded. RSS sampling targets 10 ms (5–6 XML samples, 43–44 MCP samples); MCP
+peaks are lower bounds with 1–2 denied observations per run. XML used no provider.
+No model was invoked: model token use is zero, while the effect on agent input
+tokens is unmeasured. MCP stdout grew from 5,822 to 39,196 bytes because exact
+frames, complete envelopes, initialization, catalog and requests are now retained.
+This is an evidence-completeness cost, not a token optimization. The small sample
+does not establish general latency or memory guarantees. Sustained cleanup retry
+and whole-agent investigations were not measured. Raw results remain in the same
+local directory (`measure-latest.json`); an excluded pilot failed a harness field
+assertion before measurement, which was corrected to the existing omission field.
+
 The configuration keys are `node`, `sdk_driver`, `rea3521`, `r2`, `r2mcp`,
 `ghidra`, `java`, `codex`, `model`, `reasoning`, `output`, `warm_repeats`, `lanes`
 and `targets`. Each target has `id`, `path`, `addresses`, literal SDK `checks`

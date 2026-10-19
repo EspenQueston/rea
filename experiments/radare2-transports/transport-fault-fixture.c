@@ -4,6 +4,11 @@
 #include <string.h>
 #include <unistd.h>
 
+static int request(const char *method) {
+  char line[4096];
+  return fgets(line, sizeof(line), stdin) && strstr(line, method);
+}
+
 int main(void) {
   const char *mode = getenv("REA_FAULT_MODE");
   const char *transport = getenv("REA_FAULT_TRANSPORT");
@@ -34,6 +39,19 @@ int main(void) {
   }
   if (!strcmp(mode, "blocked")) {
     for (;;) pause();
+  }
+  if (!strcmp(mode, "mcp-success")) {
+    if (!request("initialize")) return 5;
+    puts("{ \"jsonrpc\":\"2.0\",\"id\":1,\"extra\":\"preserved\",\"result\":{\"protocolVersion\":\"2024-11-05\",\"serverInfo\":{\"name\":\"fixture\",\"version\":\"1\"},\"capabilities\":{\"tools\":{}}}}");
+    if (!request("notifications/initialized") || !request("tools/list")) return 6;
+    puts("{\"jsonrpc\":\"2.0\",\"method\":\"notifications/message\",\"params\":{\"level\":\"info\",\"data\":\"retained notification\"}}");
+    puts("{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":\"open_file\",\"inputSchema\":{\"type\":\"object\"}},{\"name\":\"run_command\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}}]}}");
+    if (!request("open_file")) return 7;
+    puts("{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"content\":[]}}");
+    if (!request("run_command")) return 8;
+    puts("{\"jsonrpc\":\"2.0\",\"id\":4,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"{\\\"error\\\":false,\\\"code\\\":0,\\\"res\\\":\\\"native reply\\\"}\"}]}}");
+    while (getchar() != EOF) {}
+    return 0;
   }
   if (pipe || mcp) {
     int c;

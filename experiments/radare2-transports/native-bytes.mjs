@@ -8,6 +8,7 @@ import {
 } from "../../dist/domain/analysisErrorCore.js";
 import { err, ok } from "../../dist/domain/result.js";
 import { observationError } from "./observation-error.mjs";
+import { CleanupRetention } from "./cleanup-retention.mjs";
 import {
   AnalysisCleanupLease,
   AnalysisCleanupLeaseGroup,
@@ -40,7 +41,7 @@ export const byteInputSchema = z
       message: "Read exceeds the 64-bit address space",
     },
   );
-const retainedHandles = new Map();
+const retainedHandles = new CleanupRetention();
 const error = (reason, details) =>
   new AnalysisOutputError(OPERATION, reason, details);
 const uint64 = (value) => {
@@ -186,12 +187,13 @@ async function fileBytes(handle, offset, length, signal) {
 // Shared file admission and descriptor ownership also own cancellation during
 // final close. Only the retention callback can transfer a failed-close owner.
 async function withRegularFile(path, signal, operation) {
+  await retainedHandles.retry();
   if (retainedHandles.size) {
     const blocked = error(
       "Earlier independent file cleanup remains incomplete",
       {
         cleanup: {
-          reason: "Call retryNativeByteCleanup before another file observation",
+          reason: "Owned file close remains pending after retry",
           resources: [...retainedHandles.values()].map((entry) => entry.path),
         },
       },
@@ -208,7 +210,7 @@ async function withRegularFile(path, signal, operation) {
       {
         signal,
         retainFailedClose: (owner) =>
-          retainedHandles.set(owner, {
+          retainedHandles.retain(owner, {
             path,
             lease: AnalysisCleanupLease.forCloseOwner(owner, path),
           }),
@@ -235,7 +237,7 @@ async function withRegularFile(path, signal, operation) {
           cause,
           partialObservation,
           cleanup: {
-            reason: "Owned file close failed; call retryNativeByteCleanup",
+            reason: "Owned file close failed; automatic retry remains active",
             resources: [path],
           },
         },
@@ -260,15 +262,7 @@ export const digestTarget = (path, signal) =>
 
 /** Retry cleanup without forgetting any file handle whose close still fails. */
 export async function retryNativeByteCleanup() {
-  for (const [owner, { lease }] of retainedHandles) {
-    try {
-      await lease.release();
-      retainedHandles.delete(owner);
-    } catch {
-      /* Ownership stays retained. */
-    }
-  }
-  return retainedHandles.size;
+  return retainedHandles.retry();
 }
 
 async function verifyFile({

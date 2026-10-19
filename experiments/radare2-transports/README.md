@@ -63,6 +63,9 @@ commands preserve explicit `json` and `trim` choices. Responses preserve raw
 frames, parsed envelopes and process diagnostics separately. The 16 MiB frame
 and transcript budgets follow REA's current reverse-command capture budget;
 they do not establish production memory bounds or token savings.
+MCP transcripts include exact outer frames, parsed envelopes and submitted
+requests, including initialization identity, the advertised tool catalog and
+notifications. These records share the transcript bound with native replies.
 
 Owned r2 processes start with `scr.color=0` and `scr.utf8=0`; the owned r2mcp
 core receives the same settings. `R2_COLOR=0 R2_UTF8=0` also works for standalone
@@ -91,9 +94,11 @@ values are not persisted. HTTP submissions and MCP calls are never automatically
 replayed. Probe batches share sequential admission within the experiment process;
 queued callers retain their own deadline and cancellation. Failed cleanup stops
 the current batch and blocks admission until the exact retained owners are released.
-`retryCleanup()` retries those owners and resolves their returned errors' live
-cleanup markers after verified release. A referenced one-second retry also keeps
-the experiment alive after standalone output or MCP disconnect. SIGINT/SIGTERM
+`retryCleanup()` retries those process owners; `retryNativeByteCleanup()` retries
+file owners. Both use the same retention policy and resolve returned errors' live
+cleanup markers only after verified release. File admission also retries prior
+failed closes. A referenced one-second retry keeps the experiment alive after
+standalone output or MCP disconnect. SIGINT/SIGTERM
 cancel active entrypoint work through the same owners; unresolved cleanup can keep
 shutdown pending. Forced process termination cannot preserve its private ledger.
 Cancellation during launch preparation keeps the exact caller reason opaque,
@@ -102,6 +107,14 @@ cleanup retains only the helper owner's explicit lease and remains retryable.
 External HTTP sessions remain unowned. Results explicitly leave target identity
 unverified. Review the proposal's authority and verification gaps before running
 arbitrary commands against a valuable external session.
+
+The high-p-code parser admits at most 3000 operations and 64 inputs per retained
+operation while scanning XML. Excess subtrees are counted without materializing
+or semantically validating them; their definitions and relationships remain
+unknown. The retained tree is capped at 216000 nodes (3000 full input windows
+plus per-operation metadata), with nesting capped below REA's JSON depth limit.
+Exceeding either allocation bound returns a tagged capacity failure and examined
+coverage. Well-formedness is checked across the entire admitted XML source.
 
 Writes and frame reads share the batch cancellation signal. Interrupted reads
 retain the unfinished frame within the existing capture bound, including base64

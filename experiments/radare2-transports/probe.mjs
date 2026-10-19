@@ -25,6 +25,7 @@ import {
 } from "../../dist/artifacts/AnalysisCleanupLease.js";
 import { observationError } from "./observation-error.mjs";
 import { entrypointLifetime } from "./entrypoint-lifetime.mjs";
+import { CleanupRetention } from "./cleanup-retention.mjs";
 import { err, ok } from "../../dist/domain/result.js";
 import {
   jsonValueValidationIssue,
@@ -85,28 +86,11 @@ const inputSchema = z.discriminatedUnion(
   "transport",
   connectionSchema.options.map((schema) => schema.extend(batch)),
 );
-const retainedOwners = new Map();
-let cleanupTimer;
+const retainedOwners = new CleanupRetention();
 let probeTail = Promise.resolve();
 
-function scheduleCleanup() {
-  if (cleanupTimer || !retainedOwners.size) return;
-  // A referenced retry keeps the only live evidence ledger alive, including
-  // after standalone output or MCP disconnect. Never replay provider commands.
-  cleanupTimer = setTimeout(async () => {
-    try {
-      await retryCleanup();
-    } finally {
-      cleanupTimer = undefined;
-      scheduleCleanup();
-    }
-  }, 1_000);
-}
-
 function retainOwner(owner, lease) {
-  if (!retainedOwners.has(owner)) retainedOwners.set(owner, lease);
-  scheduleCleanup();
-  return retainedOwners.get(owner);
+  return retainedOwners.retain(owner, { lease }).lease;
 }
 
 function retainSupervisor(owner, resources) {
@@ -150,7 +134,7 @@ function preparationError(failure) {
 }
 
 function cleanupFailure(primary) {
-  const leases = [...retainedOwners.values()];
+  const leases = [...retainedOwners.values()].map(({ lease }) => lease);
   const cleanup = new AnalysisOutputError(
     "radare2_probe",
     "Owned provider cleanup remains incomplete",
@@ -174,19 +158,7 @@ function cleanupFailure(primary) {
 
 /** Retry rather than discard an owner whose cleanup could not be verified. */
 export async function retryCleanup() {
-  for (const [owner, lease] of retainedOwners) {
-    try {
-      await lease.release();
-      retainedOwners.delete(owner);
-    } catch {
-      // Retain the same identity evidence and every dependent error for retry.
-    }
-  }
-  if (!retainedOwners.size) {
-    clearTimeout(cleanupTimer);
-    cleanupTimer = undefined;
-  }
-  return retainedOwners.size;
+  return retainedOwners.retry();
 }
 
 function decoded(bytes) {
@@ -721,32 +693,37 @@ async function observeBatch(selected, options) {
               let id = 0;
               const rpc = async (method, params) => {
                 const requestId = ++id;
-                await write(
-                  JSON.stringify({
-                    jsonrpc: "2.0",
-                    id: requestId,
-                    method,
-                    params,
-                  }),
-                );
+                const request = {
+                  jsonrpc: "2.0",
+                  id: requestId,
+                  method,
+                  params,
+                };
+                record({ mcp_request: request });
+                await write(JSON.stringify(request));
                 for (;;) {
                   const raw = decoded(await iterator.next(signal));
+                  record({ request_id: requestId, mcp_frame: raw });
                   const text = protocolText(raw);
                   let reply;
+                  let numeric_literals;
                   try {
                     const decoded = losslessJson(text);
                     reply = decoded.value;
-                    if (decoded.numeric_literals.length)
-                      record({
-                        request_id: requestId,
-                        mcp_numeric_literals: decoded.numeric_literals,
-                      });
+                    numeric_literals = decoded.numeric_literals;
                   } catch (cause) {
                     throw new AnalysisProtocolError("Malformed MCP JSON", {
                       cause,
                       partialObservation: { raw_reply: raw },
                     });
                   }
+                  record({
+                    request_id: requestId,
+                    mcp_envelope: reply,
+                    ...(numeric_literals.length
+                      ? { mcp_numeric_literals: numeric_literals }
+                      : {}),
+                  });
                   if (!reply || reply.jsonrpc !== "2.0")
                     throw new AnalysisProtocolError("Malformed MCP reply");
                   if (
@@ -775,12 +752,12 @@ async function observeBatch(selected, options) {
                   version: "0",
                 },
               });
-              await write(
-                JSON.stringify({
-                  jsonrpc: "2.0",
-                  method: "notifications/initialized",
-                }),
-              );
+              const initialized = {
+                jsonrpc: "2.0",
+                method: "notifications/initialized",
+              };
+              record({ mcp_request: initialized });
+              await write(JSON.stringify(initialized));
               const catalog = await rpc("tools/list", {});
               for (const name of ["open_file", "run_command"])
                 if (!catalog.tools?.some((tool) => tool.name === name))
@@ -792,7 +769,6 @@ async function observeBatch(selected, options) {
                   name,
                   arguments: arguments_,
                 });
-                record({ tool: name, arguments: arguments_, reply });
                 if (reply.isError === true)
                   throw new AnalysisProtocolError("r2mcp tool failed");
                 return reply;

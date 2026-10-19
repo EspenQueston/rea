@@ -5,6 +5,7 @@ import {
   AnalysisResourceConstraintError,
 } from "../../dist/domain/analysisErrorCore.js";
 import { err, ok } from "../../dist/domain/result.js";
+import { MAX_JSON_DEPTH } from "../../dist/domain/jsonValue.js";
 
 const OPERATION = "r2ghidra_high_pcode";
 // The transport prototype admits at most 16 MiB of captured command output.
@@ -12,6 +13,11 @@ const MAX_XML_BYTES = 16 * 1024 * 1024;
 const MAX_OPERATIONS = 3_000;
 const MAX_INPUTS = 64;
 const MAX_EDGES = 12_000;
+// Bound model expansion independently of source bytes: one full input/output
+// window plus eight metadata nodes per admitted operation. Type descriptors add
+// object/children-array pairs; reserve 32 JSON levels for enclosing observations.
+const MAX_TREE_NODES = MAX_OPERATIONS * (MAX_INPUTS + 8);
+const MAX_TREE_DEPTH = Math.floor((MAX_JSON_DEPTH - 32) / 2);
 
 // Numeric OpCode identities from Ghidra's opcodes.hh, also used by r2ghidra.
 // Retain the numeric code: opcode 71 is EXTRACT in the inspected r2ghidra
@@ -89,10 +95,41 @@ function parseFunction(xml) {
   const stack = [];
   let root;
   let candidates = 0;
+  let depth = 0;
+  let skippedDepth = 0;
+  let retainedNodes = 0;
+  let examinedElements = 0;
+  let totalOperations = 0;
+  const capacity = (reason, limits) =>
+    new AnalysisResourceConstraintError(OPERATION, "capacity", reason, limits, {
+      partialObservation: {
+        examined_elements: examinedElements,
+        retained_nodes: retainedNodes,
+        examined_operations: totalOperations,
+        coverage: "partial",
+      },
+    });
+  const node = (tag) => {
+    if (retainedNodes >= MAX_TREE_NODES)
+      throw capacity("pdgx model exceeds the bounded tree allocation budget", {
+        maximum_nodes: MAX_TREE_NODES,
+      });
+    retainedNodes++;
+    return { name: tag.name, attributes: tag.attributes, children: [] };
+  };
   parser.on("doctype", () => {
     throw invalid("DTD and entity declarations are unsupported in pdgx XML");
   });
   parser.on("opentag", (tag) => {
+    examinedElements++;
+    if (++depth > MAX_TREE_DEPTH)
+      throw capacity("pdgx nesting exceeds the JSON descriptor depth budget", {
+        maximum_depth: MAX_TREE_DEPTH,
+      });
+    if (skippedDepth) {
+      skippedDepth++;
+      return;
+    }
     // pdgx has wrapper and rendered-code <function> elements as well.
     if (
       stack.length === 0 &&
@@ -102,29 +139,60 @@ function parseFunction(xml) {
       candidates++;
       if (candidates > 1)
         throw invalid("pdgx contains multiple named functions");
-      root = { name: tag.name, attributes: tag.attributes, children: [] };
+      root = node(tag);
       stack.push(root);
     } else if (stack.length > 0) {
-      const node = { name: tag.name, attributes: tag.attributes, children: [] };
-      stack.at(-1).children.push(node);
-      stack.push(node);
+      const parent = stack.at(-1);
+      const modelOperation =
+        tag.name === "op" &&
+        stack[1]?.name === "ast" &&
+        (stack.length === 2 || (stack.length === 3 && parent.name === "block"));
+      if (modelOperation) {
+        totalOperations++;
+        if (totalOperations > MAX_OPERATIONS) {
+          skippedDepth = 1;
+          return;
+        }
+      }
+      if (
+        parent.omittedInputs !== undefined &&
+        parent.children.length >= MAX_INPUTS + 2
+      ) {
+        parent.omittedInputs = (parent.omittedInputs ?? 0) + 1;
+        skippedDepth = 1;
+        return;
+      }
+      const child = node(tag);
+      if (modelOperation) child.omittedInputs = 0;
+      parent.children.push(child);
+      stack.push(child);
     }
   });
   parser.on("closetag", () => {
+    depth--;
+    if (skippedDepth) {
+      skippedDepth--;
+      return;
+    }
     if (stack.length > 0) stack.pop();
   });
   parser.on("text", (text) => {
+    if (skippedDepth) return;
     const node = stack.at(-1);
     if (node && text.trim()) node.text = (node.text ?? "") + text;
   });
   try {
     parser.write(xml).close();
   } catch (cause) {
-    if (cause instanceof AnalysisOutputError) throw cause;
+    if (
+      cause instanceof AnalysisOutputError ||
+      cause instanceof AnalysisResourceConstraintError
+    )
+      throw cause;
     throw invalid("pdgx output is not well-formed XML");
   }
   if (root === undefined) throw invalid("pdgx has no named function model");
-  return root;
+  return { root, totalOperations };
 }
 
 function varnode(node) {
@@ -174,14 +242,16 @@ function operand(node, varnodes) {
 }
 
 function parseOperations(ast, varnodes, unknowns) {
-  const blocks = children(ast, "block");
-  const sources = blocks.flatMap((block) =>
-    children(block, "op").map((op) => ({
-      op,
-      block: count(attribute(block, "index"), "block index"),
-    })),
+  const sources = ast.children.flatMap((block) =>
+    block.name === "op"
+      ? [{ op: block, block: null }]
+      : block.name === "block"
+        ? children(block, "op").map((op) => ({
+            op,
+            block: count(attribute(block, "index"), "block index"),
+          }))
+        : [],
   );
-  sources.push(...children(ast, "op").map((op) => ({ op, block: null })));
   const ids = new Set();
   return sources.map(({ op, block }) => {
     const seq = one(op, "seqnum");
@@ -216,6 +286,7 @@ function parseOperations(ast, varnodes, unknowns) {
       block_membership: block === null ? "detached" : "member",
       block_index: block,
       inputs: op.children.slice(2).map((input) => operand(input, varnodes)),
+      omittedInputs: op.omittedInputs ?? 0,
       output: output.kind === "unavailable" ? null : output,
     };
   });
@@ -363,8 +434,8 @@ function indexParameters(parameters) {
 }
 
 // Return the omitted-edge contribution independently of the owning relation.
-function retainEdge(edges, edge, admitted = true) {
-  if (!admitted || edges.length >= MAX_EDGES) return 1;
+function retainEdge(edges, edge) {
+  if (edges.length >= MAX_EDGES) return 1;
   edges.push(edge);
   return 0;
 }
@@ -372,28 +443,21 @@ function retainEdge(edges, edge, admitted = true) {
 function linkModel(all, parameters) {
   const definitions = indexDefinitions(all);
   const parametersByRef = indexParameters(parameters);
-  const selected = all.slice(0, MAX_OPERATIONS);
-  const operations = selected.map((op) => ({
-    ...op,
-    inputs: op.inputs.slice(0, MAX_INPUTS),
-  }));
-  const retainedIds = new Set(operations.map((op) => op.id));
+  const operations = all.map(({ omittedInputs: _omittedInputs, ...op }) => op);
   const defUse = [];
   const parameterUses = [];
   let omittedEdges = 0;
   let omittedInputs = 0;
-  for (const op of selected) {
-    omittedInputs += Math.max(0, op.inputs.length - MAX_INPUTS);
-    for (const [inputIndex, input] of op.inputs
-      .slice(0, MAX_INPUTS)
-      .entries()) {
+  for (const op of all) {
+    omittedInputs += op.omittedInputs;
+    for (const [inputIndex, input] of op.inputs.entries()) {
       const definition = definitions.get(input.ref);
       if (definition !== undefined)
-        omittedEdges += retainEdge(
-          defUse,
-          { definition, use: op.id, input_index: inputIndex },
-          retainedIds.has(definition),
-        );
+        omittedEdges += retainEdge(defUse, {
+          definition,
+          use: op.id,
+          input_index: inputIndex,
+        });
       const ordinal = parametersByRef.get(input.ref);
       if (ordinal !== undefined)
         omittedEdges += retainEdge(parameterUses, {
@@ -429,7 +493,7 @@ function linkModel(all, parameters) {
 /** Parse actual r2ghidra pdgx SSA references without inventing missing AST flags. */
 export function parseHighPcode(xml) {
   try {
-    const fn = parseFunction(xml);
+    const { root: fn, totalOperations } = parseFunction(xml);
     const ast = one(fn, "ast");
     const varnodes = new Map();
     for (const node of one(ast, "varnodes").children) {
@@ -457,7 +521,7 @@ export function parseHighPcode(xml) {
     const prototype = one(fn, "prototype", false);
     const returnSymbol =
       prototype === undefined ? undefined : one(prototype, "returnsym", false);
-    const omittedOperations = all.length - operations.length;
+    const omittedOperations = totalOperations - operations.length;
     const truncated =
       omittedOperations > 0 || omittedInputs > 0 || omittedEdges > 0;
     return ok({
@@ -486,7 +550,7 @@ export function parseHighPcode(xml) {
       parameter_uses: parameterUses,
       summary: {
         operations: operations.length,
-        total_operations: all.length,
+        total_operations: totalOperations,
         varnodes: varnodes.size,
         def_use_edges: defUse.length,
         parameter_uses: parameterUses.length,
@@ -511,6 +575,7 @@ export function parseHighPcode(xml) {
         "High p-code, types and call signatures are decompiler observations, not original source or runtime execution. Memory alias dependencies, call side effects and unresolved indirect targets remain unknown.",
         "INDIRECT iop operands identify an operation sequence, not a numeric constant or data def-use edge. Address-space operands retain their named space without inventing its internal numeric identifier.",
         "At most 3000 operations, 64 inputs per retained operation and 12000 edges per relation are returned. Known omitted edges cover retained inputs; omitted operations and inputs can hide additional relationships.",
+        "Excess operation/input subtrees are counted during XML scanning but not materialized or semantically validated. Definitions outside the retained window and relationships through omitted inputs remain unknown. The retained tree and all XML nesting have separate allocation/depth budgets.",
       ],
     });
   } catch (cause) {

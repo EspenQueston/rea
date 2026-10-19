@@ -1,5 +1,5 @@
 // Graceful CLI/MCP shutdown cancels work through its owners. Retained process
-// cleanup keeps a referenced retry alive in probe.mjs until verified release.
+// and file leases keep a referenced retry alive until verified release.
 export function entrypointLifetime() {
   const controller = new AbortController();
   for (const [signal, code] of [
