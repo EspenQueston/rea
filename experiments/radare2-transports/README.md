@@ -66,6 +66,10 @@ they do not establish production memory bounds or token savings.
 MCP transcripts include exact outer frames, parsed envelopes and submitted
 requests, including initialization identity, the advertised tool catalog and
 notifications. These records share the transcript bound with native replies.
+Required MCP names must identify one contract each. The experiment validates
+their object schemas as JSON Schema 2020-12 (also the default when undeclared)
+and checks each submitted argument object; unsupported dialects and ambiguous
+names fail before tool dispatch. Format annotations are not assertions.
 
 Owned r2 processes start with `scr.color=0` and `scr.utf8=0`; the owned r2mcp
 core receives the same settings. `R2_COLOR=0 R2_UTF8=0` also works for standalone
@@ -140,6 +144,14 @@ error's partial observation if final target hashing is cancelled or fails.
 The initial digest remains available; `sha256_after` stays `null` until that
 verification completes. Target mismatch and prelude failures use the same
 observation shape, and interpretation cancellation also preserves captured facts.
+Confirmed digest mismatch projects as retryable `artifact_changed`, with both
+digests and the selected path. Error composition retains inner typed producer
+facts under `producer_observation` alongside the enclosing observation, including
+XML allocation counts and examined coverage. File/ESIL consumers use this same
+boundary instead of maintaining separate copies of producer partial facts.
+
+Server shutdown before configuration loading finishes prevents stdio connection;
+cancellation racing connection closes it after startup settles.
 
 Focused fault checks (C compiler required for the synthetic transport fixture):
 

@@ -10,6 +10,7 @@ import {
   parse as parseLossless,
 } from "lossless-json";
 import { z } from "zod";
+import { Ajv2020 } from "ajv/dist/2020.js";
 import {
   AnalysisCancelledError,
   AnalysisInputError,
@@ -460,7 +461,6 @@ async function withOwned(
           cleanup: stopped,
           diagnostics: processObservation(owner.snapshot()),
           primary_failure: failure?.message ?? null,
-          primary_partial: failure?.partialObservation ?? null,
         },
       ),
     );
@@ -558,6 +558,41 @@ async function httpCommand(endpoint, command, signal, authorization) {
     request.once("error", fail);
     request.end(command);
   });
+}
+
+// Resolve required names once, then validate calls against those exact schemas.
+// Unknown dialects/references and ambiguous names fail before tool dispatch.
+function bindMcpTools(catalog) {
+  if (!Array.isArray(catalog?.tools))
+    throw new AnalysisProtocolError(
+      "MCP tool catalog must contain a tools array",
+    );
+  const validator = new Ajv2020({ strict: false, validateFormats: false });
+  const contracts = new Map();
+  for (const name of ["open_file", "run_command"]) {
+    const matches = catalog.tools.filter((tool) => tool?.name === name);
+    if (matches.length !== 1)
+      throw new AnalysisProtocolError(
+        `Expected one named MCP contract for ${name}`,
+      );
+    const schema = matches[0].inputSchema;
+    if (!schema || schema.type !== "object")
+      throw new AnalysisProtocolError(
+        `MCP input contract must be an object schema: ${name}`,
+      );
+    try {
+      contracts.set(name, {
+        validate: validator.compile(schema),
+        properties: schema.properties ?? {},
+      });
+    } catch (cause) {
+      throw new AnalysisProtocolError(
+        `Invalid or unsupported MCP input schema: ${name}`,
+        { cause },
+      );
+    }
+  }
+  return contracts;
 }
 
 /** Observe a sequential batch. Results are protocol observations, not REA Evidence. */
@@ -759,12 +794,12 @@ async function observeBatch(selected, options) {
               record({ mcp_request: initialized });
               await write(JSON.stringify(initialized));
               const catalog = await rpc("tools/list", {});
-              for (const name of ["open_file", "run_command"])
-                if (!catalog.tools?.some((tool) => tool.name === name))
-                  throw new AnalysisProtocolError(
-                    `Required named r2mcp tool unavailable: ${name}`,
-                  );
+              const contracts = bindMcpTools(catalog);
               const call = async (name, arguments_) => {
+                if (!contracts.get(name)?.validate(arguments_))
+                  throw new AnalysisProtocolError(
+                    `Arguments do not satisfy the named MCP contract: ${name}`,
+                  );
                 const reply = await rpc("tools/call", {
                   name,
                   arguments: arguments_,
@@ -774,9 +809,7 @@ async function observeBatch(selected, options) {
                 return reply;
               };
               await call("open_file", { file_path: path });
-              const properties = catalog.tools.find(
-                (tool) => tool.name === "run_command",
-              ).inputSchema?.properties;
+              const properties = contracts.get("run_command").properties;
               for (const command of selected.commands) {
                 const reply = await call("run_command", {
                   command: encode(command),
@@ -830,8 +863,7 @@ async function observeBatch(selected, options) {
     const partialObservation = {
       transport: selected.transport,
       transcript,
-      provider_partial:
-        cause?.partialObservation ?? processObservation(cause?.snapshot),
+      provider_partial: processObservation(cause?.snapshot),
       failure: {
         tag: cause?._tag ?? cause?.name ?? "unknown",
         message: cause?.message ?? "unknown",

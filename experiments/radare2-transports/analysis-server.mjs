@@ -32,13 +32,6 @@ const server = new McpServer({
 });
 server.server.onclose = () =>
   lifetime.abort(new Error("MCP connection closed"));
-lifetime.signal.addEventListener(
-  "abort",
-  () => {
-    void server.close();
-  },
-  { once: true },
-);
 const outputSchema = z.object({ observation: z.unknown() });
 const annotations = {
   readOnlyHint: false,
@@ -197,4 +190,15 @@ server.registerTool(
     }),
 );
 
-await server.connect(new StdioServerTransport());
+// Configuration reads may finish after shutdown. Never start a new stdio peer
+// then, and close again after a connect that raced cancellation settles.
+if (!lifetime.signal.aborted) {
+  lifetime.signal.addEventListener("abort", () => void server.close(), {
+    once: true,
+  });
+  try {
+    await server.connect(new StdioServerTransport());
+  } finally {
+    if (lifetime.signal.aborted) await server.close();
+  }
+}

@@ -230,7 +230,7 @@ test("changed artifacts fail, external HTTP identity stays unknown and cancellat
   assert.equal(cancelled.error._tag, "AnalysisCancelledError");
   assert.equal(cancelled.error.cause, reason);
   assert.equal(
-    cancelled.error.partialObservation.failure_observation.interrupted,
+    cancelled.error.partialObservation.producer_observation.interrupted,
     true,
   );
   assert.deepEqual(error.partialObservation, { interrupted: true });
@@ -320,7 +320,7 @@ test("resource failures preserve their tag and limits without mutating the read 
   assert.equal(result.error.capturedOutput.stdout, "partial native bytes");
   assert.deepEqual(failure.partialObservation, { native_partial: true });
   assert.equal(
-    result.error.partialObservation.failure_observation.native_partial,
+    result.error.partialObservation.producer_observation.native_partial,
     true,
   );
 });

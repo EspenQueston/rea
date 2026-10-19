@@ -6,7 +6,9 @@ import os
 from pathlib import Path
 import resource
 import select
+import signal
 import subprocess
+import sys
 import tempfile
 import time
 
@@ -35,6 +37,7 @@ class OwnershipSession:
         self.shutdown_acknowledged = False
         self.shutdown_request = None
         self.preparation_failed = False
+        self.final_diagnostics = None
         self.sequence = 0
         self.pending = b""
         self.errors = tempfile.TemporaryFile()
@@ -51,7 +54,7 @@ class OwnershipSession:
             self.preparation_failed = True
             try:
                 self.close()
-            except Exception:
+            except BaseException:
                 raise CleanupIncomplete("Ownership helper preparation did not settle", None,
                                         self.ownership, self) from cause
             raise
@@ -62,7 +65,7 @@ class OwnershipSession:
         for stream in streams:
             try:
                 stream.close()
-            except Exception as cause:
+            except BaseException as cause:
                 if failure is None:
                     failure = cause
         self.closed = all(stream.closed for stream in streams)
@@ -106,10 +109,10 @@ class OwnershipSession:
         if self.child is not None:
             request["leaderPid"] = self.child.pid
         message = (json.dumps(request) + "\n").encode()
-        if self.helper.stdin.write(message) != len(message):
-            raise OSError("Ownership helper request write was incomplete; retain this session")
         if operation == "close":
             self.shutdown_request = self.sequence
+        if self.helper.stdin.write(message) != len(message):
+            raise OSError("Ownership helper request write was incomplete; retain this session")
         return self._response(self.sequence)["result"]
 
     def diagnostics(self):
@@ -140,10 +143,11 @@ class OwnershipSession:
             self.shutdown_acknowledged = True
         self.helper.stdin.close()
         code = self.helper.wait(timeout=5)
-        diagnostics = self.diagnostics()
+        if self.final_diagnostics is None:
+            self.final_diagnostics = self.diagnostics()
         self._release_streams()
         if code != 0 and not self.preparation_failed:
-            raise RuntimeError("Ownership helper shutdown failed: " + diagnostics)
+            raise RuntimeError("Ownership helper shutdown failed: " + self.final_diagnostics)
 
 
 def measure(command, directory, prompt=None, timeout=600, *, node="node", memory_limit=6 * 1024**3):
@@ -207,8 +211,10 @@ def measure(command, directory, prompt=None, timeout=600, *, node="node", memory
                 if child is not None:
                     child.wait(timeout=5)
                 owner.close()
-        except Exception as cause:
+        except BaseException as cause:
             cleanup = {"cleaned": False, "reason": str(cause)}
+            if failure is None:
+                failure = cause
         cleanup_seconds = time.monotonic() - cleanup_began
     code = child.poll() if child is not None else None
     after = resource.getrusage(resource.RUSAGE_CHILDREN)
@@ -368,5 +374,51 @@ def main():
                                   "trial": trial + 1, **result}), flush=True)
 
 
+def run_cli():
+    """Stop trials on failure, retaining the live owner through graceful exit."""
+    draining = False
+    interrupted = None
+
+    def interrupt(number, _frame):
+        nonlocal interrupted
+        interrupted = interrupted or number
+        if not draining:
+            raise KeyboardInterrupt(f"Benchmark received signal {number}")
+
+    def report(message):
+        try:
+            print(message, file=sys.stderr, flush=True)
+        except OSError:
+            pass  # A lost diagnostic peer cannot release cleanup authority.
+
+    previous = {number: signal.signal(number, interrupt) for number in (signal.SIGINT, signal.SIGTERM)}
+    try:
+        main()
+        return 0
+    except CleanupIncomplete as failure:
+        draining = True
+        report(str(failure))
+        owner = failure.owner
+        while True:
+            try:
+                if owner.child is not None and not owner.cleaned:
+                    if not owner.cleanup()["cleaned"]:
+                        time.sleep(1)
+                        continue
+                if owner.child is not None:
+                    owner.child.wait(timeout=5)
+                owner.close()
+                break
+            except (Exception, KeyboardInterrupt):
+                time.sleep(1)  # Keep this exact session; never replay the trial.
+        report("Retained benchmark cleanup verified; no further trials were started")
+        return 128 + interrupted if interrupted is not None else 1
+    except KeyboardInterrupt:
+        return 128 + interrupted if interrupted is not None else 130
+    finally:
+        for number, handler in previous.items():
+            signal.signal(number, handler)
+
+
 if __name__ == "__main__":
-    main()
+    raise SystemExit(run_cli())

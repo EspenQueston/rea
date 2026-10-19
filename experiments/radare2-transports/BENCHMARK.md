@@ -280,7 +280,16 @@ reap failed, retry `error.owner.close()` directly. The pending close request kee
 its identity through a timeout; retry consumes its late receipt without resending
 to the helper, even after the helper exits. An explicit refusal permits a new
 close request. Other commands are refused while close acknowledgement is pending.
-Helper loss leaves cleanup unverified; a saved manifest alone cannot authorize
+The close identity is retained before writing, so interruption immediately after
+submission also consumes the same receipt. Final stream-close retry uses retained
+shutdown diagnostics instead of reading an already closed stream.
+
+The direct CLI handles `CleanupIncomplete` by retrying that same owner once per
+second until target cleanup, child reaping and helper close finish, then exits
+with failure without starting another trial. Repeated SIGINT/SIGTERM during this
+drain cannot discard the owner. The helper also retains attached target ownership
+and retries cleanup and host close after input EOF, broken output or graceful
+signals. Forced helper loss leaves cleanup unverified; a saved manifest alone cannot authorize
 recovery. PID reuse or unreadable identity does not authorize signaling. Prompts
 use retained file-backed stdin so a child that does not read cannot block limits.
 
@@ -405,6 +414,33 @@ does not establish general latency or memory guarantees. Sustained cleanup retry
 and whole-agent investigations were not measured. Raw results remain in the same
 local directory (`measure-latest.json`); an excluded pilot failed a harness field
 assertion before measurement, which was corrected to the existing omission field.
+
+The 2026-10-20 follow-up compared `ea87e6305` with named MCP schema validation
+and CLI/helper shutdown retention. The MCP task again requests eight addressed
+instructions. The benchmark CLI task launches a synthetic Node workload that
+allocates 8 MiB and waits 250 ms, then verifies cleanup. Node remains 24.18.0;
+both benchmark revisions use the existing Python 3.11/psutil installation after
+the older temporary virtual environment disappeared. All twelve tasks completed.
+
+| Task          | Run      | Elapsed s, before / after | CPU s, before / after | Sampled family peak MiB, before / after |
+| ------------- | -------- | ------------------------: | --------------------: | --------------------------------------: |
+| MCP           | First    |             1.330 / 1.353 |         1.458 / 1.513 |                         ≥267.9 / ≥265.8 |
+| MCP           | Repeat 1 |             1.300 / 1.380 |         1.455 / 1.532 |                         ≥267.1 / ≥271.7 |
+| MCP           | Repeat 2 |             1.303 / 1.350 |         1.441 / 1.511 |                         ≥264.1 / ≥272.4 |
+| Benchmark CLI | First    |             1.668 / 1.666 |         1.702 / 1.694 |                         ≥280.8 / ≥281.8 |
+| Benchmark CLI | Repeat 1 |             1.691 / 1.693 |         1.716 / 1.718 |                         ≥279.1 / ≥274.4 |
+| Benchmark CLI | Repeat 2 |             1.720 / 1.731 |         1.741 / 1.753 |                         ≥281.1 / ≥275.6 |
+
+Runs alternate with fresh processes and uncontrolled host caches, not controlled
+cold/warm conditions. External 10 ms target-interval sampling excludes the
+sampler's own CPU/RSS; reaped family CPU and sampled RSS include CLI, workload and
+ownership helpers. MCP has 48–50 samples and 1–2 denied observations per run;
+benchmark CLI has 60–61 samples and 5–6 denied observations, making RSS lower
+bounds. MCP stdout remains 39,196 bytes. No models were invoked (zero model
+tokens); full agent tokens, sustained failed-cleanup cost and error-projection
+cost remain unmeasured. These small samples establish no general speedup.
+Raw results remain local in `measure-round3.json` and `round3-*.stdout`/`.stderr`
+under the same review directory.
 
 The configuration keys are `node`, `sdk_driver`, `rea3521`, `r2`, `r2mcp`,
 `ghidra`, `java`, `codex`, `model`, `reasoning`, `output`, `warm_repeats`, `lanes`

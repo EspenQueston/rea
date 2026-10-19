@@ -219,7 +219,7 @@ test("cancellation during final file close preserves observed bytes and the call
     assert.equal(result.error.partialObservation.result.bytes_hex, "30405060");
     assert.equal(result.error.partialObservation.result.complete, null);
     assert.equal(
-      result.error.partialObservation.file_observation.completed.status,
+      result.error.partialObservation.producer_observation.completed.status,
       "matched",
     );
     assert.equal(await retryNativeByteCleanup(), 0);
@@ -261,7 +261,7 @@ test("failed file cleanup preserves completed verification or primary failure, b
       originalError = result.error;
       assert.equal(result.error.partialObservation.raw, source.value.raw);
       const projected = projectAnalysisError(result.error);
-      const file = projected.details.partial_observation.file_observation;
+      const file = projected.details.partial_observation.producer_observation;
       if (failRead) {
         assert.equal(file.primary_failure, primary.message);
         assert.equal(result.error.cause.cause.outcome.cause, primary);

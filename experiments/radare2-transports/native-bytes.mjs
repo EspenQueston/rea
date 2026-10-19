@@ -422,9 +422,6 @@ export async function readNativeBytes(input, read, filePath, request = {}) {
         ? { target: observation.target, raw: observation.raw }
         : {}),
       ...(result ? { result } : {}),
-      ...(cause?.partialObservation
-        ? { file_observation: cause.partialObservation }
-        : {}),
     };
     const cancelled = regularFileCancellation(cause);
     return err(

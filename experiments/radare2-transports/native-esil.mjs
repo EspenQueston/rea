@@ -271,7 +271,6 @@ export async function sliceNativeEsil(input, read) {
           {
             input: selected,
             instruction_observation: decoded.value,
-            failure_observation: failure.partialObservation ?? null,
           },
         ),
       );

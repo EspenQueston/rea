@@ -2,6 +2,7 @@
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import {
+  AnalysisArtifactChangedError,
   AnalysisCancelledError,
   AnalysisInputError,
   AnalysisResourceConstraintError,
@@ -233,7 +234,14 @@ function createObserver(connection, options) {
       };
       observation.target.sha256_after = await digest(signal);
       if (before !== observation.target.sha256_after)
-        return failure(null, "Target changed during observation", observation);
+        return err(
+          new AnalysisArtifactChangedError(
+            OPERATION,
+            connection.path,
+            "Target changed during observation",
+            { partialObservation: observation },
+          ),
+        );
       if (
         connection.transport !== "exec" &&
         replies
@@ -247,12 +255,7 @@ function createObserver(connection, options) {
         );
       return ok(observation);
     } catch (cause) {
-      return failure(cause, "Observation failed", {
-        ...observation,
-        ...(cause?.partialObservation
-          ? { file_observation: cause.partialObservation }
-          : {}),
-      });
+      return failure(cause, "Observation failed", observation);
     }
   }
 

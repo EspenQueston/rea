@@ -32,6 +32,11 @@ int main(void) {
     const char *target = getenv("REA_FAULT_TARGET");
     if (!strcmp(mode, "final-hash-timeout")) {
       if (truncate(target, (off_t)4 * 1024 * 1024 * 1024)) return 2;
+    } else if (!strcmp(mode, "final-hash-changed")) {
+      FILE *changed = fopen(target, "a");
+      if (!changed) return 3;
+      fputs(" changed", changed);
+      fclose(changed);
     } else if (unlink(target)) return 3;
     fputs("{\"error\":false,\"code\":0,\"res\":\"completed-native-reply\"}", stdout);
     fputs("completed-native-stderr\n", stderr);
@@ -45,7 +50,10 @@ int main(void) {
     puts("{ \"jsonrpc\":\"2.0\",\"id\":1,\"extra\":\"preserved\",\"result\":{\"protocolVersion\":\"2024-11-05\",\"serverInfo\":{\"name\":\"fixture\",\"version\":\"1\"},\"capabilities\":{\"tools\":{}}}}");
     if (!request("notifications/initialized") || !request("tools/list")) return 6;
     puts("{\"jsonrpc\":\"2.0\",\"method\":\"notifications/message\",\"params\":{\"level\":\"info\",\"data\":\"retained notification\"}}");
-    puts("{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":\"open_file\",\"inputSchema\":{\"type\":\"object\"}},{\"name\":\"run_command\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}}]}}");
+    const char *catalog = getenv("REA_FAULT_CATALOG");
+    fputs("{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":", stdout);
+    fputs(catalog ? catalog : "{\"tools\":[{\"name\":\"open_file\",\"inputSchema\":{\"type\":\"object\"}},{\"name\":\"run_command\",\"inputSchema\":{\"type\":\"object\",\"properties\":{}}}]}", stdout);
+    puts("}");
     if (!request("open_file")) return 7;
     puts("{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"content\":[]}}");
     if (!request("run_command")) return 8;

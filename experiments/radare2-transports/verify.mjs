@@ -419,7 +419,7 @@ test("invalid native JSON preserves output on both old and corrected engines", a
     assert.match(reply.res, /definitely not JSON/u);
   } else {
     assert.match(
-      result.error.partialObservation.provider_partial.raw_reply,
+      result.error.partialObservation.producer_observation.raw_reply,
       /definitely not JSON/u,
     );
   }
@@ -562,7 +562,7 @@ test("HTTP preserves command bytes, status and URL; rejects redirects and remote
     });
     assert.equal(malformed.ok, false);
     assert.equal(
-      malformed.error.partialObservation.provider_partial.raw_reply,
+      malformed.error.partialObservation.producer_observation.raw_reply,
       "malformed native reply",
     );
     assert.equal(

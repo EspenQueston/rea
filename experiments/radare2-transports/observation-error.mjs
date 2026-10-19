@@ -1,5 +1,6 @@
 import { AnalysisError } from "../../dist/domain/analysisErrorBase.js";
 import {
+  AnalysisArtifactChangedError,
   AnalysisCancelledError,
   AnalysisInputError,
   AnalysisOutputError,
@@ -15,9 +16,16 @@ export function observationError(
   message,
   partialObservation,
 ) {
+  const producer =
+    cause instanceof AnalysisError ? cause.partialObservation : undefined;
   const details = {
     cause,
-    partialObservation,
+    partialObservation:
+      partialObservation === undefined
+        ? producer
+        : producer === undefined || producer === partialObservation
+          ? partialObservation
+          : { ...partialObservation, producer_observation: producer },
     ...(cause instanceof AnalysisError
       ? {
           diagnostics: cause.diagnostics,
@@ -65,7 +73,14 @@ export function observationError(
                 cause.timeoutMs,
                 details,
               )
-            : new AnalysisOutputError(operation, message, details);
+            : cause instanceof AnalysisArtifactChangedError
+              ? new AnalysisArtifactChangedError(
+                  cause.operation,
+                  cause.path,
+                  cause.reason,
+                  details,
+                )
+              : new AnalysisOutputError(operation, message, details);
   if (cause instanceof AnalysisError) error.bindCleanupDependencies([cause]);
   return error;
 }

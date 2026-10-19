@@ -84,6 +84,86 @@ function cleaned(result) {
   assert.ok(Number.isInteger(exitCode) || typeof signal === "string");
 }
 
+async function ownedHost(args, environment = process.env) {
+  const launched = await spawnOwnedProviderProcess({
+    command: process.execPath,
+    arguments: args,
+    runId: randomUUID(),
+    hostEnvironment: environment,
+    stdin: "pipe",
+  });
+  const owner = new ProviderProcessSupervisor(
+    {
+      ...launched,
+      ownsProcessLifetime: true,
+      cleanup:
+        launched.cleanup ??
+        (() => cleanupOwnedProcessGroup(launched.ownership)),
+    },
+    { maxDiagnosticBytes: 1024 * 1024 },
+  );
+  return { launched, owner };
+}
+
+test("server shutdown during configuration or connect never leaves an open stdio peer", async () => {
+  for (const phase of ["configuration", "connect"])
+    for (const signal of ["SIGINT", "SIGTERM"]) {
+      const configuration = join(root, randomUUID() + ".json");
+      const hook = join(root, randomUUID() + ".mjs");
+      await writeFile(
+        configuration,
+        JSON.stringify({ connection: { transport: "exec", path: executable } }),
+      );
+      await writeFile(
+        hook,
+        `
+      import fs from "node:fs/promises";
+      import { syncBuiltinESMExports } from "node:module";
+      import { setTimeout as delay } from "node:timers/promises";
+      import { StdioServerTransport } from ${JSON.stringify(import.meta.resolve("@modelcontextprotocol/server/stdio"))};
+      const stop = async () => { process.kill(process.pid, ${JSON.stringify(signal)}); await delay(50); };
+      ${
+        phase === "configuration"
+          ? `
+      const read = fs.readFile;
+      fs.readFile = async (...args) => {
+        if (args[0] === ${JSON.stringify(configuration)}) await stop();
+        return read(...args);
+      };
+      syncBuiltinESMExports();`
+          : `
+      const start = StdioServerTransport.prototype.start;
+      StdioServerTransport.prototype.start = async function (...args) {
+        await start.apply(this, args);
+        await stop();
+      };`
+      }
+    `,
+      );
+      const { launched, owner } = await ownedHost([
+        "--import",
+        hook,
+        fileURLToPath(new URL("./analysis-server.mjs", import.meta.url)),
+        configuration,
+      ]);
+      try {
+        // Keep the parent's pipe open throughout shutdown, as a live MCP peer would.
+        assert.equal(
+          await owner.waitForExit(3000),
+          true,
+          JSON.stringify(owner.snapshot()),
+        );
+        assert.equal(
+          launched.process.exitCode,
+          signal === "SIGINT" ? 130 : 143,
+        );
+      } finally {
+        launched.process.stdin.end();
+        assert.notEqual((await owner.stop()).status, "incomplete");
+      }
+    }
+});
+
 for (const transport of ["r2pipe", "r2mcp"]) {
   test(`${transport}: interrupted partial frame retains exact bytes and cleanup`, async () => {
     const { connection, options, ready } = fixture(transport, "partial");
@@ -98,7 +178,7 @@ for (const transport of ["r2pipe", "r2mcp"]) {
     const result = await pending;
     cleaned(result);
     const frame =
-      result.error.partialObservation.provider_partial.unterminated_frame;
+      result.error.partialObservation.producer_observation.unterminated_frame;
     assert.equal(frame.invalid_utf8, true);
     assert.deepEqual(
       Buffer.from(frame.base64, "base64"),
@@ -186,6 +266,108 @@ test("semantic HTTP endpoint refusals remain input errors before dispatch", asyn
     assert.deepEqual(result.error.issues, []);
     assert.deepEqual(result.error.partialObservation.transcript, []);
     assert.equal(result.error.partialObservation.cleanup_owners_retained, 0);
+  }
+});
+
+test("MCP binds unique valid named contracts and validates arguments before dispatch", async () => {
+  const open = { name: "open_file", inputSchema: { type: "object" } };
+  const command = { name: "run_command", inputSchema: { type: "object" } };
+  for (const tools of [
+    [
+      open,
+      command,
+      {
+        ...command,
+        inputSchema: {
+          type: "object",
+          properties: { page_size: { type: "integer" } },
+        },
+      },
+    ],
+    [
+      command,
+      {
+        ...command,
+        inputSchema: {
+          type: "object",
+          properties: { page_size: { type: "integer" } },
+        },
+      },
+      open,
+    ].reverse(),
+    [open, open, command],
+    [open, { ...command, inputSchema: { type: "invalid" } }],
+    [
+      open,
+      { ...command, inputSchema: { type: "object", required: "invalid" } },
+    ],
+    [
+      {
+        ...open,
+        inputSchema: { type: "object", required: ["missing_argument"] },
+      },
+      command,
+    ],
+  ]) {
+    const { connection, options } = fixture("r2mcp", "mcp-success");
+    options.environment.REA_FAULT_CATALOG = JSON.stringify({ tools });
+    const result = await probe({ ...connection, commands: ["ij"] }, options);
+    assert.equal(result.ok, false);
+    assert.equal(result.error.partialObservation.cleanup_owners_retained, 0);
+    const transcript = result.error.partialObservation.transcript;
+    assert.deepEqual(
+      transcript.find((entry) => entry.mcp_envelope?.id === 2).mcp_envelope
+        .result.tools,
+      tools,
+    );
+    assert.ok(
+      !transcript.some((entry) => entry.mcp_request?.method === "tools/call"),
+    );
+  }
+});
+
+test("analysis projection retains XML capacity coverage beside complete producer replies", async () => {
+  const xml =
+    '<function name="f"><addr space="ram" offset="4096"/><ast><varnodes>' +
+    "<addr/>".repeat(220_000) +
+    "</varnodes></ast></function>";
+  const replies = new Map([
+    ["agfj @ 0x1000", [{ addr: 4096, name: "f", size: 4, blocks: [] }]],
+    ["afsj @ 0x1000", {}],
+    ["afvj @ 0x1000", {}],
+    ["pdgx @ 0x1000", xml],
+  ]);
+  const server = createServer(async (request, response) => {
+    let source = "";
+    for await (const part of request) source += part;
+    const { cmd } = JSON.parse(source);
+    response.end(
+      JSON.stringify({ error: false, code: 0, res: replies.get(cmd) }),
+    );
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const experiment = createAnalysisExperiment({
+      transport: "http",
+      endpoint: `http://127.0.0.1:${server.address().port}/cmd`,
+    });
+    const result = await experiment.analyze({
+      procedure: "0x1000",
+      analysis: "none",
+      decompiler: "none",
+      value_flow: "r2ghidra",
+    });
+    assert.equal(result.error._tag, "AnalysisResourceConstraintError");
+    const partial = JSON.parse(
+      JSON.stringify(projectAnalysisError(result.error)),
+    ).details.partial_observation;
+    assert.equal(partial.replies[3].res, xml);
+    assert.equal(partial.producer_observation.coverage, "partial");
+    assert.equal(partial.producer_observation.retained_nodes, 216_000);
+    assert.ok(partial.producer_observation.examined_elements > 216_000);
+    assert.equal(partial.producer_observation.examined_operations, 0);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
   }
 });
 
@@ -388,8 +570,8 @@ test("frame and transcript capacity failures preserve their tag, limits and part
   assert.equal(frame.error._tag, "AnalysisResourceConstraintError");
   assert.equal(frame.error.reportedLimits.max_bytes, 16 * 1024 * 1024);
   assert.ok(
-    frame.error.partialObservation.provider_partial.unterminated_frame.bytes >
-      0,
+    frame.error.partialObservation.producer_observation.unterminated_frame
+      .bytes > 0,
   );
   const exec = fixture("exec", "overflow");
   const output = await probe(
@@ -434,7 +616,7 @@ test("frame and transcript capacity failures preserve their tag, limits and part
     assert.equal(oversized.error._tag, "AnalysisResourceConstraintError");
     assert.equal(oversized.error.reportedLimits.max_bytes, 16 * 1024 * 1024);
     assert.ok(
-      oversized.error.partialObservation.provider_partial.output.bytes > 0,
+      oversized.error.partialObservation.producer_observation.output.bytes > 0,
     );
   } finally {
     await new Promise((resolve) => server.close(resolve));
@@ -565,9 +747,8 @@ for (const [resource, surface] of [
     );
     const configuration = join(root, randomUUID() + ".json");
     await writeFile(configuration, JSON.stringify({ connection }));
-    const launched = await spawnOwnedProviderProcess({
-      command: process.execPath,
-      arguments: [
+    const { launched, owner } = await ownedHost(
+      [
         "--import",
         hook,
         fileURLToPath(new URL(`./${surface}.mjs`, import.meta.url)),
@@ -581,19 +762,7 @@ for (const [resource, surface] of [
               })
             : configuration,
       ],
-      runId: randomUUID(),
-      hostEnvironment: options.environment,
-      stdin: "pipe",
-    });
-    const owner = new ProviderProcessSupervisor(
-      {
-        ...launched,
-        ownsProcessLifetime: true,
-        cleanup:
-          launched.cleanup ??
-          (() => cleanupOwnedProcessGroup(launched.ownership)),
-      },
-      { maxDiagnosticBytes: 1024 * 1024 },
+      options.environment,
     );
     try {
       if (surface === "analysis-server") {
@@ -750,8 +919,8 @@ test("cancellation after provider cleanup retains completed replies and preserve
   }
 });
 
-for (const mode of ["timeout", "missing"]) {
-  test(`final hash ${mode} preserves completed replies and leaves verification unknown`, async () => {
+for (const mode of ["timeout", "missing", "changed"]) {
+  test(`final hash ${mode} preserves completed replies and reports target status`, async () => {
     const { connection, options, ready } = fixture(
       "exec",
       `final-hash-${mode}`,
@@ -771,11 +940,16 @@ for (const mode of ["timeout", "missing"]) {
     assert.equal(result.ok, false);
     assert.equal(
       result.error._tag,
-      mode === "timeout" ? "AnalysisCancelledError" : "AnalysisOutputError",
+      mode === "timeout"
+        ? "AnalysisCancelledError"
+        : mode === "changed"
+          ? "AnalysisArtifactChangedError"
+          : "AnalysisOutputError",
     );
     if (mode === "timeout")
       assert.equal(result.error.cause.name, "TimeoutError");
-    else assert.equal(result.error.cause.code, "ENOENT");
+    else if (mode === "missing")
+      assert.equal(result.error.cause.code, "ENOENT");
     // Exercise the same serializable error projection used by CLI and MCP.
     const projected = JSON.parse(
       JSON.stringify(projectAnalysisError(result.error)),
@@ -789,7 +963,17 @@ for (const mode of ["timeout", "missing"]) {
       partial.target.sha256_before,
       createHash("sha256").update(source).digest("hex"),
     );
-    assert.equal(partial.target.sha256_after, null);
+    if (mode === "changed") {
+      assert.equal(projected.code, "artifact_changed");
+      assert.equal(projected.retryable, true);
+      assert.equal(result.error.path, path);
+      assert.equal(
+        partial.target.sha256_after,
+        createHash("sha256")
+          .update(source + " changed")
+          .digest("hex"),
+      );
+    } else assert.equal(partial.target.sha256_after, null);
     assert.match(
       JSON.stringify(partial.raw.transcript),
       /completed-native-stderr/u,
@@ -834,7 +1018,8 @@ for (const transport of ["exec", "r2pipe", "r2mcp", "http"]) {
           (entry) => !entry.r2pipe2,
         ),
       );
-      const raw = result.error.partialObservation.provider_partial.raw_reply;
+      const raw =
+        result.error.partialObservation.producer_observation.raw_reply;
       assert.equal(raw.invalid_utf8 ?? raw.invalidUtf8, true);
       if (transport !== "exec")
         assert.ok(Buffer.from(raw.base64, "base64").includes(255));

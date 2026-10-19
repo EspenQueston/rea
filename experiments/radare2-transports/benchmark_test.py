@@ -1,7 +1,9 @@
 """Real synthetic process trees; no Codex or reverse-engineering engine runs."""
 import json
+import os
 from pathlib import Path
 import subprocess
+import signal
 import sys
 import tempfile
 import time
@@ -26,6 +28,150 @@ if sys.argv[1] != 'exit': time.sleep(30)
 
 
 class BenchmarkCleanupTest(unittest.TestCase):
+    def test_cli_retains_cleanup_through_repeated_signals_and_stops_trials(self):
+        for interruption in (False, True):
+            with self.subTest(interruption=interruption), tempfile.TemporaryDirectory(prefix="rea-benchmark-cli-") as root:
+                directory = Path(root)
+                release, state = directory / "release", directory / "state.json"
+                driver = directory / "driver.mjs"
+                driver.write_text("setInterval(() => {}, 1000);\n")
+                config = directory / "config.json"
+                config.write_text(json.dumps({"node": "node", "sdk_driver": str(driver), "lanes": ["fixture"],
+                    "targets": [{"id": "synthetic"}], "output": str(directory / "out")}))
+                script = f'''
+import benchmark, json, sys
+from pathlib import Path
+cleanup, measure = benchmark.OwnershipSession.cleanup, benchmark.measure
+interruption = {interruption!r}
+def deny(owner):
+    global interruption
+    if not Path({str(release)!r}).exists():
+        owner.observe()
+        Path({str(state)!r}).write_text(json.dumps({{"child": owner.child.pid, "helper": owner.helper.pid}}))
+        if interruption:
+            interruption = False
+            raise KeyboardInterrupt("interrupted during final cleanup")
+        return {{"cleaned": False, "reason": "injected cleanup denial"}}
+    return cleanup(owner)
+def bounded(*args, **kwargs):
+    kwargs["timeout"] = .2
+    return measure(*args, **kwargs)
+benchmark.OwnershipSession.cleanup = deny
+benchmark.measure = bounded
+sys.argv = ["benchmark.py", {str(config)!r}, "sdk", "--trials", "2"]
+raise SystemExit(benchmark.run_cli())
+'''
+                host = subprocess.Popen([sys.executable, "-c", script], cwd=Path(__file__).parent,
+                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                try:
+                    deadline = time.monotonic() + 10
+                    while not state.exists():
+                        self.assertIsNone(host.poll())
+                        self.assertLess(time.monotonic(), deadline)
+                        time.sleep(.02)
+                    time.sleep(1.2)  # Cross a denied automatic retry.
+                    owners = json.loads(state.read_text())
+                    host.send_signal(signal.SIGTERM)
+                    host.send_signal(signal.SIGINT)
+                    time.sleep(.2)
+                    self.assertIsNone(host.poll())
+                    self.assertTrue(all(psutil.pid_exists(pid) for pid in owners.values()))
+                    release.touch()
+                    output, errors = host.communicate(timeout=15)
+                    self.assertIn(host.returncode, (130, 143))
+                    self.assertIn("Retained benchmark cleanup verified", errors)
+                    self.assertEqual(output, "")
+                    self.assertFalse((directory / "out/run/sdk-synthetic-fixture-2").exists())
+                    self.assertFalse(any(psutil.pid_exists(pid) for pid in owners.values()))
+                finally:
+                    release.touch()
+                    host.communicate(timeout=20)
+
+    def test_helper_eof_and_graceful_signal_retain_the_same_evidence_owner(self):
+        with tempfile.TemporaryDirectory(prefix="rea-benchmark-eof-") as root:
+            directory = Path(root)
+            denied = directory / "denied"
+            hook = directory / "hook.mjs"
+            host_module = Path(__file__).resolve().parents[2] / "dist/process/ProcessOwnershipObservation.js"
+            hook.write_text(f'''
+import {{ existsSync }} from "node:fs";
+import {{ systemProcessOwnershipHost as host }} from {json.dumps(host_module.as_uri())};
+const list = host.listProcesses;
+host.listProcesses = (...args) => {{
+  if (existsSync({json.dumps(str(denied))})) throw new Error("injected process inspection denial");
+  return list.apply(host, args);
+}};
+''')
+            with patch.dict(os.environ, {"NODE_OPTIONS": "--import=" + str(hook)}):
+                owner = OwnershipSession("node")
+            child = None
+            descendants = []
+            try:
+                child = subprocess.Popen([sys.executable, "-c", TREE, "timeout"], start_new_session=True,
+                    env={**os.environ, "REA_PROCESS_RUN_ID": owner.ownership["runId"]}, stdout=subprocess.PIPE, text=True)
+                descendants = json.loads(child.stdout.readline())
+                owner.attach(child)
+                denied.touch()
+                owner.helper.stdin.close()
+                time.sleep(1.2)
+                owner.helper.terminate()  # Graceful signal must not lose its ledger either.
+                time.sleep(.2)
+                self.assertIsNone(owner.helper.poll())
+                self.assertIsNone(child.poll())
+                denied.unlink()
+                owner.helper.wait(timeout=15)
+                child.wait(timeout=5)
+                self.assertEqual(owner.helper.returncode, 143)
+                for pid in descendants:
+                    self.assertFalse(psutil.pid_exists(pid) and psutil.Process(pid).status() != psutil.STATUS_ZOMBIE)
+            finally:
+                denied.unlink(missing_ok=True)
+                if not owner.helper.stdin.closed:
+                    owner.helper.stdin.close()
+                owner.helper.wait(timeout=20)
+                if child is not None:
+                    child.wait(timeout=5)
+                    child.stdout.close()
+                owner._release_streams()
+
+    def test_failed_final_stream_close_retries_without_rereading_closed_diagnostics(self):
+        owner = OwnershipSession("node")
+        close = owner.errors.close
+        attempts = 0
+        def deny_once():
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise OSError("injected final stream close failure")
+            close()
+        try:
+            with patch.object(owner.errors, "close", deny_once):
+                with self.assertRaises(OSError):
+                    owner.close()
+                self.assertFalse(owner.closed)
+                self.assertTrue(owner.shutdown_acknowledged)
+                owner.close()
+            self.assertTrue(owner.closed)
+        finally:
+            owner.close()
+
+    def test_interruption_after_close_write_keeps_the_pending_receipt(self):
+        owner = OwnershipSession("node")
+        write = owner.helper.stdin.write
+        def interrupt_after_write(message):
+            write(message)
+            raise KeyboardInterrupt("interrupted after close submission")
+        try:
+            with patch.object(owner.helper.stdin, "write", interrupt_after_write):
+                with self.assertRaises(KeyboardInterrupt):
+                    owner.close()
+            self.assertEqual(owner.shutdown_request, 1)
+            with patch.object(owner.helper.stdin, "write", side_effect=AssertionError("close must not replay")):
+                owner.close()
+            self.assertTrue(owner.closed)
+        finally:
+            owner.close()
+
     def test_failures_before_target_launch_reap_prepared_helper(self):
         for stage in ("file-open", "prompt-write", "spawn"):
             with self.subTest(stage=stage), tempfile.TemporaryDirectory(prefix="rea-benchmark-prepare-") as root:
@@ -179,7 +325,7 @@ class BenchmarkCleanupTest(unittest.TestCase):
             def lose_helper(owner):
                 result = original_observe(owner)
                 owners.append(owner)
-                owner.helper.terminate()
+                owner.helper.kill()  # Forced loss; graceful signals retain cleanup authority.
                 owner.helper.wait(timeout=5)
                 return result
 

@@ -1,6 +1,8 @@
 // One helper and evidence ledger live for the complete Python benchmark trial.
 import { randomUUID } from "node:crypto";
 import { createInterface } from "node:readline";
+import { setTimeout as delay } from "node:timers/promises";
+import { entrypointLifetime } from "./entrypoint-lifetime.mjs";
 import {
   cleanupOwnedProcessGroup,
   verifyNoTokenOwnedProcesses,
@@ -11,7 +13,22 @@ import {
   systemProcessOwnershipHost as host,
 } from "../../dist/process/ProcessOwnershipObservation.js";
 
-const send = (value) => process.stdout.write(JSON.stringify(value) + "\n");
+const lifetime = entrypointLifetime();
+let input;
+let outputLost = false;
+const disconnect = () => {
+  input?.close();
+  process.stdin.destroy();
+};
+lifetime.signal.addEventListener("abort", disconnect, { once: true });
+process.stdout.on("error", () => {
+  outputLost = true;
+  disconnect();
+});
+process.stderr.on("error", () => {});
+const send = (value) => {
+  if (!outputLost) process.stdout.write(JSON.stringify(value) + "\n");
+};
 if (process.argv.length !== 2)
   throw new Error(
     "This helper requires a live benchmark session; manifests cannot restore ownership evidence",
@@ -31,10 +48,9 @@ try {
   ownership = { ...selected, evidenceOwner };
   send({ id: 0, ownership: selected });
   let previousId = 0;
-  for await (const line of createInterface({
-    input: process.stdin,
-    crlfDelay: Infinity,
-  })) {
+  input = createInterface({ input: process.stdin, crlfDelay: Infinity });
+  if (lifetime.signal.aborted || outputLost) disconnect();
+  for await (const line of lifetime.signal.aborted || outputLost ? [] : input) {
     let request;
     try {
       request = JSON.parse(line);
@@ -83,15 +99,28 @@ try {
       send({ id: request?.id ?? null, error: cause?.message ?? String(cause) });
     }
   }
-  // An unexpectedly lost parent cannot restore this private ledger from a file.
-  // Make one final attempt on the same owner before reporting its loss.
-  if (!closed && ownership.leaderPid !== undefined && !cleaned) {
-    const result = await cleanupOwnedProcessGroup(ownership, host);
-    if (!result.cleaned) {
-      console.error(JSON.stringify({ ownership_lost: true, cleanup: result }));
-      process.exitCode = 1;
+} finally {
+  // EOF, broken output and graceful signals cannot discard this private ledger.
+  let reported = false;
+  while (!closed) {
+    try {
+      if (ownership?.leaderPid !== undefined && !cleaned) {
+        const result = await cleanupOwnedProcessGroup(ownership, host);
+        if (!result.cleaned) throw new Error(result.reason);
+        cleaned = true;
+      }
+      await host.close?.();
+      closed = true;
+    } catch (cause) {
+      if (!reported)
+        console.error(
+          JSON.stringify({
+            cleanup_pending: true,
+            reason: cause?.message ?? String(cause),
+          }),
+        );
+      reported = true;
+      await delay(1_000);
     }
   }
-} finally {
-  if (!closed) await host.close?.();
 }
