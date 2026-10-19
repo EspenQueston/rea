@@ -5,6 +5,7 @@ import {
   isJSONRPCRequest,
   isJSONRPCNotification,
   isJSONRPCResultResponse,
+  SUPPORTED_PROTOCOL_VERSIONS,
   type Implementation,
   type Icon,
   type JSONRPCMessage,
@@ -44,6 +45,18 @@ import { RequestTrackingMcpServer } from "./RequestTrackingMcpServer.js";
 export type { CompactInputSchemaPresentation } from "../contracts/compactInputSchema.js";
 
 const currentRequestSignal = new AsyncLocalStorage<AbortSignal>();
+
+/**
+ * The newest wire revision this server speaks. Revision 2026-07-28 made
+ * `resultType` a REQUIRED member of every result; the SDK stamps it on
+ * outbound results only for modern-era requests, which are negotiated
+ * exclusively via `server/discover` — a handler the SDK installs only when
+ * the supported list names a modern revision. Without this entry a client
+ * on 2026-07-28 (itself the default in current Claude Code builds) cannot
+ * negotiate and every delayed `tools/call` result is discarded with
+ * "missing required resultType".
+ */
+const MODERN_PROTOCOL_VERSION = "2026-07-28";
 
 /** Signal for the completion request currently being dispatched by the SDK. */
 export const currentMcpRequestSignal = (): AbortSignal | undefined =>
@@ -120,7 +133,18 @@ export class EvidenceMcpServer extends RequestTrackingMcpServer {
     compactPresentation: CompactInputSchemaPresentation | undefined = undefined,
     private readonly omitOutputSchemas = false,
   ) {
-    super(info, options);
+    super(
+      info,
+      options.supportedProtocolVersions === undefined
+        ? {
+            ...options,
+            supportedProtocolVersions: [
+              ...SUPPORTED_PROTOCOL_VERSIONS,
+              MODERN_PROTOCOL_VERSION,
+            ],
+          }
+        : options,
+    );
     this.compactPresentation =
       compactPresentation === undefined
         ? undefined
@@ -451,7 +475,15 @@ class ErrorEvidenceTransport implements Transport {
     );
     return {
       ...message,
-      result: this.delivery.toErrorToolResult(failure, targetContent),
+      result: {
+        ...this.delivery.toErrorToolResult(failure, targetContent),
+        // The SDK stamps `resultType` on modern-era results before this
+        // transport sees them; the replacement must keep the stamp or a
+        // 2026-07-28 client discards REA's structured error entirely.
+        ...(typeof message.result.resultType === "string"
+          ? { resultType: message.result.resultType }
+          : {}),
+      },
     };
   }
 }
