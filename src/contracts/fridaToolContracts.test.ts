@@ -208,4 +208,25 @@ describe("Frida remote address advertisement", () => {
       expect(isValidFridaRemoteAddress(rejected), rejected).toBe(false);
     }
   });
+
+  it("advertises a pattern a strict consumer can compile under both unicode modes", () => {
+    const found = TOOL_CONTRACTS.find(
+      (candidate) => candidate.name === "list_frida_devices",
+    );
+    if (found === undefined) throw new Error("Missing list_frida_devices");
+    const projected = advertisedInputJsonSchema(found);
+    const remote = (projected["properties"] as Record<string, unknown>)[
+      "remote"
+    ] as Record<string, unknown>;
+    const address = (remote["properties"] as Record<string, unknown>)[
+      "address"
+    ] as Record<string, unknown>;
+    const pattern = String(address["pattern"]);
+    // `v` mode reserves `/` inside a character class, so a bare solidus would
+    // throw here and leave a strict consumer unable to load the Frida tools.
+    expect(() => new RegExp(pattern, "u")).not.toThrow();
+    expect(() => new RegExp(pattern, "v")).not.toThrow();
+    expect(new RegExp(pattern, "v").test("frida-target/path")).toBe(false);
+    expect(new RegExp(pattern, "v").test("frida-target.example")).toBe(true);
+  });
 });

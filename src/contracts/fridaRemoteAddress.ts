@@ -9,12 +9,14 @@
  * rejects. The remaining checks below are URL-level semantics that a portable
  * pattern cannot express, so they stay in the predicate.
  *
- * The class spells controls with `\x00` hex escapes. These accept exactly the
- * strings the previous inline class accepted; the hex form matches the
- * convention `nulFreeStringSchema` uses for patterns that reach strict schema
- * consumers.
+ * The class spells controls and the solidus with `\x00` hex escapes. These
+ * accept exactly the strings the previous inline class accepted; the hex form
+ * matches the convention `nulFreeStringSchema` uses for patterns that reach
+ * strict schema consumers. A bare `/` would be a `v`-mode reserved punctuator,
+ * so a consumer compiling the advertised pattern with `v` would throw instead
+ * of validating the address.
  */
-export const FRIDA_REMOTE_ADDRESS_CHARSET = /^[^?@#/\s\x00-\x1f\x7f]+$/u;
+export const FRIDA_REMOTE_ADDRESS_CHARSET = /^[^?@#\x2f\s\x00-\x1f\x7f]+$/u;
 
 /** Accept a Frida host address, optionally with a TCP port, without URL credentials or paths. */
 export const isValidFridaRemoteAddress = (address: string): boolean => {
