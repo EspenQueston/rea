@@ -165,6 +165,7 @@ export const TOOL_EFFECTS: Readonly<Record<string, ToolEffects>> = {
     executesForeignCode: true,
   }),
   compare_with_radiff2: effects({
+    mutatesSession: true,
     launchesProcess: true,
     idempotent: false,
   }),
