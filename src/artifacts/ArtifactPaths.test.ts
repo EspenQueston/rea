@@ -215,4 +215,46 @@ describe("Unicode NFC normalization", () => {
   it("ignores a structural trailing-slash trim without a spelling change", () => {
     expect(unicodeNormalizationLimitation("dir/", "dir")).toBeUndefined();
   });
+
+  it("names a folder on disk as a directory path, not an archive member", () => {
+    const nfdDir = "caf\u0065\u0301";
+    const nfcDir = "caf\u00e9";
+    const limitation = unicodeNormalizationLimitation(
+      nfdDir,
+      nfcDir,
+      "directory",
+    );
+    expect(limitation).toBeDefined();
+    expect(limitation).toContain("Directory path");
+    expect(limitation).not.toContain("Archive member");
+    expect(limitation).toContain(JSON.stringify(nfdDir));
+    expect(limitation).toContain(JSON.stringify(nfcDir));
+  });
+
+  it("keeps the trailing slash on a ZIP directory entry's NFC spelling", () => {
+    const nfdDirEntry = "caf\u0065\u0301/";
+    const nfcDirEntry = "caf\u00e9";
+    const limitation = unicodeNormalizationLimitation(
+      nfdDirEntry,
+      nfcDirEntry,
+      "directory",
+    );
+    expect(limitation).toBeDefined();
+    expect(limitation).toContain("Directory path");
+    // The logical path trims the slash as a structural step; the NFC
+    // spelling shown here is the directory name, slash included.
+    expect(limitation).toContain(JSON.stringify("caf\u00e9/"));
+    expect(limitation).not.toContain("Archive member");
+  });
+
+  it("names a file path by kind for non-directory entries", () => {
+    const fileLimitation = unicodeNormalizationLimitation(NFD, NFC, "file");
+    expect(fileLimitation).toContain("File path");
+    const symlinkLimitation = unicodeNormalizationLimitation(
+      NFD,
+      NFC,
+      "symlink",
+    );
+    expect(symlinkLimitation).toContain("Symlink path");
+  });
 });

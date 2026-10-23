@@ -77,16 +77,32 @@ export const normalizeArtifactPath = (input: string): string => {
  * logical path. Inventory identity keeps the NFC form; the limitation preserves
  * the source spelling that normalization replaced. Returns undefined when the
  * spelling is already NFC (a trailing-slash trim is structural, not a spelling
- * change, and is not reported here).
+ * change, and is not reported here). The label follows the entry kind so a
+ * folder on disk or a ZIP directory entry is never called an archive member,
+ * and a directory's NFC spelling keeps its trailing slash (the logical path
+ * trims it as a structural step, not a spelling change).
  */
 export const unicodeNormalizationLimitation = (
   original: string,
   normalized: string,
+  kind: ArtifactEntry["kind"] = "file",
 ): string | undefined => {
   if (original.normalize("NFC") === original) return undefined;
+  const label =
+    kind === "directory"
+      ? "Directory path"
+      : kind === "symlink"
+        ? "Symlink path"
+        : kind === "slice"
+          ? "Archive slice path"
+          : kind === "metadata"
+            ? "Metadata path"
+            : "File path";
+  const displayNormalized =
+    kind === "directory" && original.endsWith("/") ? `${normalized}/` : normalized;
   return (
-    `Archive member name ${JSON.stringify(original)} was Unicode-normalized ` +
-    `to NFC ${JSON.stringify(normalized)} for its logical path; the original ` +
+    `${label} ${JSON.stringify(original)} was Unicode-normalized ` +
+    `to NFC ${JSON.stringify(displayNormalized)} for its logical path; the original ` +
     `decoded spelling is preserved in this limitation.`
   );
 };
