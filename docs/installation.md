@@ -429,6 +429,8 @@ and other MCP servers. Purging removes REA's legacy cache and state under
 archives under `${XDG_CACHE_HOME:-~/.cache}/rea/hopper-releases`. Other cache
 namespaces remain intact. A caller-selected `REA_KUNA_CACHE_DIR` is retained
 and reported because REA cannot establish ownership of its entire contents.
+A spelling of that default directory, including a trailing separator, a `.`
+segment, or a repeated separator, is the owned cache and is purged with it.
 A client configuration that is malformed, unreadable, or at an unsafe
 path stops the operation before anything is removed, and a client that fails
 while being updated stops the remaining removals. Uninstall reports each

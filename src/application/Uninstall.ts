@@ -18,7 +18,10 @@ import { copyFile, lstat, realpath, rm, rmdir } from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
 import { homeDirectoryFromEnvironment } from "../config/homeDirectory.js";
 import { basename, dirname, join } from "node:path";
-import { defaultKunaCacheDirectory } from "../config/kunaCacheDirectory.js";
+import {
+  defaultKunaCacheDirectory,
+  sameLexicalDirectory,
+} from "../config/kunaCacheDirectory.js";
 import { linuxHopperReleaseCacheDirectory } from "./LinuxHopperCacheDirectory.js";
 
 import { ClientConfigurationPublication } from "./ClientConfigurationPublication.js";
@@ -760,9 +763,17 @@ const purgeSelectedData = async (
   ];
   const directories: string[] = [];
   if (platform === "darwin" || platform === "linux") {
-    directories.push(defaultKunaCacheDirectory(home, environment, platform));
+    const defaultCache = defaultKunaCacheDirectory(home, environment, platform);
+    directories.push(defaultCache);
     const custom = environment.REA_KUNA_CACHE_DIR;
-    if (custom !== undefined && custom !== directories[0])
+    // Exact default spelling and a lexical respelling are the owned cache.
+    // A different caller directory stays retained; this comparison does not
+    // follow symbolic links or claim ownership of that other tree.
+    if (
+      custom !== undefined &&
+      custom !== defaultCache &&
+      !sameLexicalDirectory(custom, defaultCache, platform)
+    )
       items.push(
         item(
           "kuna-custom-cache",

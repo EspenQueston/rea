@@ -90,6 +90,65 @@ it("retains an arbitrary caller-selected Kuna cache and refuses a linked managed
   }
 });
 
+it.each([
+  {
+    label: "trailing separator",
+    platform: "darwin" as const,
+    spelling: (cache: string) => `${cache}/`,
+  },
+  {
+    label: "dot segment",
+    platform: "darwin" as const,
+    spelling: (cache: string) => `${cache}/.`,
+  },
+  {
+    label: "duplicate separator",
+    platform: "darwin" as const,
+    spelling: (cache: string) =>
+      `${cache.slice(0, cache.lastIndexOf("kuna"))}/${"kuna"}`,
+  },
+  {
+    label: "linux trailing separator",
+    platform: "linux" as const,
+    spelling: (cache: string) => `${cache}/`,
+  },
+])(
+  "purges a default Kuna cache selected with a $label",
+  async ({ platform, spelling }) => {
+    const home = await createTestTempDirectory("rea-managed-cache-spelling-");
+    const root = join(
+      home,
+      platform === "darwin" ? "Library/Caches" : "xdg-cache",
+    );
+    const cache = join(root, "rea", "kuna");
+    await mkdir(cache, { recursive: true });
+    await writeFile(join(cache, "cached"), "REA cache");
+    const host = systemUninstallHost(
+      home,
+      undefined,
+      {
+        ...(platform === "linux" ? { XDG_CACHE_HOME: root } : {}),
+        REA_KUNA_CACHE_DIR: spelling(cache),
+      },
+      platform,
+    );
+    try {
+      const result = await host.purgeData();
+      expect(result).not.toContainEqual(
+        expect.objectContaining({ name: "kuna-custom-cache" }),
+      );
+      expect(result).toContainEqual(
+        expect.objectContaining({ name: "kuna", status: "removed" }),
+      );
+      await expect(readFile(join(cache, "cached"))).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+    } finally {
+      await host.close?.();
+    }
+  },
+);
+
 it("reports the Hopper producer's invalid cache selection rather than silently falling back", async () => {
   const home = await createTestTempDirectory("rea-managed-cache-invalid-");
   const fallback = join(home, ".cache", "rea", "hopper-releases");
