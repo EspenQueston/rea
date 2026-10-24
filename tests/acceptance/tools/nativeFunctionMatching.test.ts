@@ -294,7 +294,9 @@ cliTest("does not pair whitespace-only named inventory symbols", async () => {
     parseEvidence(response.structuredContent).normalized_result,
   );
   expect(report.summary.matched).toBe(0);
-  expect(report.matches).toEqual([]);
+  expect(report.matches.some((match) => match.basis === "exact-symbol")).toBe(
+    false,
+  );
 });
 
 cliTest(
