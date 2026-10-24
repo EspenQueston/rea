@@ -209,16 +209,11 @@ const reportedSymbol = (
   const generated = names.some(
     (symbol) => nativeSymbolOrigin(symbol.symbol) === "generated",
   );
-  const named = names.some(
-    (symbol) => nativeSymbolOrigin(symbol.symbol) === "named",
+  const named = names.some((symbol) =>
+    hasStableNativeSymbol(symbol.value, symbol.symbol),
   );
   return {
-    value:
-      generated ||
-      row.value.trim().length === 0 ||
-      (!named && !hasStableNativeSymbol(row.value, row.symbol))
-        ? null
-        : row.value,
+    value: generated || !named ? null : row.value,
     origin:
       generated && named
         ? "conflicting"

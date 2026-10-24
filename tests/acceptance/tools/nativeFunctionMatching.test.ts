@@ -280,6 +280,23 @@ cliTest.for([{ profile: "full" }, { profile: "compact" }] as const)(
   },
 );
 
+cliTest("does not pair whitespace-only named inventory symbols", async () => {
+  const { call } = await connectLocalToolsMcp();
+  const left = nativeMatchingNamedInventory("1", [
+    { address: "0x10", value: " \t " },
+  ]);
+  const right = nativeMatchingNamedInventory("2", [
+    { address: "0x20", value: " \t " },
+  ]);
+  const response = await call("match_native_functions", { left, right });
+  expect(response.isError, JSON.stringify(response)).not.toBe(true);
+  const report = nativeFunctionMatchingSchema.parse(
+    parseEvidence(response.structuredContent).normalized_result,
+  );
+  expect(report.summary.matched).toBe(0);
+  expect(report.matches).toEqual([]);
+});
+
 cliTest(
   "native matching rejects corrupt and misselected MCP sources without retaining them",
   async () => {
