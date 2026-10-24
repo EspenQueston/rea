@@ -299,6 +299,58 @@ cliTest("does not pair whitespace-only named inventory symbols", async () => {
   );
 });
 
+cliTest("preserves origin conflicts for whitespace-only symbols", async () => {
+  const { call } = await connectLocalToolsMcp();
+  const generatedSymbol = {
+    primary: true,
+    dynamic: false,
+    external: false,
+    type: "function",
+    source: "default",
+  };
+  const left = nativeMatchingInventory("1", [
+    { address: "0x10", value: " \t " },
+  ]);
+  const right = nativeMatchingInventory("2", [
+    { address: "0x20", value: " \t " },
+  ]);
+  const leftNames = createEvidence(
+    nativeMatchingTarget("1"),
+    nativeMatchingProvider,
+    {
+      operation: "list_names",
+      parameters: {},
+      result: [{ address: "0x10", value: " \t ", symbol: generatedSymbol }],
+    },
+  );
+  const rightNames = createEvidence(
+    nativeMatchingTarget("2"),
+    nativeMatchingProvider,
+    {
+      operation: "list_names",
+      parameters: {},
+      result: [{ address: "0x20", value: " \t ", symbol: generatedSymbol }],
+    },
+  );
+  const response = await call("match_native_functions", {
+    left,
+    right,
+    left_observations: [leftNames],
+    right_observations: [rightNames],
+  });
+  expect(response.isError, JSON.stringify(response)).not.toBe(true);
+  const report = nativeFunctionMatchingSchema.parse(
+    parseEvidence(response.structuredContent).normalized_result,
+  );
+  expect(
+    report.matches
+      .flatMap((match) => [...match.left, ...match.right])
+      .flatMap((member) => member.limitations),
+  ).toContain(
+    "Conflicting generated and named symbol-origin observations; exact-name matching is unavailable. Independent complete body bytes remain eligible.",
+  );
+});
+
 cliTest(
   "native matching rejects corrupt and misselected MCP sources without retaining them",
   async () => {
