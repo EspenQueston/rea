@@ -3,7 +3,7 @@ import { z } from "zod";
 
 import type { EvidenceBundle } from "./evidenceBundle.js";
 import type { Evidence } from "./evidence.js";
-import { localPathStringSchema } from "./localPath.js";
+import { absoluteLocalPathStringSchema } from "./localPath.js";
 import { compareUnicodeCodePoints } from "./unicodeCodePointOrder.js";
 
 /**
@@ -42,7 +42,9 @@ export const evidenceAuditResultSchema = z.object({
 
 /** Input accepted by the bundle audit tool; one absolute local path. */
 export const evidenceAuditInputSchema = z.strictObject({
-  path: localPathStringSchema,
+  path: absoluteLocalPathStringSchema.describe(
+    "Absolute local filesystem path to the Evidence bundle; relative paths are rejected",
+  ),
 });
 
 export type EvidenceAuditResult = z.infer<typeof evidenceAuditResultSchema>;
@@ -57,10 +59,13 @@ interface FindingCandidate {
 
 /** Cloud and API credential shapes that establish a failure when matched. */
 const CREDENTIAL_PATTERNS: readonly { rule: string; pattern: RegExp }[] = [
-  // Bearer tokens in header-shaped strings.
+  // Bearer tokens in header-shaped strings. Prose such as "Bearer realm="
+  // (WWW-Authenticate challenges) or "bearer of" never carries the token, so
+  // the credential must start with a real token character, and challenge
+  // keywords directly after "bearer" are rejected.
   {
     rule: "credential-bearer-token",
-    pattern: /\bbearer\s+[A-Za-z0-9\-._~+/]+=*/gi,
+    pattern: /\bbearer\s+(?!realm\b|of\b|token\b)[A-Za-z0-9\-._~+/]+=*/gi,
   },
   // AWS access key IDs (20 uppercase alphanumerics).
   {
@@ -68,10 +73,12 @@ const CREDENTIAL_PATTERNS: readonly { rule: string; pattern: RegExp }[] = [
     pattern: /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g,
   },
   // AWS secret access keys presented as 40-char base64-ish tokens after a
-  // key-like label.
+  // key-like label. Library and tool names ("aws-sdk-cpp", "aws-cli") label
+  // builds, not secrets, so they are excluded from the label.
   {
     rule: "credential-aws-secret-key",
-    pattern: /\baws.{0,32}?[0-9A-Za-z/+]{40}\b/gi,
+    pattern:
+      /\baws(?:[ _-]?secret(?:[ _-]?access)?[ _-]?key)?(?![-\w]*(?:sdk|cli|toolkit|build|crt))[\s:=]+[0-9A-Za-z/+]{40}\b/gi,
   },
   // Google API keys.
   { rule: "credential-google-api-key", pattern: /\bAIza[0-9A-Za-z\-_]{35}\b/g },
@@ -170,7 +177,9 @@ const compareFindings = (
 /**
  * Walk one JSON value and report string findings plus structural locations.
  * Object keys are audited as locations, not as string values, so a secret used
- * as a key is redacted rather than printed into the pointer.
+ * as a key is redacted rather than printed into the pointer. Keys themselves
+ * are still scanned for findings: a credential-shaped key with a clean value
+ * is reported at the redacted pointer instead of passing silently.
  */
 const walkValue = (
   value: unknown,
@@ -196,13 +205,9 @@ const walkValue = (
   }
   if (typeof value === "object" && value !== null) {
     for (const [entryKey, member] of Object.entries(value)) {
-      walkValue(
-        member,
-        `${pointer}/${pointerToken(entryKey)}`,
-        visit,
-        entryKey,
-        value,
-      );
+      const token = pointerToken(entryKey);
+      if (token.startsWith("<redacted-")) visit(entryKey, pointer, undefined);
+      walkValue(member, `${pointer}/${token}`, visit, entryKey, value);
     }
   }
 };
@@ -213,12 +218,20 @@ const isCredentialShaped = (value: string): boolean =>
     ({ pattern }) => (value.match(pattern) ?? []).length > 0,
   );
 
+/** True when a string carries a home-directory-shaped local path. */
+const isLocalPathShaped = (value: string): boolean =>
+  HOME_PATH_PATTERNS.some(
+    ({ pattern }) => (value.match(pattern) ?? []).length > 0,
+  );
+
 /**
- * Encode one pointer token, replacing credential-shaped keys with a hash so a
- * secret used as a JSON key never reaches the report through the pointer.
+ * Encode one pointer token, replacing credential-shaped or local-path-shaped
+ * keys with a hash. A secret used as a JSON key never reaches the report
+ * through the pointer, and neither does a home path such as `/Users/alice/x`:
+ * the report is meant to be safe to paste into a public issue.
  */
 const pointerToken = (key: string): string =>
-  isCredentialShaped(key)
+  isCredentialShaped(key) || isLocalPathShaped(key)
     ? `<redacted-${hashPrefix(key)}>`
     : escapePointer(key);
 
@@ -330,6 +343,12 @@ const auditRecord = (record: Evidence): readonly FindingCandidate[] => {
   walkValue(record.raw_result, "/raw_result", visitResultText);
   walkValue(record.normalized_result, "/normalized_result", visitResultText);
 
+  // Free-form fields travel with the bundle like every other field; a host
+  // path in a limitation string is as much a leak as one in a result.
+  for (const [index, text] of (record.limitations ?? []).entries()) {
+    visitMetadataText(text, `/limitations/${index}`);
+  }
+
   return candidates;
 };
 
@@ -340,6 +359,7 @@ export const auditEvidenceBundle = (
   const recordFindings = bundle.records.flatMap((record) =>
     auditRecord(record),
   );
+  const seenUnknownFindingKeys = new Set<string>();
   const unknownFindings = bundle.unknowns.flatMap((unknown) => {
     const candidates: FindingCandidate[] = [];
     const unknownId = unknown.unknown_id;
@@ -350,6 +370,11 @@ export const auditEvidenceBundle = (
       matched: string,
     ): void => {
       if (matched.trim() === "") return;
+      // Unknown histories repeat revisions; identical matches from later
+      // revisions collapse instead of spamming duplicate findings.
+      const dedupeKey = `${unknownId}#${pointer}#${ruleId}#${hashPrefix(matched)}`;
+      if (seenUnknownFindingKeys.has(dedupeKey)) return;
+      seenUnknownFindingKeys.add(dedupeKey);
       candidates.push({
         severity,
         rule_id: ruleId,
@@ -387,7 +412,8 @@ export const auditEvidenceBundle = (
     scanned_unknowns: bundle.unknowns.length,
     limitations: [
       "The audit reports pattern matches only; a clean audit does not prove a bundle is safe to publish.",
-      "Matched values are never printed; findings report a length and a short hash prefix instead.",
+      "Matched values are never printed; findings report a length and a short hash prefix instead. That prefix is a verification aid, not a secret: combine it with a candidate guess to confirm a match offline.",
+      "Heuristic rules can produce false positives; confirm each finding against the bundle before acting on it.",
     ],
   };
 };

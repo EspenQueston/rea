@@ -247,9 +247,18 @@ describe("evidence bundle audit leak rules", () => {
     ]);
     const result = auditEvidenceBundle(bundle);
     expect(JSON.stringify(result)).not.toContain(secretKey);
-    expect(result.findings[0]!.pointer).toMatch(
-      /^\/normalized_result\/<redacted-[0-9a-f]{8}>$/,
+    // The key itself is now scanned too: a credential-shaped key is reported
+    // (at the parent pointer) even when its value is clean of that pattern.
+    const secretFinding = result.findings.find(
+      (finding) =>
+        finding.rule_id === "credential-github-token" &&
+        finding.pointer === "/normalized_result",
     );
+    expect(secretFinding).toBeDefined();
+    const valueFinding = result.findings.find((finding) =>
+      /^\/normalized_result\/<redacted-[0-9a-f]{8}>$/.test(finding.pointer),
+    );
+    expect(valueFinding).toBeDefined();
   });
 
   it("flags Stripe, Slack, and PEM private key material", () => {

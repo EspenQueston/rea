@@ -7,7 +7,7 @@ import {
   auditEvidenceBundle,
   evidenceAuditResultSchema,
 } from "../domain/evidenceAudit.js";
-import { ok } from "../domain/result.js";
+import { runDerivedOperation } from "./runDerivedOperation.js";
 import { toolRegistrationOptions } from "./toolRegistrationOptions.js";
 import { withAdmittedAnalysis } from "./analysisAdmission.js";
 import { runAdmittedToolOperation } from "./admittedToolOperation.js";
@@ -35,15 +35,23 @@ export const registerEvidenceAuditTool = (
             input.path,
             context.mcpReq.signal,
             resources,
+            contract.name,
           );
           if (!loaded.ok)
             return server.delivery.toCallToolResult(loaded, contract);
           // The audit is a pure projection over the caller's file: no session
           // evidence is recorded, so findings never leak into later analysis.
-          const audited = evidenceAuditResultSchema.parse(
-            auditEvidenceBundle(loaded.value),
+          // runDerivedOperation adds progress reporting and cancellation
+          // yields, matching the other read-only derived tools.
+          const computed = await runDerivedOperation(
+            context,
+            contract.name,
+            () =>
+              evidenceAuditResultSchema.parse(
+                auditEvidenceBundle(loaded.value),
+              ),
           );
-          return server.delivery.toCallToolResult(ok(audited), contract);
+          return server.delivery.toCallToolResult(computed, contract);
         },
       ),
   );

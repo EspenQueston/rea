@@ -260,7 +260,13 @@ export const compareEvidenceBundlesCommand = async (input: {
   }
 };
 
-/** Audit one canonical bundle for leaked secrets and local paths, read-only. */
+/**
+ * Audit one canonical bundle for leaked secrets and local paths, read-only.
+ *
+ * Rules are heuristics. Each failure is a guess that a human must confirm
+ * against the matched value before acting on it, and a clean report does not
+ * prove a bundle is safe to publish.
+ */
 export const auditEvidenceBundleCommand = async (
   path: string,
 ): Promise<Result<JsonValue, AnalysisError>> => {

@@ -2,6 +2,7 @@ import { safeParseJson } from "./domain/safeJson.js";
 import { AnalysisInputError } from "./domain/analysisErrorCore.js";
 import { analysisInputErrorFromIssues } from "./domain/inputIssueProjection.js";
 import { bundleComparisonInputSchema } from "./domain/bundleComparison.js";
+import { absoluteLocalPathStringSchema } from "./domain/localPath.js";
 import { Cli, z } from "incur";
 
 import {
@@ -56,7 +57,9 @@ export const registerEvidenceCommands = (
     description:
       "Audit a canonical Evidence bundle for secrets and local paths",
     args: z.object({
-      path: z.string().describe("Evidence bundle JSON path"),
+      path: absoluteLocalPathStringSchema.describe(
+        "Absolute local filesystem path to the Evidence bundle; relative paths are rejected",
+      ),
     }),
     run: ({ args }) =>
       logCliCommand(logger, "evidence-audit", async () => {
