@@ -5,6 +5,7 @@ import { requireAuthenticationHeadroom } from "./JsonAuthenticationHeadroom.js";
 
 import {
   EvidenceFileError,
+  EvidenceIntegrityError,
   type PublishedEvidenceFile,
 } from "../domain/evidenceErrors.js";
 import type { AnalysisError } from "../domain/analysisErrorBase.js";
