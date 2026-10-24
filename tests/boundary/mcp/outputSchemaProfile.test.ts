@@ -6,24 +6,33 @@ import {
   TOOL_CONTRACTS,
   toolContract,
 } from "../../../src/contracts/toolContracts.js";
+import { COMPACT_OUTPUT_SCHEMA_BUDGET_BYTES } from "../../../src/config/mcpOutputSchemaProfile.js";
+import { COMPACT_INPUT_SCHEMA_BUDGET_BYTES } from "../../../src/config/mcpInputSchemaProfile.js";
+import type { CompactInputSchemaPresentation } from "../../../src/contracts/compactInputSchema.js";
 import { EvidenceMcpServer } from "../../../src/server/EvidenceMcpServer.js";
 import { toolRegistrationOptions } from "../../../src/server/toolRegistrationOptions.js";
 import { createToolResultDelivery } from "../../../src/server/toolResult.js";
 import type { ToolContract } from "../../../src/contracts/toolContractTypes.js";
 import { FULL_CATALOG_IDENTITY } from "../../../src/catalogIdentity.js";
+import type { McpOutputSchemaProfile } from "../../../src/config/mcpOutputSchemaProfile.js";
 
-const createServer = (omitOutputSchemas: boolean) =>
+const createServer = (
+  outputSchemaProfile: McpOutputSchemaProfile,
+  compactInputPresentation:
+    | CompactInputSchemaPresentation
+    | undefined = undefined,
+) =>
   new EvidenceMcpServer(
     { name: "output-schema-fixture", version: "1" },
     { capabilities: {} },
     undefined,
     createToolResultDelivery(10 * 1024 * 1024),
-    undefined,
-    omitOutputSchemas,
+    compactInputPresentation,
+    outputSchemaProfile,
   );
 
 it("omits only output schema advertisements and keeps canonical MCP output validation", async () => {
-  const server = createServer(true);
+  const server = createServer("off");
   expect(server.catalogIdentity.digests.combined_sha256).not.toBe(
     FULL_CATALOG_IDENTITY.digests.combined_sha256,
   );
@@ -86,9 +95,96 @@ it("omits only output schema advertisements and keeps canonical MCP output valid
   }
 });
 
-it("keeps a full catalog below a measured one-megabyte frame when output schemas are off", async () => {
-  const measure = async (omitOutputSchemas: boolean): Promise<number> => {
-    const server = createServer(omitOutputSchemas);
+it("bounds output schema advertisements and keeps canonical MCP output validation", async () => {
+  const server = createServer("compact");
+  expect(server.catalogIdentity.digests.combined_sha256).not.toBe(
+    FULL_CATALOG_IDENTITY.digests.combined_sha256,
+  );
+  const [clientTransport, serverTransport] =
+    InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: "compact-output-test", version: "1" });
+  const contract = {
+    ...toolContract("comment"),
+    name: "compact_output_schema_fixture",
+    inputSchema: z.strictObject({}),
+    outputSchema: z.strictObject({
+      value: z.string().describe("Nested guidance leaves."),
+      nested: z
+        .object({ count: z.number().int() })
+        .describe("Nested guidance leaves."),
+    }),
+  } satisfies ToolContract;
+  server.registerTool(
+    contract.name,
+    toolRegistrationOptions(contract),
+    async () => ({
+      content: [{ type: "text" as const, text: "fixture" }],
+      structuredContent: { value: "complete", nested: { count: 1 } },
+    }),
+  );
+  const invalidContract = {
+    ...contract,
+    name: "invalid_compact_output_schema_fixture",
+  } satisfies ToolContract;
+  server.registerTool(
+    invalidContract.name,
+    toolRegistrationOptions(invalidContract),
+    async () => ({
+      content: [{ type: "text" as const, text: "invalid fixture" }],
+      structuredContent: { value: 42, nested: { count: 1 } },
+    }),
+  );
+
+  await server.connect(serverTransport);
+  await client.connect(clientTransport);
+  try {
+    const tools = (await client.listTools()).tools;
+    expect(tools).toHaveLength(2);
+    const advertised = tools[0]!.outputSchema as Record<string, unknown>;
+    expect(advertised.type).toBe("object");
+    expect(advertised.$id).toBeUndefined();
+    expect((advertised.properties as Record<string, unknown>).value).toEqual({
+      type: "string",
+    });
+    expect(
+      (advertised.properties as Record<string, unknown>).nested,
+    ).toMatchObject({ type: "object" });
+
+    const success = await client.callTool({
+      name: contract.name,
+      arguments: {},
+    });
+    expect(success.isError).not.toBe(true);
+    expect(success.structuredContent).toEqual({
+      value: "complete",
+      nested: { count: 1 },
+    });
+    const invalid = await client.callTool({
+      name: invalidContract.name,
+      arguments: {},
+    });
+    expect(invalid.isError).toBe(true);
+    expect(invalid.content).toEqual([
+      expect.objectContaining({
+        type: "text",
+        text: expect.stringContaining("Output validation error"),
+      }),
+    ]);
+  } finally {
+    await client.close();
+    await server.close();
+  }
+});
+
+it("keeps the default compact-input catalog below a measured one-megabyte frame", async () => {
+  const compactInput: CompactInputSchemaPresentation = {
+    budgetBytes: COMPACT_INPUT_SCHEMA_BUDGET_BYTES,
+  };
+  const measure = async (
+    profile: McpOutputSchemaProfile,
+    inputPresentation: CompactInputSchemaPresentation | undefined,
+  ): Promise<number> => {
+    const server = createServer(profile, inputPresentation);
     const [clientTransport, serverTransport] =
       InMemoryTransport.createLinkedPair();
     const client = new Client({ name: "catalog-size-test", version: "1" });
@@ -104,6 +200,11 @@ it("keeps a full catalog below a measured one-megabyte frame when output schemas
     await client.connect(clientTransport);
     try {
       const listed = await client.listTools();
+      if (profile === "compact")
+        for (const tool of listed.tools)
+          expect(
+            Buffer.byteLength(JSON.stringify(tool.outputSchema), "utf8"),
+          ).toBeLessThanOrEqual(COMPACT_OUTPUT_SCHEMA_BUDGET_BYTES);
       return Buffer.byteLength(JSON.stringify(listed), "utf8");
     } finally {
       await client.close();
@@ -111,9 +212,14 @@ it("keeps a full catalog below a measured one-megabyte frame when output schemas
     }
   };
 
-  const fullBytes = await measure(false);
-  const compactBytes = await measure(true);
+  const fullBytes = await measure("full", undefined);
+  const compactBytes = await measure("compact", compactInput);
+  const offBytes = await measure("off", compactInput);
+  const fullInputOffBytes = await measure("off", undefined);
   expect(fullBytes).toBeGreaterThan(1024 * 1024);
   expect(compactBytes).toBeLessThan(1024 * 1024);
+  expect(offBytes).toBeLessThan(1024 * 1024);
+  expect(fullInputOffBytes).toBeLessThan(1024 * 1024);
   expect(compactBytes).toBeLessThan(fullBytes);
+  expect(compactBytes).toBeGreaterThan(offBytes);
 });
