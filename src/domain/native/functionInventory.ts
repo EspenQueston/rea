@@ -9,7 +9,8 @@ import {
   functionBodySchema,
   functionBodyEntryAgrees,
 } from "../native/functionBody.js";
-import { nativeSymbolOrigin } from "./nativeSymbol.js";
+import { functionDossierSchema } from "../native/functionDossier.js";
+import { hasStableNativeSymbol, nativeSymbolOrigin } from "./nativeSymbol.js";
 import {
   addressedValueSchema,
   nativeInventoryRowsSchemas,
@@ -212,7 +213,10 @@ const reportedSymbol = (
     (symbol) => nativeSymbolOrigin(symbol.symbol) === "named",
   );
   return {
-    value: row.value.length === 0 || generated || !named ? null : row.value,
+    value:
+      generated || (!named && !hasStableNativeSymbol(row.value, row.symbol))
+        ? null
+        : row.value,
     origin:
       generated && named
         ? "conflicting"
