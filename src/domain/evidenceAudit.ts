@@ -408,6 +408,15 @@ const auditRecord = (record: Evidence): readonly FindingCandidate[] => {
   for (const [index, text] of (record.limitations ?? []).entries()) {
     visitMetadataText(text, `/limitations/${index}`);
   }
+  // Relationship coverage diagnostics and analysis-profile parameters are
+  // persisted free-form fields; they can embed host paths or credentials
+  // exactly like the limitations above them.
+  if (record.relationship_coverage !== null) {
+    walkValue(record.relationship_coverage, "/relationship_coverage", visitMetadataText);
+  }
+  if (record.analysis_profile !== null) {
+    walkValue(record.analysis_profile, "/analysis_profile", visitMetadataText);
+  }
 
   return candidates;
 };
