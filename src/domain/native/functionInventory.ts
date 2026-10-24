@@ -214,7 +214,9 @@ const reportedSymbol = (
   );
   return {
     value:
-      generated || (!named && !hasStableNativeSymbol(row.value, row.symbol))
+      generated ||
+      row.value.trim().length === 0 ||
+      (!named && !hasStableNativeSymbol(row.value, row.symbol))
         ? null
         : row.value,
     origin:
