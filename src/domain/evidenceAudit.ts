@@ -5,6 +5,7 @@ import type { EvidenceBundle } from "./evidenceBundle.js";
 import type { Evidence } from "./evidence.js";
 import { absoluteLocalPathStringSchema } from "./localPath.js";
 import { compareUnicodeCodePoints } from "./unicodeCodePointOrder.js";
+import { publicInputStrictObject } from "./publicInput.js";
 
 /**
  * Read-only secret/location audit for a serialized Evidence bundle.
@@ -17,21 +18,27 @@ import { compareUnicodeCodePoints } from "./unicodeCodePointOrder.js";
 const findingSeveritySchema = z.enum(["failure", "warning"]);
 
 /** One deterministic finding against one matched JSON location. */
-export const evidenceAuditFindingSchema = z.object({
+export const evidenceAuditFindingSchema = z.strictObject({
   severity: findingSeveritySchema,
   rule_id: z.string().min(1),
   evidence_id: z.string().min(1),
   pointer: z.string().min(1),
   /** Matched text length in UTF-16 code units; the value is never printed. */
   matched_length: z.number().int().min(1),
-  /** First 8 hex characters of the SHA-256 digest of the matched value. */
-  matched_hash_prefix: z.string().regex(/^[0-9a-f]{8}$/),
+  /**
+   * First 8 hex characters of the SHA-256 digest of the matched value.
+   * Omitted for low-entropy matches (paths, host names, header values):
+   * a digest over a guessable value would let readers confirm candidate
+   * guesses offline, which is not a safe redaction of a reported leak.
+   */
+  matched_hash_prefix: z
+    .string()
+    .regex(/^[0-9a-f]{8}$/)
+    .exactOptional(),
 });
 
-export type EvidenceAuditFinding = z.infer<typeof evidenceAuditFindingSchema>;
-
 /** Deterministic audit projection over one validated bundle. */
-export const evidenceAuditResultSchema = z.object({
+export const evidenceAuditResultSchema = z.strictObject({
   findings: z.array(evidenceAuditFindingSchema),
   failures: z.number().int().min(0),
   warnings: z.number().int().min(0),
@@ -41,12 +48,13 @@ export const evidenceAuditResultSchema = z.object({
 });
 
 /** Input accepted by the bundle audit tool; one absolute local path. */
-export const evidenceAuditInputSchema = z.strictObject({
+export const evidenceAuditInputSchema = publicInputStrictObject({
   path: absoluteLocalPathStringSchema.describe(
     "Absolute local filesystem path to the Evidence bundle; relative paths are rejected",
   ),
 });
 
+export type EvidenceAuditFinding = z.infer<typeof evidenceAuditFindingSchema>;
 export type EvidenceAuditResult = z.infer<typeof evidenceAuditResultSchema>;
 
 interface FindingCandidate {
@@ -110,6 +118,20 @@ const CREDENTIAL_PATTERNS: readonly { rule: string; pattern: RegExp }[] = [
   },
 ];
 
+/**
+ * Rules whose matched values are low-entropy (paths, host names, header
+ * values). Their findings omit the hash prefix: a digest over a guessable
+ * value lets readers confirm candidate guesses offline (see finding schema).
+ */
+const FINGERPRINT_OMITTING_RULES = new Set([
+  "local-path-posix-home",
+  "local-path-windows-home",
+  "local-path-artifact-location",
+  "environment-host-id",
+  "credential-header-value",
+  "decompiled-payload",
+]);
+
 /** Credential-bearing header names whose retained values are failures. */
 const CREDENTIAL_HEADER_NAMES = new Set([
   "authorization",
@@ -151,14 +173,21 @@ const DECOMPILED_OPERATIONS = /decompile|pseudo_?code|disassembl/i;
 const hashPrefix = (value: string): string =>
   createHash("sha256").update(value, "utf8").digest("hex").slice(0, 8);
 
-const toFinding = (candidate: FindingCandidate): EvidenceAuditFinding => ({
-  severity: candidate.severity,
-  rule_id: candidate.rule_id,
-  evidence_id: candidate.evidence_id,
-  pointer: candidate.pointer,
-  matched_length: candidate.matched.length,
-  matched_hash_prefix: hashPrefix(candidate.matched),
-});
+const toFinding = (candidate: FindingCandidate): EvidenceAuditFinding => {
+  const finding: EvidenceAuditFinding = {
+    severity: candidate.severity,
+    rule_id: candidate.rule_id,
+    evidence_id: candidate.evidence_id,
+    pointer: candidate.pointer,
+    matched_length: candidate.matched.length,
+  };
+  // Low-entropy matches (paths, host ids, header values, decompiled text)
+  // omit the digest: hashing a guessable value is not a safe redaction.
+  if (!FINGERPRINT_OMITTING_RULES.has(candidate.rule_id)) {
+    finding.matched_hash_prefix = hashPrefix(candidate.matched);
+  }
+  return finding;
+};
 
 const compareFindings = (
   left: EvidenceAuditFinding,
@@ -238,6 +267,34 @@ const pointerToken = (key: string): string =>
 const escapePointer = (token: string): string =>
   token.replaceAll("~", "~0").replaceAll("/", "~1");
 
+/**
+ * Apply the home-path rules after classifying the string: an http(s) URL is
+ * a web route, not a filesystem path, so its `/Users/...` path segment is not
+ * a local home directory. Windows-style backslash runs still match the
+ * Windows rule only, preventing duplicate cross-format findings.
+ */
+const applyHomePathRules = (
+  text: string,
+  pointer: string,
+  pushMatch: (
+    severity: "failure" | "warning",
+    ruleId: string,
+    pointer: string,
+    matched: string,
+  ) => void,
+): void => {
+  if (/https?:\/\//i.test(text)) return; // web route, not a filesystem path
+  const windowsPath = /[A-Za-z]:\\/.test(text);
+  for (const { rule, pattern } of HOME_PATH_PATTERNS) {
+    // A drive-letter string is a Windows path: report it once under the
+    // Windows rule instead of also matching its backslashes as POSIX.
+    if (windowsPath !== (rule === "local-path-windows-home")) continue;
+    for (const matched of text.match(pattern) ?? []) {
+      pushMatch("warning", rule, pointer, matched);
+    }
+  }
+};
+
 /** Audit one Evidence record and return unsorted finding candidates. */
 const auditRecord = (record: Evidence): readonly FindingCandidate[] => {
   const candidates: FindingCandidate[] = [];
@@ -295,15 +352,18 @@ const auditRecord = (record: Evidence): readonly FindingCandidate[] => {
           pushMatch("failure", rule, pointer, matched);
         }
       }
-      for (const { rule, pattern } of HOME_PATH_PATTERNS) {
-        for (const matched of text.match(pattern) ?? []) {
-          pushMatch("warning", rule, pointer, matched);
-        }
-      }
+      applyHomePathRules(text, pointer, pushMatch);
       if (reportDecompiled && decompiledSurface) {
         // Decompiler output embeds target-authored strings verbatim; publishing
-        // it wholesale can leak proprietary source text.
-        pushMatch("warning", "decompiled-payload", pointer, text);
+        // it wholesale can leak proprietary source text. Only fields that own
+        // decompiler text carry the warning: the typed pseudocode field, and
+        // the direct-text shape of single-string results. Status strings and
+        // addresses inside batch results are not decompiled payload.
+        const isPseudocodeOwner =
+          key === "pseudocode" || (key === undefined && parent === undefined);
+        if (isPseudocodeOwner) {
+          pushMatch("warning", "decompiled-payload", pointer, text);
+        }
       }
     };
 
@@ -316,7 +376,7 @@ const auditRecord = (record: Evidence): readonly FindingCandidate[] => {
       pushMatch(
         "warning",
         "local-path-artifact-location",
-        `/locations/${index}`,
+        `/locations/${index}/path`,
         location.path,
       );
     }
@@ -389,11 +449,7 @@ export const auditEvidenceBundle = (
           pushMatch("failure", rule, pointer, matched);
         }
       }
-      for (const { rule, pattern } of HOME_PATH_PATTERNS) {
-        for (const matched of text.match(pattern) ?? []) {
-          pushMatch("warning", rule, pointer, matched);
-        }
-      }
+      applyHomePathRules(text, pointer, pushMatch);
     };
     walkValue(unknown, "", visitText);
     return candidates;

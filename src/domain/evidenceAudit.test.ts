@@ -216,11 +216,14 @@ describe("evidence bundle audit leak rules", () => {
     ).toBe(true);
   });
 
-  it("treats decompiler operations as decompiled surfaces", () => {
+  it("limits decompiled-payload warnings to pseudocode-owning fields", () => {
     const decompiled = createEvidence(undefined, PROVIDER, {
       operation: "procedure_pseudo_code",
       parameters: { address: "0x1000" },
-      result: { code: "int main(void) { return 0; }" },
+      result: {
+        status: "ok",
+        pseudocode: "int main(void) { return 0; }",
+      },
       confidence: "observed",
       authority: "shipped-artifact",
     });
@@ -228,7 +231,9 @@ describe("evidence bundle audit leak rules", () => {
     const pointers = result.findings
       .filter((finding) => finding.rule_id === "decompiled-payload")
       .map((finding) => finding.pointer);
-    expect(pointers).toEqual(["/normalized_result/code"]);
+    // Only the typed pseudocode field owns decompiler text; the sibling
+    // status string must not produce a decompiled-payload warning.
+    expect(pointers).toEqual(["/normalized_result/pseudocode"]);
   });
 
   it("matches non-ASCII home directory names", () => {
@@ -259,6 +264,49 @@ describe("evidence bundle audit leak rules", () => {
       /^\/normalized_result\/<redacted-[0-9a-f]{8}>$/.test(finding.pointer),
     );
     expect(valueFinding).toBeDefined();
+  });
+
+  it("omits hash prefixes for low-entropy matches", () => {
+    const bundle = createEvidenceBundle([
+      record({ note: "cached at /Users/alice/Downloads/prog.exe" }),
+    ]);
+    const result = auditEvidenceBundle(bundle);
+    const pathFinding = result.findings.find(
+      (finding) => finding.rule_id === "local-path-posix-home",
+    );
+    // A digest over a guessable path would confirm candidate guesses
+    // offline; low-entropy findings report length only.
+    expect(pathFinding).toBeDefined();
+    expect(pathFinding).not.toHaveProperty("matched_hash_prefix");
+    // High-entropy credential findings keep the verification prefix.
+    const tokenBundle = createEvidenceBundle([
+      record({ header: "Bearer abc123def456ghi789" }),
+    ]);
+    const tokenFinding = auditEvidenceBundle(tokenBundle).findings.find(
+      (finding) => finding.rule_id === "credential-bearer-token",
+    );
+    expect(tokenFinding?.matched_hash_prefix).toMatch(/^[0-9a-f]{8}$/);
+  });
+
+  it("does not treat http URL path segments as home directories", () => {
+    const bundle = createEvidenceBundle([
+      record({ url: "https://example.test/Users/alice/page" }),
+    ]);
+    const result = auditEvidenceBundle(bundle);
+    expect(result.warnings).toBe(0);
+    expect(result.findings).toEqual([]);
+  });
+
+  it("does not duplicate Windows path findings across formats", () => {
+    const bundle = createEvidenceBundle([
+      record({ note: "dumped to C:\\Users\\alice\\Desktop\\out.bin" }),
+    ]);
+    const result = auditEvidenceBundle(bundle);
+    const pathFindings = result.findings.filter((finding) =>
+      finding.rule_id.startsWith("local-path-"),
+    );
+    expect(pathFindings.length).toBe(1);
+    expect(pathFindings[0]!.rule_id).toBe("local-path-windows-home");
   });
 
   it("flags Stripe, Slack, and PEM private key material", () => {
