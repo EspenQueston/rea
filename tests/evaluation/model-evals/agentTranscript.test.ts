@@ -555,6 +555,54 @@ it.each(["codex", "claude-code"] as const)(
 );
 
 it.each(["codex", "claude-code"] as const)(
+  "%s withholds the error code when structured representations contradict each other",
+  (client) => {
+    const contradictory = {
+      structuredContent: { error: { code: "provider_unavailable" } },
+      structured_content: { error: { code: "invalid_request" } },
+      isError: true,
+    };
+    const transcript =
+      client === "codex"
+        ? parseCodexEvents([
+            {
+              type: "item.completed",
+              item: {
+                id: "call",
+                type: "mcp_tool_call",
+                server: "rea",
+                tool: "open_binary",
+                arguments: { path: "/bin/true" },
+                status: "completed",
+                result: contradictory,
+              },
+            },
+          ])
+        : parseClaudeCodeEvents([
+            claudeToolUse("call", "mcp__rea__open_binary", {
+              path: "/bin/true",
+            }),
+            claudeToolResult("call", contradictory, true),
+          ]);
+    expect(transcript.calls).toEqual([
+      expect.objectContaining({
+        delivered: false,
+        error: true,
+        errorCode: null,
+      }),
+    ]);
+    const scenario = nativeProviderScenario("/bin/true");
+    const metrics = evaluateAgentTranscript(
+      transcript,
+      scenario.expectedFirstTool,
+      scenario,
+    );
+    expect(scenario.assess(metrics)).toBe("failed");
+    expect(metrics.inputValidationFailureCount).toBe(0);
+  },
+);
+
+it.each(["codex", "claude-code"] as const)(
   "%s does not deliver a result whose structured representations contradict each other",
   (client) => {
     const contradictory = {

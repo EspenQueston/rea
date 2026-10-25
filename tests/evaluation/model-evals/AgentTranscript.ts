@@ -199,8 +199,12 @@ const mcpResultFacts = (
     !absent(result?.error) ||
     !absent(structured?.error) ||
     error !== undefined;
-  // A code is certain only from a record that cannot have folded duplicates.
-  const certain = error !== textError || text?.hasDuplicateMembers === false;
+  // A code is certain only from one unambiguous record: not from a text block
+  // with folded duplicate members, and not from either of two contradictory
+  // structured representations.
+  const certain =
+    structuredConsistent &&
+    (error !== textError || text?.hasDuplicateMembers === false);
   const errorCode =
     certain && typeof error?.code === "string" && error.code.length > 0
       ? error.code
