@@ -31,7 +31,11 @@ const fragmentSchema = z.object({
     .string()
     .nullable()
     .describe("File-backed segment holding these bytes; null when unmapped."),
-  vm_start: hexAddress.nullable(),
+  vm_start: hexAddress
+    .nullable()
+    .describe(
+      "VM address of slice_start; null when unmapped or when the segment has no VM size.",
+    ),
   vm_end: hexAddress.nullable(),
 });
 

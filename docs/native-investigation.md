@@ -539,8 +539,11 @@ is unknown, those mapped locations are omitted with an explicit limitation;
 architecture inventory locations remain available.
 
 `inspect_macho.encryption` reports the `LC_ENCRYPTION_INFO(_64)` state of every
-slice, not only the selected one, read from load commands without reading code
-bytes. A slice is `encrypted` when its single encryption command has a nonzero
+slice, not only the selected one. It decodes only the FAT table, slice headers
+and load commands. Like every Mach-O container read, a `0xcafebabe` input of at
+most 16 MiB is first read whole to rule out a JVM class file, so that read
+includes code bytes; larger inputs and thin images read only the structures
+above. A slice is `encrypted` when its single encryption command has a nonzero
 `cryptid`, `not-encrypted` when `cryptid` is zero, and `absent` only when every
 load command was read and none was an encryption command. A command whose width
 or `cmdsize` contradicts the image, more than one such command, or a range past
@@ -549,7 +552,10 @@ the slice is `malformed`; a slice whose commands could not be fully read is
 failure. Each slice's `range` is end-exclusive in slice and input-file
 coordinates and maps to file-backed segment fragments, VM addresses and the
 overlapping nonempty sections; bytes outside every segment remain unmapped
-fragments. `architecture` is the lipo name of the record at the same offset,
+fragments. A segment with no VM size keeps its file bytes as fragments with
+null VM addresses, and a segment whose file size exceeds its VM size or whose
+VM range leaves the address space makes the mapping `unknown` with a reason
+while the slice keeps its encryption status. `architecture` is the lipo name of the record at the same offset,
 size and CPU identity, and is null when no single record matches. A ciphertext
 range adds a limitation naming its input-file bytes, because disassembly,
 decompilation, strings and references derived from them do not describe

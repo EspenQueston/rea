@@ -41,6 +41,8 @@ const segment = (
   name: string,
   fields: {
     readonly vmAddress: bigint;
+    /** Defaults to the file size, as linkers emit for file-backed segments. */
+    readonly vmSize?: bigint;
     readonly fileOffset: number;
     readonly fileSize: number;
     readonly sections?: readonly {
@@ -63,11 +65,13 @@ const segment = (
   bytes.set(encoder.encode(name), 8);
   if (wide) {
     view.setBigUint64(24, fields.vmAddress, true);
+    view.setBigUint64(32, fields.vmSize ?? BigInt(fields.fileSize), true);
     view.setBigUint64(40, BigInt(fields.fileOffset), true);
     view.setBigUint64(48, BigInt(fields.fileSize), true);
     view.setUint32(64, sections.length, true);
   } else {
     view.setUint32(24, Number(fields.vmAddress), true);
+    view.setUint32(28, Number(fields.vmSize ?? BigInt(fields.fileSize)), true);
     view.setUint32(32, fields.fileOffset, true);
     view.setUint32(36, fields.fileSize, true);
     view.setUint32(48, sections.length, true);
@@ -405,6 +409,71 @@ describe("Mach-O encryption reader: segment mapping", () => {
       fragments: [{ segment: "__X\u0080" }],
     });
   });
+});
+
+describe("Mach-O encryption reader: segment VM extent", () => {
+  const ciphertext = encryption({
+    cryptoff: 0x4000,
+    cryptsize: 0x2000,
+    cryptid: 1,
+  });
+
+  it("keeps file-only segment bytes without VM addresses", async () => {
+    const fileOnly = segment("__FILE", {
+      vmAddress: 0x4000n,
+      vmSize: 0n,
+      fileOffset: 0x4000,
+      fileSize: 0x2000,
+    });
+    const slice = await onlySlice(
+      padded(machoImage({ commands: [fileOnly, ciphertext] })),
+    );
+    expect(slice.status).toBe("encrypted");
+    expect(slice.range?.mapping).toEqual({
+      status: "mapped",
+      fragments: [
+        {
+          slice_start: 0x4000,
+          slice_end: 0x6000,
+          segment: "__FILE",
+          vm_start: null,
+          vm_end: null,
+        },
+      ],
+      sections: [],
+    });
+  });
+
+  it.each([
+    [
+      "a file size beyond its VM size",
+      { vmAddress: 0x1000n, vmSize: 0x1000n },
+      "segment __TEXT file size 8192 exceeds its VM size 4096",
+    ],
+    [
+      "a VM range beyond the address space",
+      { vmAddress: 2n ** 64n - 0x1000n, vmSize: 0x2000n },
+      "segment __TEXT VM range exceeds the 64-bit address space",
+    ],
+  ])(
+    "reports %s as an unknown mapping without losing the status",
+    async (_case, vm, reason) => {
+      const invalid = segment("__TEXT", {
+        ...vm,
+        fileOffset: 0x4000,
+        fileSize: 0x2000,
+      });
+      const slice = await onlySlice(
+        padded(machoImage({ commands: [invalid, ciphertext] })),
+      );
+      expect(slice.status).toBe("encrypted");
+      expect(slice.range?.content).toBe("ciphertext");
+      expect(slice.range?.mapping).toEqual({
+        status: "unknown",
+        reason: `load command 0 ${reason}`,
+      });
+    },
+  );
 });
 
 describe("Mach-O encryption reader: defects are never absent", () => {

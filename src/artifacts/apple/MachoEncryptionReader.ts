@@ -269,8 +269,10 @@ const encryptedRange = (
 };
 
 interface SegmentFacts {
+  readonly index: number;
   readonly name: string;
   readonly vmAddress: bigint;
+  readonly vmSize: bigint;
   readonly fileOffset: number;
   readonly fileSize: number;
   readonly sections: readonly {
@@ -297,6 +299,20 @@ const mapRange = (
     const segment = decodeSegment(command);
     if (typeof segment === "string")
       return { status: "unknown", reason: segment };
+    // dyld maps only `vmsize` bytes, so file bytes past it have no address.
+    if (segment.vmSize > 0n && BigInt(segment.fileSize) > segment.vmSize)
+      return {
+        status: "unknown",
+        reason: `load command ${segment.index} segment ${segment.name} file size ${segment.fileSize} exceeds its VM size ${segment.vmSize}`,
+      };
+    if (
+      segment.vmAddress + segment.vmSize >
+      (header.wide ? 2n ** 64n : 2n ** 32n)
+    )
+      return {
+        status: "unknown",
+        reason: `load command ${segment.index} segment ${segment.name} VM range exceeds the ${header.wide ? 64 : 32}-bit address space`,
+      };
     segments.push(segment);
   }
   const fileBacked = segments
@@ -313,12 +329,18 @@ const mapRange = (
     const to = Math.min(end, segment.fileOffset + segment.fileSize);
     if (from >= to) continue;
     if (from > cursor) fragments.push(unmapped(cursor, from));
+    // A segment with no VM size keeps file-only bytes that are never mapped.
+    const mapped = segment.vmSize > 0n;
     fragments.push({
       slice_start: from,
       slice_end: to,
       segment: segment.name,
-      vm_start: hex(segment.vmAddress + BigInt(from - segment.fileOffset)),
-      vm_end: hex(segment.vmAddress + BigInt(to - segment.fileOffset)),
+      vm_start: mapped
+        ? hex(segment.vmAddress + BigInt(from - segment.fileOffset))
+        : null,
+      vm_end: mapped
+        ? hex(segment.vmAddress + BigInt(to - segment.fileOffset))
+        : null,
     });
     cursor = Math.max(cursor, to);
   }
@@ -379,8 +401,10 @@ const decodeSegment = ({
     };
   });
   return {
+    index,
     name: fixedName(body, 8),
     vmAddress: address(24),
+    vmSize: address(wide ? 32 : 28),
     fileOffset,
     fileSize,
     sections,
