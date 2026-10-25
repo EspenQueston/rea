@@ -775,6 +775,10 @@ it("redacts credentials from quoted and unquoted CSS URLs including opposite quo
           name: "--escaped-paren",
           value: "url(https://alice:secret@example.com/a\\)b)",
         },
+        {
+          name: "--escaped-function-name",
+          value: "u\\72l(https://alice:secret@example.com/a)",
+        },
       ],
     },
     "CSS.disable": {},
@@ -800,6 +804,11 @@ it("redacts credentials from quoted and unquoted CSS URLs including opposite quo
       name: "--escaped-double-quote",
       redacted: true,
       value: 'url("https://example.com/a\\"b")',
+    },
+    {
+      name: "--escaped-function-name",
+      redacted: true,
+      value: "u\\72l(https://example.com/a)",
     },
     {
       name: "--escaped-paren",
@@ -835,7 +844,7 @@ it("redacts credentials from quoted and unquoted CSS URLs including opposite quo
   expect(
     limitations.some((lim) =>
       lim.includes(
-        "7 root CSS custom property values had transport credentials redacted",
+        "8 root CSS custom property values had transport credentials redacted",
       ),
     ),
   ).toBe(true);

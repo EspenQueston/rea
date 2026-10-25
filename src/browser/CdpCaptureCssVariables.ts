@@ -45,6 +45,46 @@ const redactCssUrl = (
   return { url: rawUrl, redacted: false };
 };
 
+const isHexDigit = (ch: string): boolean =>
+  (ch >= "0" && ch <= "9") ||
+  (ch >= "a" && ch <= "f") ||
+  (ch >= "A" && ch <= "F");
+
+const isWhitespace = (ch: string): boolean =>
+  ch === " " || ch === "\t" || ch === "\r" || ch === "\n" || ch === "\f";
+
+const consumeEscape = (text: string, pos: number): [string, number] => {
+  if (pos >= text.length) return ["\uFFFD", pos];
+  const first = text[pos]!;
+  if (isHexDigit(first)) {
+    let hex = "";
+    let curr = pos;
+    while (curr < text.length && isHexDigit(text[curr]!) && hex.length < 6) {
+      hex += text[curr]!;
+      curr++;
+    }
+    if (curr < text.length && isWhitespace(text[curr]!)) {
+      curr++;
+    }
+    const codePoint = parseInt(hex, 16);
+    if (
+      codePoint === 0 ||
+      (codePoint >= 0xd800 && codePoint <= 0xdfff) ||
+      codePoint > 0x10ffff
+    ) {
+      return ["\uFFFD", curr];
+    }
+    return [String.fromCodePoint(codePoint), curr];
+  }
+  if (first === "\r" && pos + 1 < text.length && text[pos + 1] === "\n") {
+    return ["", pos + 2];
+  }
+  if (first === "\r" || first === "\n" || first === "\f") {
+    return ["", pos + 1];
+  }
+  return [first, pos + 1];
+};
+
 interface CssUrlMatch {
   readonly start: number;
   readonly end: number;
@@ -59,174 +99,153 @@ const findCssUrlMatches = (text: string): readonly CssUrlMatch[] => {
   const len = text.length;
 
   while (pos < len) {
-    const urlIdx = text.toLowerCase().indexOf("url(", pos);
-    if (urlIdx === -1) break;
-
-    if (urlIdx > 0 && /[\w-]/u.test(text[urlIdx - 1]!)) {
-      pos = urlIdx + 4;
+    if (pos > 0 && /[\w-]/u.test(text[pos - 1]!)) {
+      pos++;
       continue;
     }
 
-    const start = urlIdx;
-    let curr = urlIdx + 4;
-
-    while (curr < len && /[\s\f]/u.test(text[curr]!)) {
-      curr++;
+    let identName = "";
+    let curr = pos;
+    while (curr < len) {
+      const ch = text[curr]!;
+      if (ch === "\\") {
+        const [escapedChar, nextPos] = consumeEscape(text, curr + 1);
+        identName += escapedChar;
+        curr = nextPos;
+      } else if (/[\w-]/u.test(ch) || ch.charCodeAt(0) >= 0x80) {
+        identName += ch;
+        curr++;
+      } else {
+        break;
+      }
     }
 
-    if (curr >= len) break;
-
-    const firstChar = text[curr]!;
-    if (firstChar === '"' || firstChar === "'") {
-      const quote = firstChar;
-      curr++;
-      const urlStart = curr;
-      let closed = false;
-
-      while (curr < len) {
-        const ch = text[curr]!;
-        if (ch === quote) {
-          closed = true;
-          break;
-        }
-        if (ch === "\r" || ch === "\n" || ch === "\f") {
-          break;
-        }
-        if (ch === "\\") {
-          curr++;
-          if (curr >= len) break;
-          if (/[0-9a-fA-F]/u.test(text[curr]!)) {
-            let hexDigits = 0;
-            while (
-              curr < len &&
-              /[0-9a-fA-F]/u.test(text[curr]!) &&
-              hexDigits < 6
-            ) {
-              curr++;
-              hexDigits++;
-            }
-            if (curr < len && /[\s\f]/u.test(text[curr]!)) {
-              curr++;
-            }
-            continue;
-          } else if (
-            text[curr] === "\r" &&
-            curr + 1 < len &&
-            text[curr + 1] === "\n"
-          ) {
-            curr += 2;
-            continue;
-          } else {
-            curr++;
-            continue;
-          }
-        }
-        curr++;
-      }
-
-      if (!closed) {
-        pos = urlIdx + 4;
-        continue;
-      }
-
-      const urlEnd = curr;
+    if (identName.toLowerCase() === "url" && curr < len && text[curr] === "(") {
+      const start = pos;
       curr++;
 
-      while (curr < len && /[\s\f]/u.test(text[curr]!)) {
+      while (curr < len && isWhitespace(text[curr]!)) {
         curr++;
       }
 
-      if (curr < len && text[curr] === ")") {
-        curr++;
-        matches.push({
-          start,
-          end: curr,
-          prefix: text.slice(start, urlStart),
-          rawUrl: text.slice(urlStart, urlEnd),
-          suffix: text.slice(urlEnd, curr),
-        });
-        pos = curr;
-      } else {
-        pos = urlIdx + 4;
-      }
-    } else if (firstChar !== ")") {
-      const urlStart = curr;
-      let closed = false;
-      let urlEnd = curr;
+      if (curr >= len) break;
 
-      while (curr < len) {
-        const ch = text[curr]!;
-        if (ch === ")") {
-          closed = true;
-          urlEnd = curr;
-          curr++;
-          break;
-        }
-        if (/[\s\f]/u.test(ch)) {
-          urlEnd = curr;
-          while (curr < len && /[\s\f]/u.test(text[curr]!)) {
-            curr++;
-          }
-          if (curr < len && text[curr] === ")") {
+      const firstChar = text[curr]!;
+      if (firstChar === '"' || firstChar === "'") {
+        const quote = firstChar;
+        curr++;
+        const urlStart = curr;
+        let closed = false;
+
+        while (curr < len) {
+          const ch = text[curr]!;
+          if (ch === quote) {
             closed = true;
-            curr++;
+            break;
           }
-          break;
-        }
-        if (
-          ch === '"' ||
-          ch === "'" ||
-          ch === "(" ||
-          /[\x00-\x08\x0B\x0E-\x1F\x7F]/u.test(ch)
-        ) {
-          break;
-        }
-        if (ch === "\\") {
-          curr++;
-          if (curr >= len) break;
-          if (/[0-9a-fA-F]/u.test(text[curr]!)) {
-            let hexDigits = 0;
-            while (
-              curr < len &&
-              /[0-9a-fA-F]/u.test(text[curr]!) &&
-              hexDigits < 6
-            ) {
-              curr++;
-              hexDigits++;
-            }
-            if (curr < len && /[\s\f]/u.test(text[curr]!)) {
-              curr++;
-            }
+          if (ch === "\r" || ch === "\n" || ch === "\f") {
+            break;
+          }
+          if (ch === "\\") {
+            curr++;
+            if (curr >= len) break;
+            const [, nextPos] = consumeEscape(text, curr);
+            curr = nextPos;
             continue;
-          } else if (
-            text[curr] === "\r" ||
-            text[curr] === "\n" ||
-            text[curr] === "\f"
+          }
+          curr++;
+        }
+
+        if (!closed) {
+          pos = start + 1;
+          continue;
+        }
+
+        const urlEnd = curr;
+        curr++;
+
+        while (curr < len && isWhitespace(text[curr]!)) {
+          curr++;
+        }
+
+        if (curr < len && text[curr] === ")") {
+          curr++;
+          matches.push({
+            start,
+            end: curr,
+            prefix: text.slice(start, urlStart),
+            rawUrl: text.slice(urlStart, urlEnd),
+            suffix: text.slice(urlEnd, curr),
+          });
+          pos = curr;
+          continue;
+        } else {
+          pos = start + 1;
+          continue;
+        }
+      } else if (firstChar !== ")") {
+        const urlStart = curr;
+        let closed = false;
+        let urlEnd = curr;
+
+        while (curr < len) {
+          const ch = text[curr]!;
+          if (ch === ")") {
+            closed = true;
+            urlEnd = curr;
+            curr++;
+            break;
+          }
+          if (isWhitespace(ch)) {
+            urlEnd = curr;
+            while (curr < len && isWhitespace(text[curr]!)) {
+              curr++;
+            }
+            if (curr < len && text[curr] === ")") {
+              closed = true;
+              curr++;
+            }
+            break;
+          }
+          if (
+            ch === '"' ||
+            ch === "'" ||
+            ch === "(" ||
+            /[\x00-\x08\x0B\x0E-\x1F\x7F]/u.test(ch)
           ) {
             break;
-          } else {
+          }
+          if (ch === "\\") {
             curr++;
+            if (curr >= len) break;
+            const [, nextPos] = consumeEscape(text, curr);
+            curr = nextPos;
             continue;
           }
+          curr++;
         }
-        curr++;
-      }
 
-      if (closed) {
-        matches.push({
-          start,
-          end: curr,
-          prefix: text.slice(start, urlStart),
-          rawUrl: text.slice(urlStart, urlEnd),
-          suffix: text.slice(urlEnd, curr),
-        });
-        pos = curr;
+        if (closed) {
+          matches.push({
+            start,
+            end: curr,
+            prefix: text.slice(start, urlStart),
+            rawUrl: text.slice(urlStart, urlEnd),
+            suffix: text.slice(urlEnd, curr),
+          });
+          pos = curr;
+          continue;
+        } else {
+          pos = start + 1;
+          continue;
+        }
       } else {
-        pos = urlIdx + 4;
+        pos = curr + 1;
+        continue;
       }
-    } else {
-      pos = curr + 1;
     }
+
+    pos++;
   }
 
   return matches;
@@ -235,7 +254,7 @@ const findCssUrlMatches = (text: string): readonly CssUrlMatch[] => {
 export const redactCssUrlCredentials = (value: string): string => {
   if (
     value.length > MAX_CSS_VALUE_LENGTH ||
-    !value.toLowerCase().includes("url(")
+    (!/url\(/iu.test(value) && !value.includes("\\"))
   ) {
     return value;
   }
