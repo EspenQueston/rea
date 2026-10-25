@@ -42,6 +42,7 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 
 import { ZipArtifactReader } from "../../src/artifacts/ZipArtifactReader.js";
 import { DexFileProvider } from "../../src/dex/DexFileProvider.js";
+import { resolvedAnalysisError } from "../../src/domain/analysisErrorBase.js";
 import { AnalysisCancelledError } from "../../src/domain/analysisErrorCore.js";
 import { ProviderAdapterError } from "../../src/domain/providerAdapterError.js";
 import { ProviderCleanupError } from "../../src/domain/providerCleanupError.js";
@@ -123,6 +124,11 @@ describe.each(targets)("DEX %s lifecycle", (_name, make, extra, workHandle) => {
     expect(result.error.cleanupIncomplete).toBe(false);
     expect((first as ProviderCleanupError).cleanupIncomplete).toBe(false);
     expect(fault.handles.every((handle) => handle.fd === -1)).toBe(true);
+    // Once cleanup is confirmed the error resolves to its primary, which
+    // keeps the same facts.
+    expect(resolvedAnalysisError(result.error).partialObservation).toEqual(
+      result.error.partialObservation,
+    );
   });
 
   it("returns typed cancellation with the abort reason when it arrives during the final close", async () => {
@@ -201,6 +207,37 @@ describe("DEX archive ZIP reader lifecycle", () => {
     await provider.close();
     expect(result.error.cleanupIncomplete).toBe(false);
     await provider.close();
+  });
+
+  it("keeps completed members on the primary when a later member fails and the reader close fails", async () => {
+    const dir = await createTestTempDirectory("rea-dex-life-");
+    const path = join(dir, "partial.apk");
+    await writeFile(
+      path,
+      await zipArchive([
+        { name: "classes.dex", bytes: debuggableDex() },
+        { name: "classes2.dex", bytes: new Uint8Array(256).fill(0x41) },
+      ]),
+    );
+    const provider = new DexFileProvider();
+    const original = ZipArtifactReader.prototype.close;
+    let denied = true;
+    vi.spyOn(ZipArtifactReader.prototype, "close").mockImplementation(
+      async function (this: ZipArtifactReader) {
+        if (denied) throw new Error("controlled ZIP reader close failure");
+        await original.call(this);
+      },
+    );
+    const result = await provider.inspect({ path });
+    if (result.ok) throw new Error("Expected a primary failure");
+    const members = { kind: "dex-debug-metadata-members" };
+    expect(result.error.partialObservation).toMatchObject(members);
+    denied = false;
+    await provider.close();
+    expect(result.error.cleanupIncomplete).toBe(false);
+    expect(
+      resolvedAnalysisError(result.error).partialObservation,
+    ).toMatchObject(members);
   });
 
   it("keeps the work's primary failure when the reader close also fails", async () => {

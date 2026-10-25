@@ -34,6 +34,7 @@ import type { DexWorkError } from "../domain/dex/dexDebugMetadata.js";
 import type { DexFileParseError } from "../domain/dex/dexFile.js";
 import { ProviderAdapterError } from "../domain/providerAdapterError.js";
 import { DEX_LIMITS, DEX_PROVIDER_IDENTITY } from "./DexFileRelease.js";
+import type { DexProgress } from "./dexProgress.js";
 
 const OPERATION = "inspect_dex_debug_metadata";
 
@@ -242,6 +243,7 @@ export const dexFileFailure = (
   cause: unknown,
   input: InspectDexDebugMetadataInput,
   signal?: AbortSignal,
+  progress?: DexProgress,
 ): AnalysisError => {
   const { cleanups, leases, failure, completed } = unwindCleanup(cause);
   const report =
@@ -268,10 +270,17 @@ export const dexFileFailure = (
                   reason: cleanups.map(({ reason }) => reason).join("; "),
                 },
               });
+  // Facts are retained on the failure the caller resolves to once cleanup is
+  // confirmed (the primary), before any cleanup wrapper copies them.
+  const retain = (error: AnalysisError): AnalysisError => {
+    retainStableSnapshot(error, cause, input.path);
+    progress?.retainOn(error, input.path);
+    return error;
+  };
   if (cleanedUp) {
-    const error = primary ?? dexCancelled(signal, cause, report);
+    const error = retain(primary ?? dexCancelled(signal, cause, report));
     bindArtifactFileCleanup(cause, error);
-    return retainStableSnapshot(error, cause, input.path);
+    return error;
   }
   const cleanup = new ProviderCleanupError(
     DEX_PROVIDER_IDENTITY.id,
@@ -285,10 +294,10 @@ export const dexFileFailure = (
   );
   const error =
     primary === undefined
-      ? cleanup
-      : analysisErrorWithCleanupFailure(primary, cleanup, OPERATION);
+      ? retain(cleanup)
+      : analysisErrorWithCleanupFailure(retain(primary), cleanup, OPERATION);
   if (leases !== undefined) new AnalysisCleanupLeaseGroup(error, leases);
-  return retainStableSnapshot(error, cause, input.path);
+  return error;
 };
 
 /**

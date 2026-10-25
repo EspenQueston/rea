@@ -211,9 +211,7 @@ export class DexFileProvider implements DexDebugMetadataPort {
         );
       return ok(execution);
     } catch (cause: unknown) {
-      return err(
-        progress.retainOn(dexFileFailure(cause, input, signal), input.path),
-      );
+      return err(dexFileFailure(cause, input, signal, progress));
     }
   }
 
