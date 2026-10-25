@@ -1,17 +1,19 @@
 # Verification
 
-Executed on macOS with Node v22.23.1 at `feat/recorder-saved-values` 583e1048 (on main b8ce3c74), and on Ubuntu 24.04
+Executed on macOS with Node v22.23.1 at `feat/recorder-saved-values` 8218b0b2 (on main 1173c0a9), and on Ubuntu 24.04
 VMs with snap Chromium for the agent recordings.
 
 ## Gates
 
 - `npm run check` (typecheck, lint, format, knip, metadata, architecture guards, typed lint), `docs:check`,
   `mcp-catalog:check`, `verify:test-discovery`, `scan:todos` and `jscpd`: passed.
-- `npx vitest run --project domain --project services --project adapters`: 17,855 passed and 4 failed. The 4 fail the
+- `npx vitest run --project domain --project services --project adapters`: 17,871 passed and 4 failed. The 4 fail the
   same way on main in this environment: two `setupEnvironment` tests, a `GpuPayloadCodec` zstd test, and "stops
   Inspector target authorization after the current stat settles".
-- Browser scenario CLI and MCP boundaries, scenario input diagnostics, the environment build CLI, tool schema validity,
-  MCP schema validation, output schema constraints and profile, scenario cancellation and cleanup: 10 files, 43 passed.
+- Browser scenario CLI and MCP boundaries, scenario input diagnostics, cancellation and cleanup, the analysis-view CLI
+  and MCP boundaries, the environment build, export and serve CLI boundaries, the environment serve, served-writes and
+  bundle MCP boundaries, tool schema validity, MCP schema validation, and output schema constraints and profile: 17
+  files, 122 passed.
 - The compact MCP catalog must stay under the one-megabyte frame `outputSchemaProfile.test.ts` measures. Main
   (ff6d96bc) advertises 1,042,845 bytes. A first design with `path_params` on request and goto steps, `json_values`, and
   separate `username` and `password` unions took 1,052,236 and failed the test. This branch takes 1,046,489: saved
