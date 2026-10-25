@@ -21,7 +21,7 @@ type Node = {
 };
 
 // Construct an authenticated historical snapshot, not a newly evaluated ledger.
-const historical = (nodes: Node[]) => {
+const historical = (nodes: Node[], validateLedger = true) => {
   const input = structuredClone(RECONSTRUCTION_READINESS_EXAMPLE);
   const template = input.obligation_ledger.obligations[0]!;
   const records = [...input.evidence_bundle.records];
@@ -76,7 +76,9 @@ const historical = (nodes: Node[]) => {
     }
     return obligation;
   });
-  input.evidence_bundle = createEvidenceBundle(records);
+  input.evidence_bundle = createEvidenceBundle([
+    ...new Map(records.map((record) => [record.evidence_id, record])).values(),
+  ]);
   const ledger = input.obligation_ledger;
   ledger.obligations = obligations;
   ledger.summary = summarizeReconstructionObligations(obligations);
@@ -92,11 +94,43 @@ const historical = (nodes: Node[]) => {
   input.closure_history.at(-1)!.newly_verified_obligation_ids = nodes
     .filter((node) => node.required)
     .map((node) => node.id);
-  expect(reconstructionObligationLedgerSchema.parse(ledger)).toEqual(ledger);
+  if (validateLedger)
+    expect(reconstructionObligationLedgerSchema.parse(ledger)).toEqual(ledger);
   return input;
 };
 
 describe("historical readiness dependency proof", () => {
+  it.each([
+    [
+      "required",
+      [
+        {
+          id: "root",
+          required: true,
+          dependencies: [],
+          identicalControl: true,
+        },
+        { id: "root", dependencies: [] },
+      ],
+    ],
+    [
+      "dependency",
+      [
+        { id: "root", required: true, dependencies: ["dependency"] },
+        { id: "dependency", dependencies: [], identicalControl: true },
+        { id: "dependency", dependencies: [] },
+      ],
+    ],
+  ] satisfies [string, Node[]][])(
+    "rejects duplicate %s IDs before readiness assessment",
+    (_case, nodes) => {
+      const input = historical(nodes, false);
+      expect(() => createReconstructionReadinessReport(input)).toThrow(
+        /Obligation IDs must be unique/u,
+      );
+    },
+  );
+
   it.each([
     [
       "direct",

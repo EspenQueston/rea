@@ -364,6 +364,16 @@ export const reconstructionObligationLedgerSchema = z
     limitations: z.array(textSchema),
   })
   .superRefine((ledger, context) => {
+    const obligationIds = new Set<string>();
+    for (const [index, obligation] of ledger.obligations.entries()) {
+      if (obligationIds.has(obligation.obligation_id))
+        context.addIssue({
+          code: "custom",
+          path: ["obligations", index, "obligation_id"],
+          message: "Obligation IDs must be unique",
+        });
+      obligationIds.add(obligation.obligation_id);
+    }
     if (
       ledger.status !==
       reconstructionObligationLedgerStatus(
