@@ -163,6 +163,19 @@ export const firmwareFileSizeLimit = (
     ) + 1,
   );
 
+/**
+ * Whether a larger max_output_bytes would raise the per-run file limit. It is
+ * false when the report and diagnostic allowances or the inherited ceiling,
+ * including its last byte of headroom, set that limit instead.
+ */
+const firmwareFileSizeAdjustable = (
+  fileSizeCeiling: number,
+  stagingBytes?: number,
+): boolean =>
+  stagingBytes !== undefined &&
+  firmwareFileSizeLimit(fileSizeCeiling, stagingBytes + 1) >
+    firmwareFileSizeLimit(fileSizeCeiling, stagingBytes);
+
 /** Execute one bounded provider command and verify its owned descendants have stopped. */
 export const runFirmwareCommand = async (context: {
   engine: string;
@@ -186,11 +199,10 @@ export const runFirmwareCommand = async (context: {
     context.fileSizeCeiling,
     context.outputBudget?.bytes,
   );
-  const fileSizeAdjustable =
-    context.outputBudget !== undefined &&
-    context.fileSizeCeiling > context.outputBudget.bytes &&
-    context.outputBudget.bytes >=
-      Math.max(FIRMWARE_LIMITS.reportBytes, FIRMWARE_LIMITS.diagnosticBytes);
+  const fileSizeAdjustable = firmwareFileSizeAdjustable(
+    context.fileSizeCeiling,
+    context.outputBudget?.bytes,
+  );
   const checkInterruption = () => {
     const failure = firmwarePhaseInterruption(
       operation,
