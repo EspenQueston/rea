@@ -90,7 +90,11 @@ interface Named {
  * advises selecting it. A name stored more than once is refused as ambiguous
  * before its storage is considered.
  */
-const refusalMark = ({ occurrences, symlink, encrypted }: Named): string =>
+export const refusalMark = ({
+  occurrences,
+  symlink,
+  encrypted,
+}: Named): string =>
   occurrences > 1
     ? ` (stored ${String(occurrences)} times; ambiguous)`
     : symlink

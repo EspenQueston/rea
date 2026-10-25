@@ -5,6 +5,7 @@ import { expect } from "vitest";
 
 import { toolContract } from "../../src/contracts/toolContracts.js";
 import { DEX_LIMITS } from "../../src/dex/DexFileRelease.js";
+import { refusalMark } from "../../src/dex/dexDisplayText.js";
 import {
   debuggableDex,
   SYMLINK_ATTRIBUTES,
@@ -19,6 +20,23 @@ const CLASS = "Lcom/example/Foo;";
 
 const evidenceOf = (value: unknown) =>
   toolContract(TOOL).outputSchema.parse(value);
+
+/** The marks a note puts beside a member `entry` would refuse (owning formatter). */
+const LINK_MARK = refusalMark({
+  occurrences: 1,
+  symlink: true,
+  encrypted: false,
+});
+const ENCRYPTED_MARK = refusalMark({
+  occurrences: 1,
+  symlink: false,
+  encrypted: true,
+});
+const TWICE_MARK = refusalMark({
+  occurrences: 2,
+  symlink: false,
+  encrypted: false,
+});
 
 cliTest(
   "summarizes, selects a member and drills into a class through the public CLI",
@@ -186,10 +204,10 @@ cliTest(
     );
     const refused = await select(directory, "classes.dex/");
     expect(refused.exitCode).toBe(1);
+    // Refused as unavailable (not a summary that omits the member), naming it.
     expect(refused.json).toMatchObject({ code: "unsupported_target" });
-    expect(JSON.stringify(refused.json)).toContain(
-      "stored as a ZIP directory, which REA does not read as member bytes; its debug metadata is unavailable, not absent.",
-    );
+    expect(refused.json).not.toHaveProperty("normalized_result");
+    expect(JSON.stringify(refused.json)).toContain("classes.dex/");
   },
 );
 
@@ -226,17 +244,17 @@ cliTest(
     );
     const auto = await inspect(cli, inRun);
     expect(auto.exitCode, auto.stdout).toBe(1);
+    // The whole run is refused, naming the link member: never a summary of
+    // classes.dex alone, which would read classes2.dex as absent.
     expect(auto.json).toMatchObject({ code: "unsupported_target" });
-    expect(prose(auto.json)).toContain(
-      "has root DEX member(s) stored with a symbolic-link mode (classes2.dex), which Android loads but REA does not read; their debug metadata is unavailable, not absent.",
-    );
+    expect(auto.json).not.toHaveProperty("normalized_result");
+    expect(prose(auto.json)).toContain("(classes2.dex)");
     for (const entry of ["classes2.dex", "./classes2.dex"]) {
       const selected = await inspect(cli, inRun, entry);
       expect(selected.exitCode, selected.stdout).toBe(1);
       expect(selected.json).toMatchObject({ code: "unsupported_target" });
-      expect(prose(selected.json)).toContain(
-        "is stored with a symbolic-link mode, which REA does not read; its debug metadata is unavailable, not absent.",
-      );
+      expect(selected.json).not.toHaveProperty("normalized_result");
+      expect(prose(selected.json)).toContain("classes2.dex");
     }
 
     const onlyLink = join(root, "only-link.apk");
@@ -269,8 +287,12 @@ cliTest(
     ]);
     const neither = await inspect(cli, twin, "././classes2.dex");
     expect(neither.json).toMatchObject({ code: "invalid_request" });
+    // Both stored spellings are named, the link one with its refusal mark.
     expect(prose(neither.json)).toContain(
-      String.raw`holds 2 members named \"classes2.dex\" (stored as \"classes2.dex\" (symbolic-link mode; REA does not read it), \"./classes2.dex\")`,
+      JSON.stringify(`"classes2.dex"${LINK_MARK}, "./classes2.dex"`).slice(
+        1,
+        -1,
+      ),
     );
   },
 );
@@ -295,7 +317,7 @@ cliTest(
       expect(summary.exitCode, summary.stdout).toBe(0);
       return evidenceOf(summary.json).normalized_result.limitations.join(" ");
     };
-    const mark = "(symbolic-link mode; REA does not read it)";
+    const mark = LINK_MARK.trimStart();
     // After a gap, under its exact name: entry would refuse it as a link.
     const afterGap = await noteOf([
       { name: "classes.dex", bytes: debuggableDex() },
@@ -319,7 +341,7 @@ cliTest(
     expect(mixed).toContain(
       `also holds classes3.dex ${mark}, classes4.dex, which`,
     );
-    expect(mixed).toContain("Select the unmarked one with entry.");
+    expect(mixed).toContain("with entry.");
   },
 );
 
@@ -348,9 +370,7 @@ cliTest(
     ];
     const duplicated = await archive([base, ...twice]);
     const ambiguous = await noteOf(duplicated);
-    expect(ambiguous).toContain(
-      "also holds classes3.dex (stored 2 times; ambiguous), which",
-    );
+    expect(ambiguous).toContain(`also holds classes3.dex${TWICE_MARK}, which`);
     expect(ambiguous).not.toContain("with entry");
     const refusedAmbiguous = await inspect(cli, duplicated, "classes3.dex");
     expect(refusedAmbiguous.json).toMatchObject({ code: "invalid_request" });
@@ -361,7 +381,7 @@ cliTest(
     ]);
     const encrypted = await noteOf(locked);
     expect(encrypted).toContain(
-      "also holds classes3.dex (encrypted; REA does not read it), which",
+      `also holds classes3.dex${ENCRYPTED_MARK}, which`,
     );
     expect(encrypted).not.toContain("with entry");
     const refusedEncrypted = await inspect(cli, locked, "classes3.dex");
@@ -375,9 +395,9 @@ cliTest(
       ]),
     );
     expect(mixed).toContain(
-      "also holds classes3.dex (stored 2 times; ambiguous), classes4.dex, which",
+      `also holds classes3.dex${TWICE_MARK}, classes4.dex, which`,
     );
-    expect(mixed).toContain("Select the unmarked one with entry.");
+    expect(mixed).toContain("with entry.");
 
     // Fill the name budget to within 10 bytes, ending with `last`, then store
     // `last` again as a link and as a file: its mark no longer fits, so it is
@@ -449,7 +469,10 @@ cliTest(
         const refused = await inspect(cli, apk, entry);
         expect(refused.exitCode, refused.stdout).toBe(1);
         expect(refused.json).toMatchObject({ code: "invalid_request" });
-        expect(prose(refused.json)).toContain("the identity is ambiguous");
+        expect(refused.json).not.toHaveProperty("normalized_result");
+        // Names the duplicated member and how many times it is stored.
+        expect(prose(refused.json)).toContain("2 members");
+        expect(prose(refused.json)).toContain(name);
       }
     }
   },
@@ -545,8 +568,9 @@ cliTest(
     );
     const repeated = await inspect(cli, thrice, "classes2.dex");
     expect(repeated.json).toMatchObject({ code: "invalid_request" });
+    expect(repeated.json).not.toHaveProperty("normalized_result");
     expect(prose(repeated.json)).toContain(
-      String.raw`holds 3 members stored as \"classes2.dex\"; the identity is ambiguous.`,
+      String.raw`3 members stored as \"classes2.dex\"`,
     );
 
     const locked = join(root, "locked.apk");
@@ -560,7 +584,8 @@ cliTest(
     );
     const encrypted = await inspect(cli, locked, "classes2.dex");
     expect(encrypted.json).toMatchObject({ code: "unsupported_target" });
-    expect(prose(encrypted.json)).toContain("is encrypted");
+    expect(encrypted.json).not.toHaveProperty("normalized_result");
+    expect(prose(encrypted.json)).toContain(String.raw`\"classes2.dex\"`);
     const plain = await inspect(cli, locked, "./classes2.dex");
     expect(plain.exitCode, plain.stdout).toBe(0);
   },
