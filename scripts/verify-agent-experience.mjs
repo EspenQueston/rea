@@ -8,6 +8,7 @@ import { tsImport } from "tsx/esm/api";
 import { PRODUCT_IDENTITY } from "../dist/identity.js";
 import {
   agentEvalEnvironment,
+  preflightClientEnvironment,
   prepareAgentEvalClient,
   selectAgentEvalClient,
 } from "./lib/agent-eval-clients.mjs";
@@ -92,16 +93,13 @@ const { runClient, runProcess, readCommandVersion } = commands;
 
 await withVerifierCleanup(
   async () => {
-    // The version preflight gets the allowlisted base environment without
-    // authentication; Gemini must not relaunch itself for it.
+    // The version preflight gets the allowlisted base environment and the
+    // client's containment controls, without authentication.
     const clientVersion = await readCommandVersion(
       agentEvalEnvironment({
         account,
         runId: verifierRun.run_id,
-        client: {
-          environment:
-            client.id === "gemini-cli" ? { GEMINI_CLI_NO_RELAUNCH: "1" } : {},
-        },
+        client: { environment: preflightClientEnvironment(client) },
       }),
     );
     await Promise.all([

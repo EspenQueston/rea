@@ -169,6 +169,86 @@ describe("Claude Code transcripts", () => {
     const metrics = evaluateAgentTranscript(transcript, null);
     expect(metrics.reaCalls).toEqual([]);
   });
+});
+
+describe("Claude Code run facts", () => {
+  it("keeps each batched parallel result on its own content", () => {
+    // Two parallel analyses answered in one user message: the top-level raw
+    // detail cannot be attributed, so neither call may claim it.
+    const other = createEvidence(
+      { path: "/tmp/other.asar", sha256: "2".repeat(64), format: "asar" },
+      { id: "javascript", name: "JavaScript analysis", version: null },
+      {
+        operation: "analyze_javascript_application",
+        parameters: {},
+        result: { observed: true },
+        evidenceLinks: [],
+        authority: "shipped-artifact",
+      },
+    );
+    const foreign = { ...evidence, evidence_id: `ev_${"f".repeat(64)}` };
+    const transcript = parseClaudeCodeEvents([
+      {
+        type: "assistant",
+        parent_tool_use_id: null,
+        message: {
+          content: [
+            {
+              type: "tool_use",
+              id: "left",
+              name: "mcp__rea__analyze_javascript_application",
+              input: { input_path: "/tmp/app.asar" },
+            },
+            {
+              type: "tool_use",
+              id: "right",
+              name: "mcp__rea__analyze_javascript_application",
+              input: { input_path: "/tmp/other.asar" },
+            },
+          ],
+        },
+      },
+      {
+        type: "user",
+        parent_tool_use_id: null,
+        message: {
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "left",
+              content: JSON.stringify(evidence),
+            },
+            {
+              type: "tool_result",
+              tool_use_id: "right",
+              content: [{ type: "text", text: JSON.stringify(other) }],
+            },
+          ],
+        },
+        tool_use_result: { structuredContent: foreign },
+      },
+      claudeResult,
+    ]);
+    expect(transcript.calls).toEqual([
+      expect.objectContaining({ id: "left", delivered: true, error: false }),
+      expect.objectContaining({ id: "right", delivered: true, error: false }),
+    ]);
+    const metrics = evaluateAgentTranscript(
+      transcript,
+      "analyze_javascript_application",
+      {
+        requiredToolSubsequence: [
+          "analyze_javascript_application",
+          "analyze_javascript_application",
+        ],
+      },
+    );
+    expect(metrics.requiredToolSubsequenceMet).toBe(true);
+    expect(metrics.evidenceIds).toEqual([
+      evidence.evidence_id,
+      other.evidence_id,
+    ]);
+  });
 
   it("fails a run whose refused permission request still produced an answer", () => {
     // A refused `dontAsk` request leaves Claude free to explain that REA was
@@ -436,6 +516,43 @@ describe("Codex transcripts", () => {
     expect(transcript.calls).toHaveLength(2);
   });
 });
+
+it.each(["codex", "claude-code"] as const)(
+  "%s treats a bare result error as a failure that delivers no Evidence",
+  (client) => {
+    const failing = { structuredContent: evidence, error: "transport failed" };
+    const transcript =
+      client === "codex"
+        ? parseCodexEvents([
+            {
+              type: "item.completed",
+              item: {
+                id: "call",
+                type: "mcp_tool_call",
+                server: "rea",
+                tool: "analyze_javascript_application",
+                arguments: {},
+                status: "completed",
+                result: failing,
+              },
+            },
+          ])
+        : parseClaudeCodeEvents([
+            claudeToolUse("call", "mcp__rea__analyze_javascript_application"),
+            claudeToolResult("call", failing),
+          ]);
+    expect(transcript.calls).toEqual([
+      expect.objectContaining({ error: true, errorCode: null }),
+    ]);
+    const metrics = evaluateAgentTranscript(
+      transcript,
+      "analyze_javascript_application",
+      { requiredToolSubsequence: ["analyze_javascript_application"] },
+    );
+    expect(metrics.evidenceIds).toEqual([]);
+    expect(metrics.requiredToolSubsequenceMet).toBe(false);
+  },
+);
 
 it.each(["codex", "claude-code"] as const)(
   "%s does not deliver a result whose structured representations contradict each other",

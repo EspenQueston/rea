@@ -32,6 +32,10 @@ export function selectAgentEvalClient(
   repositoryRoot?: string,
 ): AgentEvalClient;
 
+export function preflightClientEnvironment(
+  client: Pick<AgentEvalClient, "id">,
+): Record<string, string>;
+
 export function agentEvalEnvironment(options: {
   readonly account: string;
   readonly runId: string;

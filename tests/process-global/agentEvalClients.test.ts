@@ -4,6 +4,7 @@ import { afterEach, expect, it, vi } from "vitest";
 
 import {
   agentEvalEnvironment,
+  preflightClientEnvironment,
   prepareAgentEvalClient,
   selectAgentEvalClient,
 } from "../../scripts/lib/agent-eval-clients.mjs";
@@ -343,3 +344,32 @@ it.each([undefined, ""])(
     expect(await readFile(copy, "utf8")).toBe("fixture-claude");
   },
 );
+
+it("gives the version preflight the client's containment controls without authentication", () => {
+  vi.stubEnv("ANTHROPIC_API_KEY", "selected-claude-key");
+  vi.stubEnv("GEMINI_API_KEY", "selected-gemini-key");
+  const preflight = (id: string) =>
+    agentEvalEnvironment({
+      account: "/run/account",
+      runId: "test",
+      client: {
+        environment: preflightClientEnvironment(selectAgentEvalClient(id)),
+      },
+    });
+  expect(preflight("claude-code")).toMatchObject({
+    DISABLE_AUTOUPDATER: "1",
+    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+  });
+  expect(preflight("gemini-cli")).toMatchObject({
+    GEMINI_CLI_NO_RELAUNCH: "1",
+  });
+  for (const id of ["codex", "claude-code", "gemini-cli"])
+    for (const key of [
+      "ANTHROPIC_API_KEY",
+      "GEMINI_API_KEY",
+      "CLAUDE_CONFIG_DIR",
+      "GEMINI_CLI_HOME",
+      "CODEX_HOME",
+    ])
+      expect(preflight(id)).not.toHaveProperty(key);
+});

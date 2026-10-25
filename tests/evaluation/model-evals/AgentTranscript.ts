@@ -190,11 +190,14 @@ const mcpResultFacts = (
   const textError = record(record(text?.value)?.error);
   // REA's own record is preferred over the client's generic wrapper around it.
   const error = own ?? textError ?? record(clientError);
+  // Any non-null error representation is a failure, even a bare string that
+  // carries no record to read a code from.
   const failed =
     clientFailed ||
     !absent(clientError) ||
     result?.isError === true ||
-    structured?.error !== undefined ||
+    !absent(result?.error) ||
+    !absent(structured?.error) ||
     error !== undefined;
   // A code is certain only from a record that cannot have folded duplicates.
   const certain = error !== textError || text?.hasDuplicateMembers === false;
@@ -486,6 +489,17 @@ const consumeClaudeAssistant = (
     state.messages.push(texts.join("\n"));
 };
 
+/** A tool_result block's own model-visible content, in MCP result shape. */
+const claudeBlockResult = (
+  block: Record<string, unknown>,
+): Record<string, unknown> => ({
+  content:
+    typeof block.content === "string"
+      ? [{ type: "text", text: block.content }]
+      : block.content,
+  isError: block.is_error === true,
+});
+
 const consumeClaudeUser = (
   state: ClaudeState,
   event: Record<string, unknown>,
@@ -493,14 +507,17 @@ const consumeClaudeUser = (
   const toolResults = contentBlocks(event).filter(
     (block) => block.type === "tool_result",
   );
-  // The raw MCP result accompanies a user event that carries one tool result.
-  const raw = toolResults.length === 1 ? event.tool_use_result : undefined;
+  // The raw MCP result (with structured content) accompanies a user event that
+  // carries one tool result. Batched parallel results cannot attribute it, so
+  // each block then stands on its own content.
+  const raw =
+    toolResults.length === 1 ? record(event.tool_use_result) : undefined;
   for (const block of toolResults) {
     const id = textValue(block.tool_use_id);
     if (id !== undefined)
       retainResult(state.results, state.conflicts, id, {
         isError: block.is_error === true,
-        raw,
+        raw: raw ?? claudeBlockResult(block),
       });
   }
 };

@@ -33,6 +33,24 @@ const CLIENTS = {
 
 const SKILL = "reverse-engineer-anything";
 
+/**
+ * Non-authentication controls a client receives for the version preflight as
+ * well as every scenario: no self-update, no nonessential traffic, no relaunch.
+ */
+const CONTAINMENT = {
+  codex: {},
+  "claude-code": {
+    DISABLE_AUTOUPDATER: "1",
+    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+  },
+  "gemini-cli": { GEMINI_CLI_NO_RELAUNCH: "1" },
+};
+
+/** The selected client's containment variables, without any authentication. */
+export const preflightClientEnvironment = (client) => ({
+  ...CONTAINMENT[client.id],
+});
+
 /** Resolve `REA_AGENT_EVAL_CLIENT`; Codex remains the default. */
 export const selectAgentEvalClient = (
   value = "codex",
@@ -203,8 +221,7 @@ const prepareClaudeCode = async (profile, { model, authPaths }) => {
 const claudeCodeClient = (profile, model) => ({
   environment: {
     CLAUDE_CONFIG_DIR: profile,
-    DISABLE_AUTOUPDATER: "1",
-    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+    ...CONTAINMENT["claude-code"],
     // Account-level claude.ai connectors are user configuration.
     ENABLE_CLAUDEAI_MCP_SERVERS: "false",
     ...apiKeys("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"),
@@ -304,7 +321,7 @@ const prepareGeminiCli = async (profile, { model, authPaths }) => {
       GEMINI_CLI_HOME: profile,
       GEMINI_CLI_SYSTEM_SETTINGS_PATH: empty,
       GEMINI_CLI_SYSTEM_DEFAULTS_PATH: empty,
-      GEMINI_CLI_NO_RELAUNCH: "1",
+      ...CONTAINMENT["gemini-cli"],
       GEMINI_CLI_TRUST_WORKSPACE: "true",
       ...apiKeys("GEMINI_API_KEY"),
       ...(process.env.GOOGLE_GEMINI_BASE_URL === undefined
