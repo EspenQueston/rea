@@ -128,7 +128,7 @@ rea setup --client codex --dry-run --json
 Use the current supported client's ID: `claude_code`, `claude_desktop`, `codex`,
 `cursor`, `gemini_cli`, `windsurf`, `devin`, `opencode`, `antigravity`,
 `copilot_cli`, `commandcode`, `qwen_code`, `vscode`, `trae`, `grok_build`, `omp`, `pi`,
-`hermes`, `qoder`, `droid`, `zcode`, `dsh`, or `grok_bot`. If unknown, inspect `doctor --json` before choosing a
+`hermes`, `qoder`, `droid`, `zcode`, `dsh`, `freebuff`, or `grok_bot`. If unknown, inspect `doctor --json` before choosing a
 scope. `grok_bot` uses a chat registration step rather than local `mcp.json`.
 For unsupported clients, use version-pinned manual stdio registration or CLI.
 
@@ -174,6 +174,17 @@ writing. Managed policy can constrain client settings. Consult the
 [Codex configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference)
 for the installed client's supported settings. This is an optional recovery
 choice, not a prerequisite for every REA task.
+
+## Repair an editable REA limit
+
+If `details.limit` names an editable setting and its bounds, call
+`update_analysis_settings` directly with a `changes` entry containing `setting`,
+`action: "set"` and `value`. `inspect_analysis_settings` is optional when those
+facts are already present. Retry the same input after work and cleanup settle.
+Runtime defaults affect new work only; explicit per-call arguments take
+precedence and must be corrected directly when selected. Reset restores launch
+values. Updates survive target close/open but disappear on REA restart. They do
+not edit host deadlines, response buffers, registrations or fixed limits.
 
 ## Continue through an installed CLI
 

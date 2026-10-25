@@ -450,6 +450,7 @@ const workflowAvailabilityFor = ({
     name === "inspect_gpu_code_objects" ||
     name === "inspect_rust_binary" ||
     name === "inspect_python_pyc" ||
+    name === "inspect_apple_ips" ||
     name === "inspect_erlang_beam" ||
     name === "inspect_electron_fuses"
   )
@@ -531,7 +532,12 @@ const workflowAvailabilityFor = ({
     return { reason: "available", remediation: null };
   if (name === "inspect_pe_certificates" || name === "inspect_pe_imports")
     return { reason: "available", remediation: null };
-  if (name === "inspect_elf_notes")
+  if (
+    name === "inspect_elf_notes" ||
+    name === "inspect_devicetree" ||
+    name === "inspect_kernel_module" ||
+    name === "inspect_pe_load_config"
+  )
     return { reason: "available", remediation: null };
   if (name === "inspect_evm_interface") {
     const profile = hostRestrictedAvailability(
