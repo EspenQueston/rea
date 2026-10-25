@@ -152,7 +152,15 @@ const redactFailure = (
   if (error instanceof AnalysisInputError)
     return new AnalysisInputError(
       error.operation,
-      context,
+      {
+        ...context,
+        ...(error.userMessage === undefined
+          ? {}
+          : { userMessage: text(error.userMessage) }),
+        ...(error.remediationAction === undefined
+          ? {}
+          : { remediationAction: text(error.remediationAction) }),
+      },
       error.issues.map((issue) => ({
         ...issue,
         // Unknown-argument paths contain literal field names, including names
