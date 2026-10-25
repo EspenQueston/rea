@@ -396,6 +396,64 @@ describe("decodeDebugInfo sloppy local events", () => {
   });
 });
 
+describe("decodeDebugInfo faulted streams", () => {
+  const layout = {
+    firstRegister: 0,
+    registersSize: 4,
+    accessFlags: 0x8,
+    thisTypeIdx: 0,
+    paramTypes: dexParameterList([]),
+  };
+
+  it("keeps locals that ended before a fault and drops those still live, as ART does", () => {
+    const bytes = stream(
+      ...uleb(1),
+      ...uleb(0),
+      START_LOCAL,
+      ...uleb(0),
+      ...ulebp1(10),
+      ...ulebp1(11),
+      START_LOCAL,
+      ...uleb(1),
+      ...ulebp1(12),
+      ...ulebp1(11),
+      ADVANCE_PC,
+      ...uleb(1),
+      END_LOCAL,
+      ...uleb(0), // closes register 0's local before the fault
+      ADVANCE_PC,
+      ...uleb(1),
+      END_LOCAL,
+      ...uleb(4), // past registers_size: the fault
+      END_SEQUENCE,
+    );
+    const d = decodeDebugInfo(bytes, 1, 4, layout);
+    expect(d.malformed).toBe(true);
+    expect(d.locals).toEqual([
+      expect.objectContaining({ register: 0, startAddress: 0, endAddress: 1 }),
+    ]);
+    expect(d.localCount).toBe(1);
+    expect(d.explicitLocalCount).toBe(1);
+  });
+
+  it("drops still-live locals when the stream runs short", () => {
+    const bytes = stream(
+      ...uleb(1),
+      ...uleb(0),
+      START_LOCAL,
+      ...uleb(0),
+      ...ulebp1(10),
+      ...ulebp1(11),
+      ADVANCE_PC,
+      ...uleb(1),
+    );
+    const d = decodeDebugInfo(bytes, 1, 4, layout);
+    expect(d.malformed).toBe(true);
+    expect(d.locals).toEqual([]);
+    expect(d.localCount).toBe(0);
+  });
+});
+
 describe("DexDebugInfoWalk terminal state", () => {
   it("returns the same result when resumed after it finished", () => {
     const bytes = stream(

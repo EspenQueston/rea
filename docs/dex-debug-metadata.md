@@ -90,6 +90,16 @@ register never declared starts a local with no name or type (counted in
 or restart naming a register outside the method's frame is malformed, as ART
 rejects it.
 
+A stream that faults (runs short, names a register outside the frame, or
+references an unreadable name or type) makes the method `malformed`. Every
+position before the fault is kept, and so is every local scope that ended
+before it. Locals still live at the fault are dropped and not counted, because
+ART's decoder emits nothing after a fault and their end was never recovered.
+`dexdump` decodes positions in a separate pass that ignores local events, so on
+such a stream it can list positions after the fault that REA does not count;
+its locals match. A negative line is not a fault: the method is `malformed`,
+but decoding continues to the end of the stream.
+
 Decoding is bounded by a per-member work budget and runs in slices: after
 each slice the reader yields to the event loop, so other MCP requests are
 served and a cancellation takes effect within one slice, not after the whole

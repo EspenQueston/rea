@@ -4,13 +4,16 @@
  * scopes, plus its parameter names. This is the DEX analogue of the JVM
  * LineNumberTable / LocalVariableTable, but it is an event stream, not a table.
  *
- * Facts are preserved on partial failure: a stream that runs short, drives a
- * line negative, or names a register outside the method's frame is marked
- * `malformed` while keeping every position and local recovered before the
- * fault. Ending a register that holds no live local, or restarting one that is
- * still live, is tolerated as ART's decoder tolerates it. Names are
- * left as string-pool indices here (`-1` = NO_INDEX); resolution is layered on
- * top. Addresses are 16-bit code units, bounded by the method's `insns_size`.
+ * Facts are preserved on partial failure: a stream that runs short, names a
+ * register outside the method's frame, or references an unreadable name is
+ * marked `malformed` while keeping every position and every local scope that
+ * ended before the fault; locals still live at the fault are dropped, as ART's
+ * decoder emits nothing after it. A negative line marks the stream `malformed`
+ * without stopping it. Ending a register that holds no live local, or
+ * restarting one that is still live, is tolerated as ART's decoder tolerates
+ * it. Names are left as string-pool indices here (`-1` = NO_INDEX); resolution
+ * is layered on top. Addresses are 16-bit code units, bounded by the method's
+ * `insns_size`.
  */
 import { DexCursor } from "./dexFile.js";
 
@@ -490,9 +493,14 @@ export class DexDebugInfoWalk {
     this.live.clear();
   }
 
-  /** End the walk; later resumes return the same result. */
+  /**
+   * End the walk. Only a complete stream closes its live locals at the end of
+   * the code; after a fault ART emits nothing more, so locals still live there
+   * were never recovered and are dropped rather than given an invented end.
+   */
   private finish(complete: boolean): DexMethodDebug {
-    this.closeLiveAtEnd();
+    if (complete) this.closeLiveAtEnd();
+    else this.live.clear();
     this.finished = this.result(!complete || this.malformed);
     return this.finished;
   }
