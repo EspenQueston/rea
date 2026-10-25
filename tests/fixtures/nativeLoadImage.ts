@@ -65,3 +65,79 @@ export const nativeDosLoadImageFixture = (): Extract<
   ],
   limitations: [],
 });
+
+export const nativeRawLoadImageFixture = (): Extract<
+  NativeLoadImage,
+  { format: "raw-binary" }
+> => ({
+  status: "verified",
+  format: "raw-binary",
+  target_sha256: "c".repeat(64),
+  architecture: "x86_64",
+  language_id: "x86:LE:64:default",
+  compiler_spec_id: "gcc",
+  base_address: "ram:0x00400000",
+  file_bytes: 32,
+  entry: { address: "ram:0x00400000", file_offset: 0 },
+  observations: {
+    ...nativeLoadImageObservationFixture(),
+    executable_format: "Raw Binary",
+    language_id: "x86:LE:64:default",
+    compiler_spec_id: "gcc",
+    image_base: "ram:0x00400000",
+    entry_points: ["ram:0x00400000"],
+  },
+  checks: [],
+  limitations: [],
+});
+
+export const nativeDolLoadImageFixture = (): Extract<
+  NativeLoadImage,
+  { format: "gamecube-dol" }
+> => ({
+  status: "mismatch",
+  format: "gamecube-dol",
+  target_sha256: "d".repeat(64),
+  architecture: "powerpc",
+  language_id: "PowerPC:BE:32:default",
+  compiler_spec_id: "default",
+  file_bytes: 288,
+  entry: { address: "ram:0x80003100" },
+  sections: [
+    {
+      kind: "text",
+      index: 0,
+      file_offset: "0x100",
+      address: "ram:0x80003100",
+      size: "0x10",
+    },
+    {
+      kind: "data",
+      index: 0,
+      file_offset: "0x110",
+      address: "ram:0x80004000",
+      size: "0x10",
+    },
+  ],
+  bss: { address: "ram:0x80005000", size: "0x20" },
+  observations: {
+    ...nativeLoadImageObservationFixture(),
+    executable_format: "Nintendo GameCube DOL",
+    language_id: "PowerPC:BE:32:default",
+    image_base: "ram:0x80003100",
+    entry_points: ["ram:0x80003100"],
+  },
+  checks: [
+    {
+      name: "bss",
+      matched: false,
+      expected: "0x20",
+      observed: "0x10",
+      file_offset: null,
+      address: "ram:0x80005000",
+    },
+  ],
+  limitations: [
+    "Fixture records a BSS mismatch; this is not runtime coverage.",
+  ],
+});
