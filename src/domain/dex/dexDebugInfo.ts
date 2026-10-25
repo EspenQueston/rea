@@ -550,12 +550,9 @@ export const decodeDebugInfo = (
   layout?: DexParameterLayout,
   options: DexDecodeOptions = {},
 ): DexMethodDebug => {
-  const walk = startDebugInfo(bytes, offset, insnsSize, layout, {
-    ...options,
-    pauseDue: undefined,
-  });
+  const walk = startDebugInfo(bytes, offset, insnsSize, layout, options);
   if (!(walk instanceof DexDebugInfoWalk)) return walk;
-  // Without `pauseDue` the walk never pauses; the loop only satisfies the type.
+  // A due pause is passed over: this decode runs to the end in one call.
   let result = walk.resume();
   while (result === DEX_DEBUG_PAUSED) result = walk.resume();
   return result;
