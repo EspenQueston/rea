@@ -183,6 +183,7 @@ describe its recorded investigation; update them only when repeating that work.
 - `public/faq/index.html`: concise answers about setup, updates, analysis and troubleshooting.
 - `public/contributors/index.html`: one searchable, alphabetical grid of GitHub contributors, with profile links and contribution guidance.
 - `public/guides/`: a guide hub and native, JavaScript/Electron and browser examples.
+- `public/guides/rl-environments/index.html`: recording a web app, exporting a runnable environment, and adding tasks and reward checks.
 - `public/examples/`: downloadable Electron source and an interactive Notes browser app.
 - `public/assets/`: shared styles, interactions, favicon and explanatory figures.
 
@@ -396,8 +397,8 @@ Each introduces the goal, then follows three named steps: ask a question,
 find the rule, and try a reconstruction. The question and plain-language finding
 are on the left, with the demo on the right; mobile keeps that reading order.
 Code excerpts and source details join the optional investigation flow and checks
-in each disclosure. Calculator’s excerpt
-comes from an installed model DLL; Microsoft’s public implementation supplies
+in each disclosure. Calculator's excerpt
+comes from an installed model DLL; Microsoft's public implementation supplies
 names and a crosscheck. Its controls apply the percentage rule to generic inputs.
 The target guides end with an optional larger-project disclosure, preserving
 the original website-cloning and game-reconstruction prompts.

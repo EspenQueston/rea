@@ -1,5 +1,7 @@
 import { setImmediate } from "node:timers/promises";
 import { AnalysisResourceConstraintError } from "../../domain/analysisErrorCore.js";
+import { fixedNativeAllowance } from "../../domain/native/nativeDeadlines.js";
+import type { Evidence } from "../../domain/evidence.js";
 
 const NATIVE_MATCHING_REPRESENTATION_BYTES = 96 * 1024 * 1024;
 
@@ -18,8 +20,13 @@ export class NativeMatchingAdmission {
       throw new AnalysisResourceConstraintError(
         this.operation,
         "capacity",
-        "Native function matching exceeds representation capacity",
+        `Native function matching exceeds its ${String(NATIVE_MATCHING_REPRESENTATION_BYTES)}-byte (96 MiB) representation allowance. This release has no runtime override.`,
         { maximum_bytes: NATIVE_MATCHING_REPRESENTATION_BYTES },
+        fixedNativeAllowance(
+          "The native function-matching representation allowance",
+          "bytes",
+          `${String(NATIVE_MATCHING_REPRESENTATION_BYTES)} bytes`,
+        ),
       );
     this.signal?.throwIfAborted();
     if (++this.#work % 256 === 0)
@@ -28,6 +35,17 @@ export class NativeMatchingAdmission {
         this.signal === undefined ? {} : { signal: this.signal },
       );
   };
+  /**
+   * Charge a borrowed record's envelope, which matching copies into its
+   * limitations, digests and links. Its result payloads stay resident: the
+   * caller charges what matching derives from them, or never parses them.
+   */
+  async admitBorrowed(record: Evidence): Promise<void> {
+    await this.checkpoint(128);
+    for (const [key, value] of Object.entries(record))
+      if (key !== "raw_result" && key !== "normalized_result")
+        await this.admit(value);
+  }
   async admit(root: unknown): Promise<void> {
     const pending: Iterator<unknown>[] = [[root][Symbol.iterator]()];
     while (pending.length) {
