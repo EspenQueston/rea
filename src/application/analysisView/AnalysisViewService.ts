@@ -1,3 +1,4 @@
+import { NATIVE_OBSERVATION_OPERATIONS } from "../../domain/native/nativeObservation.js";
 import { setImmediate } from "node:timers/promises";
 import { dispatchQueuedInterrupts } from "../../process/queuedInterrupts.js";
 import { readImmutableEvidenceBundle } from "../EvidenceBundleFiles.js";
@@ -202,7 +203,9 @@ const projectResolvedAnalysisView = (
     evidenceId: parent.evidence_id,
     operation: parent.operation,
     provider: parent.provider,
-    analysisProfileDigest: parent.analysis_profile?.digest ?? null,
+    analysisProfile: parent.analysis_profile,
+    authority: parent.authority,
+    environment: parent.environment,
     normalizedResult:
       immutableJsonSnapshotMember(parent, "normalized_result") ??
       parent.normalized_result,
@@ -372,6 +375,12 @@ const createAnalysisViewEvidence = (
       result.parent_operation === "analyze_function")
       ? result
       : undefined;
+  const nativeObservationView =
+    result.kind === "native-observation" ||
+    (result.kind === "summary" &&
+      NATIVE_OBSERVATION_OPERATIONS.some(
+        (operation) => operation === result.parent_operation,
+      ));
   return createEvidence(
     target,
     ANALYSIS_VIEW_PROVIDER,
@@ -396,7 +405,7 @@ const createAnalysisViewEvidence = (
           : "derived",
       authority: parent.authority,
       limitations: result.limitations,
-      ...(nativeFunctionView !== undefined &&
+      ...((nativeFunctionView !== undefined || nativeObservationView) &&
       parent.relationship_coverage !== null
         ? { relationshipCoverage: parent.relationship_coverage }
         : {}),
