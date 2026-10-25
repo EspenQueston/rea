@@ -1753,3 +1753,85 @@ it("keeps mixed CArchive roles distinct across declarations, bytecode, and store
     await reader.close();
   }
 });
+// "cafe" + combining acute U+0301 (NFD) versus precomposed U+00E9 (NFC).
+const NFD_MEMBER = "caf\u0065\u0301.bin";
+const NFC_MEMBER = "caf\u00e9.bin";
+const NFD_MODULE = "caf\u0065\u0301";
+const NFC_MODULE_PATH = "PYZ.pyz/caf\u00e9.pyc";
+
+it("preserves the NFD spelling of CArchive and PYZ member names as a limitation", async () => {
+  expect(NFD_MEMBER).not.toBe(NFC_MEMBER);
+  expect(NFD_MEMBER.normalize("NFC")).toBe(NFC_MEMBER);
+  const path = await writeArchive(
+    "nfd-members",
+    cArchiveExecutable({
+      layout: "2.1",
+      pythonVersion: 314,
+      members: [
+        {
+          name: NFD_MEMBER,
+          typeCode: "x",
+          payload: Buffer.from("nfd-data"),
+          compress: false,
+        },
+        {
+          name: "plain.bin",
+          typeCode: "x",
+          payload: Buffer.from("plain-data"),
+          compress: false,
+        },
+        {
+          name: "PYZ.pyz",
+          typeCode: "z",
+          payload: pyzArchive({
+            magic: PYTHON_39_MAGIC,
+            modules: [
+              { name: NFD_MODULE, typeCode: 0, body: Buffer.from("nfd-module") },
+            ],
+          }),
+          compress: false,
+        },
+      ],
+    }),
+  );
+  const snapshot = await scanCanonicalArtifactInventory(path);
+  const stored = snapshot.occurrences.find(
+    (occurrence) => occurrence.logical_path === NFC_MEMBER,
+  );
+  expect(stored).toBeDefined();
+  const storedLimitation = stored?.limitations.find((item) =>
+    item.includes("Unicode-normalized to NFC"),
+  );
+  expect(storedLimitation).toBeDefined();
+  expect(storedLimitation).toContain("File path");
+  expect(storedLimitation).toContain(JSON.stringify(NFD_MEMBER));
+  expect(storedLimitation?.includes(NFD_MEMBER)).toBe(true);
+  // The reader-carried fact and scanReader's own check must not double up.
+  expect(
+    stored?.limitations.filter((item) =>
+      item.includes("Unicode-normalized to NFC"),
+    ),
+  ).toHaveLength(1);
+
+  const module = snapshot.occurrences.find(
+    (occurrence) => occurrence.logical_path === NFC_MODULE_PATH,
+  );
+  expect(module).toBeDefined();
+  const moduleLimitation = module?.limitations.find((item) =>
+    item.includes("Unicode-normalized to NFC"),
+  );
+  expect(moduleLimitation).toBeDefined();
+  expect(moduleLimitation).toContain(
+    JSON.stringify(`PYZ.pyz/${NFD_MODULE}.pyc`),
+  );
+
+  const plain = snapshot.occurrences.find(
+    (occurrence) => occurrence.logical_path === "plain.bin",
+  );
+  expect(plain).toBeDefined();
+  expect(
+    plain?.limitations.some((item) =>
+      item.includes("Unicode-normalized to NFC"),
+    ),
+  ).toBe(false);
+});

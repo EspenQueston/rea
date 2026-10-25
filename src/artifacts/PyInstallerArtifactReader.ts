@@ -3,8 +3,11 @@ import { finished } from "node:stream/promises";
 import { setImmediate } from "node:timers/promises";
 import { jsonValueByteLength } from "../domain/jsonValueByteLength.js";
 import type { JsonValue } from "../domain/jsonValue.js";
-import { normalizeArtifactPath } from "./ArtifactPaths.js";
-import type { FileHandle } from "node:fs/promises";
+import {
+  normalizeArtifactPath,
+  unicodeNormalizationLimitation,
+} from "./ArtifactPaths.js";
+import { lstat, type FileHandle } from "node:fs/promises";
 
 import type { PyInstallerMetadata } from "../domain/artifactFormatMetadata.js";
 import {
@@ -475,9 +478,25 @@ export class PyInstallerArtifactReader implements ArtifactReader {
     const members: PyInstallerMember[] = [];
     const append = (member: PyInstallerMember): void => {
       this.#reservePathComponents(member.entry.path);
+      const path = normalizeArtifactPath(member.entry.path);
+      // This projection normalizes before scanReader sees the entry, so
+      // scanReader's own spelling check cannot observe the change. Carry
+      // the pre-NFC canonical member path as a limitation here, through
+      // the same channel this reader already uses for other member facts;
+      // scanReader copies entry limitations onto the occurrence and adds
+      // nothing twice, since its own check sees only the NFC spelling.
+      const normalizationLimitation = unicodeNormalizationLimitation(
+        member.entry.path,
+        path,
+        member.entry.kind,
+      );
       const entry = {
         ...member.entry,
-        path: normalizeArtifactPath(member.entry.path),
+        path,
+        limitations:
+          normalizationLimitation === undefined
+            ? member.entry.limitations
+            : [...member.entry.limitations, normalizationLimitation],
       };
       this.#reserveMetadata(
         {
