@@ -247,6 +247,21 @@ describe("Unicode NFC normalization", () => {
     expect(limitation).not.toContain("Archive member");
   });
 
+  it("keeps the trailing slash on a trailing-slash file member's NFC spelling", () => {
+    const nfdFileEntry = "caf\u0065\u0301/";
+    const nfcFileEntry = "caf\u00e9";
+    const limitation = unicodeNormalizationLimitation(
+      nfdFileEntry,
+      nfcFileEntry,
+      "file",
+    );
+    expect(limitation).toBeDefined();
+    expect(limitation).toContain("File path");
+    // The NFC spelling is the slash-carrying form, not the trimmed logical path.
+    expect(limitation).toContain(JSON.stringify("caf\u00e9/"));
+    expect(limitation).not.toContain(JSON.stringify("caf\u00e9"));
+  });
+
   it("names a file path by kind for non-directory entries", () => {
     const fileLimitation = unicodeNormalizationLimitation(NFD, NFC, "file");
     expect(fileLimitation).toContain("File path");

@@ -79,8 +79,10 @@ export const normalizeArtifactPath = (input: string): string => {
  * spelling is already NFC (a trailing-slash trim is structural, not a spelling
  * change, and is not reported here). The label follows the entry kind so a
  * folder on disk or a ZIP directory entry is never called an archive member,
- * and a directory's NFC spelling keeps its trailing slash (the logical path
- * trims it as a structural step, not a spelling change).
+ * and an entry's NFC spelling keeps its trailing slash whatever its kind
+ * (the logical path trims it as a structural step, not a spelling change;
+ * a trailing-slash file member reported as the slashless NFC form would
+ * attribute the slash removal to Unicode normalization).
  */
 export const unicodeNormalizationLimitation = (
   original: string,
@@ -98,8 +100,9 @@ export const unicodeNormalizationLimitation = (
           : kind === "metadata"
             ? "Metadata path"
             : "File path";
-  const displayNormalized =
-    kind === "directory" && original.endsWith("/") ? `${normalized}/` : normalized;
+  const displayNormalized = original.endsWith("/")
+    ? original.normalize("NFC")
+    : normalized;
   return (
     `${label} ${JSON.stringify(original)} was Unicode-normalized ` +
     `to NFC ${JSON.stringify(displayNormalized)} for its logical path; the original ` +
