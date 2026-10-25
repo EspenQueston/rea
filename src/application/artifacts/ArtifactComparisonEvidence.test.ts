@@ -8,6 +8,7 @@ import {
   parseEvidence,
   type Evidence,
 } from "../../domain/evidence.js";
+import { AnalysisInputError } from "../../domain/analysisErrorCore.js";
 import {
   EvidenceIntegrityError,
   EvidenceReferenceError,
@@ -68,7 +69,11 @@ const recreateSummary = (
 
 it("reports a missing retained parent instead of treating summary facts as inventory", async () => {
   const { summary } = await artifactSummary();
-  const resolved = resolveArtifactComparisonEvidence(summary, undefined);
+  const resolved = resolveArtifactComparisonEvidence(
+    summary,
+    undefined,
+    "left",
+  );
   expect(resolved.ok).toBe(false);
   if (!resolved.ok) {
     expect(resolved.error).toBeInstanceOf(EvidenceReferenceError);
@@ -82,6 +87,7 @@ it("uses retained Evidence resolution to reject a mismatched parent identity", a
   const resolved = resolveArtifactComparisonEvidence(
     summary,
     () => otherParent,
+    "left",
   );
   expect(resolved.ok).toBe(false);
   if (!resolved.ok) {
@@ -100,8 +106,10 @@ it("rejects a summary that declares the wrong parent operation", async () => {
     parent_operation: "inspect_artifact",
   };
   const forged = recreateSummary(summary, normalizedResult);
-  const resolved = resolveArtifactComparisonEvidence(forged, (evidenceId) =>
-    evidenceId === parent.evidence_id ? parent : undefined,
+  const resolved = resolveArtifactComparisonEvidence(
+    forged,
+    (evidenceId) => (evidenceId === parent.evidence_id ? parent : undefined),
+    "left",
   );
   expect(resolved.ok).toBe(false);
   if (!resolved.ok)
@@ -114,8 +122,10 @@ it("rejects summary parameters that do not identify the projected parent", async
     ...summary.parameters,
     parent_evidence_id: `ev_${"f".repeat(64)}`,
   });
-  const resolved = resolveArtifactComparisonEvidence(forged, (evidenceId) =>
-    evidenceId === parent.evidence_id ? parent : undefined,
+  const resolved = resolveArtifactComparisonEvidence(
+    forged,
+    (evidenceId) => (evidenceId === parent.evidence_id ? parent : undefined),
+    "left",
   );
   expect(resolved.ok).toBe(false);
   if (!resolved.ok)
@@ -138,8 +148,10 @@ it("rejects summary facts that do not reproject from the complete parent", async
     },
   };
   const forged = recreateSummary(summary, normalizedResult);
-  const resolved = resolveArtifactComparisonEvidence(forged, (evidenceId) =>
-    evidenceId === parent.evidence_id ? parent : undefined,
+  const resolved = resolveArtifactComparisonEvidence(
+    forged,
+    (evidenceId) => (evidenceId === parent.evidence_id ? parent : undefined),
+    "left",
   );
   expect(resolved.ok).toBe(false);
   if (!resolved.ok)
@@ -161,6 +173,27 @@ it("accepts display-only subject changes excluded from Evidence identity", async
   const resolved = resolveArtifactComparisonEvidence(
     displayOnly,
     (evidenceId) => (evidenceId === parent.evidence_id ? parent : undefined),
+    "left",
   );
   expect(resolved).toEqual({ ok: true, value: parent });
 });
+
+it.each(["left", "right"] as const)(
+  "names the %s compare_artifacts side when a summary is not an artifact inventory",
+  async (side) => {
+    const { summary } = await artifactSummary();
+    const notInventory = recreateSummary(summary, { view: "other" });
+    const resolved = resolveArtifactComparisonEvidence(
+      notInventory,
+      undefined,
+      side,
+    );
+    expect(resolved.ok).toBe(false);
+    if (!resolved.ok) {
+      expect(resolved.error).toBeInstanceOf(AnalysisInputError);
+      expect(resolved.error).toMatchObject({
+        issues: [{ path: [side], reason: "invalid_value" }],
+      });
+    }
+  },
+);
