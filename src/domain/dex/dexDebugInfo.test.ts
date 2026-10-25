@@ -239,3 +239,51 @@ describe("decodeDebugInfo register bound", () => {
     expect(d.localCount).toBe(0);
   });
 });
+
+describe("decodeDebugInfo pool references", () => {
+  const layout = {
+    firstRegister: 0,
+    registersSize: 4,
+    accessFlags: 0x8,
+    thisTypeIdx: 0,
+    paramTypes: dexParameterList([]),
+    stringIdsSize: 8,
+    typeIdsSize: 4,
+  };
+  const startLocal = (nameIdx: number, typeIdx: number): Uint8Array =>
+    stream(
+      ...uleb(1),
+      ...uleb(0),
+      START_LOCAL,
+      ...uleb(1),
+      ...ulebp1(nameIdx),
+      ...ulebp1(typeIdx),
+      END_SEQUENCE,
+    );
+
+  it("accepts local and source-file references inside the pools", () => {
+    expect(decodeDebugInfo(startLocal(7, 3), 1, 4, layout).malformed).toBe(
+      false,
+    );
+  });
+
+  it("marks a local name or type outside its pool malformed, as ART's verifier does", () => {
+    expect(decodeDebugInfo(startLocal(8, 3), 1, 4, layout).malformed).toBe(
+      true,
+    );
+    expect(decodeDebugInfo(startLocal(7, 4), 1, 4, layout).malformed).toBe(
+      true,
+    );
+  });
+
+  it("marks a DBG_SET_FILE name outside the string pool malformed", () => {
+    const bytes = stream(
+      ...uleb(1),
+      ...uleb(0),
+      SET_FILE,
+      ...ulebp1(8),
+      END_SEQUENCE,
+    );
+    expect(decodeDebugInfo(bytes, 1, 4, layout).malformed).toBe(true);
+  });
+});

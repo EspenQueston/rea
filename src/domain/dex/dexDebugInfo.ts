@@ -52,6 +52,13 @@ export interface DexParameterLayout {
   readonly thisTypeIdx: number;
   /** `null` when the method's proto cannot be resolved (count unknown). */
   readonly paramTypes: DexParameterList | null;
+  /**
+   * The member's `string_ids_size` and `type_ids_size`. ART's verifier rejects
+   * a stream whose name, type, signature or source-file reference falls outside
+   * them, so such a reference makes the stream malformed.
+   */
+  readonly stringIdsSize?: number;
+  readonly typeIdsSize?: number;
 }
 
 /**
@@ -223,6 +230,18 @@ class DebugInfoWalk {
     return true;
   }
 
+  /** A string reference (`-1` = none) that lies inside the member's string_ids. */
+  private stringRef(idx: number): boolean {
+    const size = this.layout?.stringIdsSize;
+    return idx === -1 || size === undefined || idx < size;
+  }
+
+  /** A type reference (`-1` = none) that lies inside the member's type_ids. */
+  private typeRef(idx: number): boolean {
+    const size = this.layout?.typeIdsSize;
+    return idx === -1 || size === undefined || idx < size;
+  }
+
   /** Seed the implicit parameter locals (and `this`) live at address 0. */
   private seedParameters(): void {
     const layout = this.layout;
@@ -301,7 +320,7 @@ class DebugInfoWalk {
     for (let i = 0; i < paramsSize.value; i += 1) {
       if (!this.charge()) return false;
       const nameIdx = this.cursor.uleb128p1();
-      if (!nameIdx.ok) return false;
+      if (!nameIdx.ok || !this.stringRef(nameIdx.value)) return false;
       this.parameterNames.push(nameIdx.value);
     }
     this.seedParameters();
@@ -319,6 +338,12 @@ class DebugInfoWalk {
       signatureIdx = sig.value;
     }
     if (!reg.ok || !nameIdx.ok || !typeIdx.ok) return false;
+    if (
+      !this.stringRef(nameIdx.value) ||
+      !this.typeRef(typeIdx.value) ||
+      !this.stringRef(signatureIdx)
+    )
+      return false;
     // A register past the method's frame is malformed; refusing it also caps
     // the live-register maps at registers_size (<= 65,535).
     const registersSize = this.layout?.registersSize;
@@ -360,7 +385,7 @@ class DebugInfoWalk {
 
   private setFile(): Step {
     const nameIdx = this.cursor.uleb128p1();
-    if (!nameIdx.ok) return false;
+    if (!nameIdx.ok || !this.stringRef(nameIdx.value)) return false;
     this.setFileEvents += 1;
     return true;
   }
@@ -426,7 +451,9 @@ class DebugInfoWalk {
 
   run(): DexMethodDebug {
     if (!this.header()) return this.result(true);
-    for (let guard = 0; guard < 2_000_000; guard += 1) {
+    // Every opcode consumes at least one byte, so the stream's own bytes bound
+    // the loop; the member's work budget bounds its cost.
+    for (;;) {
       // Out of the member's work: stop; the caller sees remaining <= 0 and refuses.
       if (!this.charge() || this.localLimitExceeded) break;
       const op = this.cursor.u1();

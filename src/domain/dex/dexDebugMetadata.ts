@@ -221,15 +221,16 @@ const decodeMethodDebug = (
   const malformed = { ...absentMethodDebug(), present: true, malformed: true };
   if (code === "unreadable") return malformed;
   const paramTypes = resolver.methodParameters(method.methodIdx);
+  // Without the proto, `this` and the parameters cannot be seeded and the
+  // stream's parameter count cannot be checked: unknown, never complete.
+  if (paramTypes === null) return malformed;
   // ins_size must be the receiver plus one word per parameter (two for
   // long/double); otherwise `this` and the parameters would be seeded into
   // registers the method does not use.
-  if (paramTypes !== null) {
-    const words =
-      ((method.accessFlags & ACC_STATIC) === 0 ? 1 : 0) +
-      dexParameterWords(paramTypes);
-    if (words !== code.registersSize - code.firstRegister) return malformed;
-  }
+  const words =
+    ((method.accessFlags & ACC_STATIC) === 0 ? 1 : 0) +
+    dexParameterWords(paramTypes);
+  if (words !== code.registersSize - code.firstRegister) return malformed;
   return decodeDebugInfo(
     bytes,
     code.debugInfoOff,
@@ -240,6 +241,8 @@ const decodeMethodDebug = (
       accessFlags: method.accessFlags,
       thisTypeIdx: classTypeIdx,
       paramTypes,
+      stringIdsSize: resolver.header.stringIdsSize,
+      typeIdsSize: resolver.header.typeIdsSize,
     },
     options,
   );
@@ -307,6 +310,19 @@ const classMethods = async (
   return ok(reader.ok ? reader.value : "unreadable");
 };
 
+/**
+ * Charge one class_def visit and pause when a slice is due. Every visit costs a
+ * unit, so a table of class_defs that carry no source file and no class_data
+ * still advances the pacer and yields to the host.
+ */
+const visitClass = async (
+  work: DexWork,
+  pacer: DexPacer,
+): Promise<DexWorkError | null> => {
+  chargeWork(work.budget);
+  return pacer.due ? await pacer.pause() : outOfWork(work);
+};
+
 const outOfWork = (work: DexWork): DexWorkError | null =>
   work.cancelled()
     ? { kind: "cancelled" }
@@ -345,7 +361,7 @@ const findClassDef = async (
   let unreadable = 0;
   for (let i = 0; i < dex.header.classDefsSize; i += 1) {
     // Checked per class: one descriptor read can cost as much as its string.
-    const stop = pacer.due ? await pacer.pause() : outOfWork(work);
+    const stop = await visitClass(work, pacer);
     if (stop !== null) return err(stop);
     const def = readClassDef(bytes, dex.header, i);
     const identity = resolver.typeIdentity(def.classIdx, wanted);
@@ -574,7 +590,7 @@ export const summarizeDex = async (
   let unreadableCodeItems = 0;
   let malformedDebugInfo = 0;
   for (let c = 0; c < dex.header.classDefsSize; c += 1) {
-    const stop = pacer.due ? await pacer.pause() : outOfWork(work);
+    const stop = await visitClass(work, pacer);
     if (stop !== null) return err(stop);
     const classDef = readClassDef(bytes, dex.header, c);
     const idx = classDef.sourceFileIdx;

@@ -271,6 +271,45 @@ describe("dexDebugMetadata fails closed on unverifiable facts", () => {
   });
 });
 
+describe("dexDebugMetadata checks the references a stream depends on", () => {
+  it("reads a method whose proto parameters are out of the file as unknown, not complete", async () => {
+    const bytes = debuggableDex();
+    const view = new DataView(bytes.buffer);
+    const protoIdsOff = view.getUint32(76, true);
+    view.setUint32(protoIdsOff + 8, bytes.length + 100, true); // parameters_off
+    const summary = await summaryOf(bytes);
+    expect(summary.unreadable.debugInfo).toBe(1);
+    expect(summary.readiness).toBe("unknown");
+    const detail = await detailOf(bytes);
+    if (!detail.ok || detail.value === null) throw new Error("class must read");
+    expect(detail.value.methods[0]?.state).toBe("malformed");
+  });
+
+  it("does not count a parameter name outside the string pool as evidence", async () => {
+    const bytes = debuggableDex();
+    const { debugInfoOff } = layoutOf(bytes);
+    bytes[debugInfoOff + 2] = 127; // parameter name_idx 126 of 6 strings
+    const summary = await summaryOf(bytes);
+    expect(summary.unreadable.debugInfo).toBe(1);
+    expect(summary.methodsWithParameterNames).toBe(0);
+    expect(summary.readiness).toBe("unknown");
+    const detail = await detailOf(bytes);
+    if (!detail.ok || detail.value === null) throw new Error("class must read");
+    expect(detail.value.methods[0]?.state).toBe("malformed");
+  });
+
+  it("counts a valid stream longer than two million opcodes in full", async () => {
+    const bytes = debuggableDex(2_000_000);
+    const parsed = parseDexFile(bytes);
+    if (!parsed.ok) throw new Error("fixture must frame");
+    const result = await summarizeDex(parsed.value, bytes, work(8_000_000));
+    if (!result.ok) throw new Error(result.error.kind);
+    expect(result.value.linePositions).toBe(2_000_001);
+    expect(result.value.unreadable.debugInfo).toBe(0);
+    expect(result.value.readiness).toBe("present");
+  });
+});
+
 describe("dexDebugMetadata validates the frame and class identities", () => {
   it("marks a method whose ins_size disagrees with its proto malformed", async () => {
     const bytes = debuggableDex();
@@ -386,6 +425,32 @@ describe("dexDebugMetadata cooperative scheduling", () => {
       ),
     ).toEqual({ ok: false, error: { kind: "cancelled" } });
     expect(yields).toBe(1);
+  });
+
+  it("charges class_defs with no source file and no class_data, so a long scan yields", async () => {
+    const base = debuggableDex();
+    const { classDefsOff } = layoutOf(base);
+    const extra = 64;
+    const bytes = new Uint8Array(base.length + extra * 32);
+    bytes.set(base);
+    const view = new DataView(bytes.buffer);
+    for (let i = 0; i < extra; i += 1) {
+      const at = base.length + i * 32;
+      bytes.set(base.subarray(classDefsOff, classDefsOff + 32), at);
+      view.setUint32(at + 16, 0xffff_ffff, true); // source_file_idx NO_INDEX
+      view.setUint32(at + 24, 0, true); // class_data_off 0
+    }
+    view.setUint32(32, bytes.length, true); // file_size
+    view.setUint32(96, extra + 1, true); // class_defs_size
+    const parsed = parseDexFile(bytes);
+    if (!parsed.ok) throw new Error("fixture must frame");
+    let yields = 0;
+    const result = await summarizeDex(parsed.value, bytes, {
+      ...pacedWork(() => (yields += 1), { aborted: false }),
+      sliceUnits: 8,
+    });
+    expect(result.ok).toBe(true);
+    expect(yields).toBeGreaterThanOrEqual(extra / 8);
   });
 
   it("completes unchanged when the host keeps yielding without an abort", async () => {

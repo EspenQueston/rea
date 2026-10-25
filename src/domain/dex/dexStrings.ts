@@ -54,7 +54,7 @@ export class DexStringResolver {
   #retainedParams = 0;
   constructor(
     private readonly bytes: Uint8Array,
-    private readonly header: DexHeader,
+    readonly header: DexHeader,
     private readonly charge: DexStringCharge = () => undefined,
     /** True once the caller's budget is spent: no new scan or decode starts. */
     private readonly spent: () => boolean = () => false,

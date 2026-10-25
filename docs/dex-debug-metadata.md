@@ -143,7 +143,11 @@ Limits and refusals a caller can meet:
 - **Unknown, never absent.** An unreadable `class_def` identity, a second
   definition of the requested class, malformed `class_data` or an inconsistent
   `code_item` leaves the answer unknown (an explicit refusal or `unknown`
-  readiness), never "absent" or "stripped".
+  readiness), never "absent" or "stripped". So does a method whose proto
+  parameter list cannot be read, or a `debug_info_item` whose parameter name,
+  local name, type or signature, or `DBG_SET_FILE` name lies outside the
+  member's string or type pool, as ART's verifier rejects it: such a name is
+  never counted as surviving debug evidence.
 - **No ART verifier.** REA decodes `class_data` but does not run ART's
   verifier: an index repeated across lists (an instance and a static field, a
   virtual and a direct method), access flags inconsistent with a member's list,
