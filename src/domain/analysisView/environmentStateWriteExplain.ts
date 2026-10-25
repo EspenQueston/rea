@@ -1,6 +1,5 @@
 import type { JsonValue } from "../jsonValue.js";
 import { compareUnicodeCodePoints as compare } from "../unicodeCodePointOrder.js";
-import { storedKinds } from "./environmentStateWriteApply.js";
 import {
   isObject,
   locateItem,
@@ -8,28 +7,60 @@ import {
   same,
   scalarText,
   type JsonObject,
+  type StateEntity,
 } from "./environmentStateRules.js";
-import type {
-  FieldRule,
-  InsertRule,
-  StateWritePlan,
-  WriteBody,
-  WriteCall,
-  WriteResponse,
+import {
+  siblingTrimmedClocks,
+  type FieldRule,
+  type InsertRule,
+  type WriteBody,
+  type WriteCall,
+  type WriteResponse,
 } from "./environmentStateWriteRules.js";
 import {
   containsDelimited,
-  delimitedOffsets,
+  containsNumber,
+  generatedIntegerDigits,
   integerOf,
   isUuid,
   readClock,
+  sequenceNumber,
   slugOf,
+  sortedStrings,
+  type ClockFormat,
 } from "./environmentStateWriteValues.js";
-
-/** A clock value counts as written by the request when it lies this close to the request's start. */
-const CLOCK_WINDOW_MS = 10 * 60_000;
-/** Shorter body strings are too common to show that a field copied one. */
-const COPY_MIN_LENGTH = 8;
+import { createdComposer } from "./environmentStateWriteComposed.js";
+import { referenceRule } from "./environmentStateWriteReferences.js";
+import {
+  fittedClockFormat,
+  showsFixedWidth,
+} from "./environmentStateWriteClockFormats.js";
+import {
+  COPY_MIN_LENGTH,
+  instantMembers,
+  referencedMembers,
+  storedMembers,
+  strandedCopies,
+  templateRule,
+} from "./environmentStateWriteCopies.js";
+import {
+  unexplainedRenewals,
+  GENERATED,
+} from "./environmentStateWriteGenerated.js";
+import {
+  createdNestedClock,
+  createdToken,
+  isClockNear,
+  pairedStamps,
+  pinnedEchoes,
+} from "./environmentStateWriteStamps.js";
+import {
+  changeRule,
+  heldClock,
+  sameSecondClocks,
+  sentRule,
+  type UpdateEvidence,
+} from "./environmentStateWriteChanges.js";
 
 /** What explaining a create reads: the observed entity, the call that wrote it and the entities it joined. */
 export interface CreateEvidence {
@@ -40,6 +71,8 @@ export interface CreateEvidence {
   readonly startMs: number | undefined;
   readonly collection: readonly JsonObject[];
   readonly type: readonly JsonObject[];
+  /** The entities of any type the state holds under an id. */
+  readonly named?: (id: string) => readonly StateEntity[];
 }
 
 /** What explaining a create looks values up in, built once per request body. */
@@ -84,26 +117,15 @@ const indexBody = (body: JsonObject): BodyIndex => {
   return { copies, slugs };
 };
 
-const isClockNear = (
-  value: JsonValue,
-  startMs: number | undefined,
-): boolean => {
-  const clock = readClock(value);
-  return (
-    clock !== undefined &&
-    startMs !== undefined &&
-    Math.abs(clock.ms - startMs) <= CLOCK_WINDOW_MS
-  );
-};
-
 /** One more than the largest integer the members hold in the field, or undefined when none holds one. */
 export const nextInteger = (
   members: readonly JsonObject[],
   field: string,
+  exemplar?: JsonValue,
 ): number | undefined => {
   let largest: number | undefined;
   for (const member of members) {
-    const value = integerOf(member[field]);
+    const value = sequenceNumber(member[field], exemplar);
     if (value !== undefined && (largest === undefined || value > largest))
       largest = value;
   }
@@ -131,6 +153,8 @@ const requestRule = (
   const { body, pathValues } = evidence.call;
   if (Object.hasOwn(body, field) && same(body[field], value))
     return { field, rule: "echo" };
+  if (Object.hasOwn(body, field) && same(sortedStrings(body[field]), value))
+    return { field, rule: "echo", sorted: true };
   if (typeof value === "string" && value.length >= COPY_MIN_LENGTH) {
     const from = index.copies.get(value);
     if (from !== undefined) return { field, rule: "copy", from };
@@ -146,6 +170,64 @@ const requestRule = (
     : { field, rule: "slug", from: member };
 };
 
+/** A clock's format, trimmed when the type's values of the field show its fraction trimmed and none shows a fixed width. */
+const learnedClockFormat = (
+  format: ClockFormat,
+  field: string,
+  value: JsonValue,
+  type: readonly JsonObject[],
+): ClockFormat => {
+  let learned = format;
+  for (const member of type) {
+    const fitted = fittedClockFormat(learned, member[field], value);
+    if (fitted?.kind === "iso" && fitted.trimmed === true) learned = fitted;
+  }
+  return type.some((member) => showsFixedWidth(format, member[field]))
+    ? format
+    : learned;
+};
+
+/** A created large integer's proof, as a time-based id's: no entity of its type holds it and each holds a distinct one of the same length and kind; linked when another field holds it too, as a number at any depth or delimited in a nested string, which seeding cannot keep. */
+export const createdInteger = (
+  field: string,
+  entity: JsonObject,
+  type: readonly JsonObject[],
+): "independent" | "linked" | undefined => {
+  const value = entity[field];
+  const digits = generatedIntegerDigits(value);
+  if (
+    digits === undefined ||
+    readClock(value) !== undefined ||
+    type.length === 0
+  )
+    return undefined;
+  const held = new Set([digits]);
+  const distinct = type.every((member) => {
+    const other = generatedIntegerDigits(member[field]);
+    if (
+      other === undefined ||
+      typeof member[field] !== typeof value ||
+      other.length !== digits.length ||
+      held.has(other)
+    )
+      return false;
+    held.add(other);
+    return true;
+  });
+  if (!distinct) return undefined;
+  return Object.entries(entity).some(
+    ([other, kept]) =>
+      other !== field &&
+      (kept === value ||
+        containsNumber(kept, digits) ||
+        (typeof kept === "object" &&
+          kept !== null &&
+          containsDelimited(kept, digits))),
+  )
+    ? "linked"
+    : "independent";
+};
+
 /** The rule a created field's generated value follows, if it follows one. */
 const generatedRule = (
   evidence: CreateEvidence,
@@ -155,42 +237,38 @@ const generatedRule = (
   if (field === evidence.idField) return identityRule(field, value);
   const clock = readClock(value);
   if (clock !== undefined && isClockNear(value, evidence.startMs))
-    return { field, rule: "clock", format: clock.format };
-  const integer = integerOf(value);
+    return {
+      field,
+      rule: "clock",
+      format: learnedClockFormat(clock.format, field, value, evidence.type),
+    };
+  const integer = sequenceNumber(value);
   if (integer !== undefined) {
-    if (nextInteger(evidence.collection, field) === integer)
+    if (nextInteger(evidence.collection, field, value) === integer)
       return { field, rule: "sequence", scope: "collection" };
-    if (nextInteger(evidence.type, field) === integer)
+    if (nextInteger(evidence.type, field, value) === integer)
       return { field, rule: "sequence", scope: "type" };
   }
   if (
-    isUuid(value) &&
-    evidence.type.length > 0 &&
-    evidence.type.every((member) => member[field] !== value)
+    (isUuid(value) &&
+      evidence.type.length > 0 &&
+      evidence.type.every((member) => member[field] !== value)) ||
+    createdInteger(field, evidence.entity, evidence.type) === "independent"
   )
     return { field, rule: "unique" };
-  return undefined;
+  if (createdToken(field, evidence.entity, evidence.type) === "independent")
+    return { field, rule: "unique" };
+  return createdNestedClock(field, value, evidence);
 };
 
-/** A string that embeds a generated value delimited is rebuilt around the new value. */
-const templateRule = (
-  entity: JsonObject,
-  field: string,
-  generated: readonly FieldRule[],
-): FieldRule | undefined => {
-  const value = entity[field];
-  if (typeof value !== "string") return undefined;
-  for (const rule of generated) {
-    const token = scalarText(entity[rule.field]);
-    if (
-      rule.field !== field &&
-      token !== undefined &&
-      token.length > 0 &&
-      delimitedOffsets(value, token).length > 0
-    )
-      return { field, rule: "template", from: rule.field };
-  }
-  return undefined;
+/** Pinned members less those a reference reads: it rebuilds the object they name for any held entity. */
+const unreferenced = (
+  rules: readonly FieldRule[],
+  pinned: Set<string>,
+): Set<string> => {
+  for (const rule of rules)
+    if (rule.rule === "reference") pinned.delete(rule.member);
+  return pinned;
 };
 
 /** Body members the application stored as sent, and the others with what they were sent. */
@@ -216,81 +294,91 @@ export const explainCreate = (
   readonly body: WriteBody;
   readonly tied: boolean;
 } => {
-  const rules: FieldRule[] = [];
+  const ruled: FieldRule[] = [];
   const unexplained: string[] = [];
   const index = indexBody(evidence.call.body);
   for (const [field, value] of Object.entries(evidence.entity)) {
     const rule =
       requestRule(evidence, index, field, value) ??
-      generatedRule(evidence, field, value);
+      generatedRule(evidence, field, value) ??
+      (evidence.named === undefined
+        ? undefined
+        : referenceRule(field, value, evidence.call.body, evidence.named));
     if (rule === undefined) unexplained.push(field);
-    else rules.push(rule);
+    else ruled.push(rule);
   }
-  const generated = rules.filter(
-    (rule) =>
-      rule.rule === "identity" ||
-      rule.rule === "sequence" ||
-      rule.rule === "unique",
+  const rules = siblingTrimmedClocks(ruled, evidence.entity, ...evidence.type);
+  // Generated values first, then copies: an echoed value may recur in unrelated text, a copied one is the call's own unless also echoed.
+  const echoed = new Set(
+    rules.flatMap((rule) =>
+      rule.rule === "echo" ? [scalarText(evidence.entity[rule.field])] : [],
+    ),
   );
+  const sources = [
+    ...rules.filter((rule) => GENERATED.has(rule.rule)),
+    ...rules.filter(
+      (rule) =>
+        rule.rule === "copy" &&
+        !echoed.has(scalarText(evidence.entity[rule.field])),
+    ),
+  ];
   const constants: string[] = [];
+  const composed = createdComposer(evidence.entity, rules, evidence.type);
   for (const field of unexplained) {
-    const template = templateRule(evidence.entity, field, generated);
+    const template =
+      templateRule(evidence.entity, field, sources) ?? composed(field);
     if (template === undefined) constants.push(field);
     else rules.push(template);
   }
-  const echoed = new Set(
-    rules.filter((rule) => rule.rule === "echo").map((rule) => rule.field),
-  );
   const tokens = [...evidence.call.pathValues.values()].filter(
     (value) => value.length > 0,
   );
+  const templates = rules.flatMap((rule) =>
+    rule.rule === "template" ? [rule.field] : [],
+  );
+  // A composed string rebuilds the values it names, so only its literal text can tie it.
+  const literals = rules.flatMap((rule) =>
+    rule.rule === "composed"
+      ? rule.parts.flatMap((part) => ("text" in part ? [part.text] : []))
+      : [],
+  );
+  // A member whose value a template cannot rebuild, or that a constant derives from, is accepted only with its recorded value.
+  const texts = [...constants, ...templates];
+  const stranded = strandedCopies(rules, evidence.entity, texts);
+  const referenced = new Set([
+    ...referencedMembers(
+      evidence.call.body,
+      evidence.entity,
+      constants,
+      evidence.named ?? (() => []),
+    ),
+    ...instantMembers(evidence.call.body, evidence.entity, constants),
+  ]);
+  const pinned = unreferenced(
+    rules,
+    pinnedEchoes(evidence.entity, evidence.call.body, evidence.type),
+  );
+  const stored = storedMembers(
+    rules.filter((rule) => !stranded.has(rule.field)),
+    evidence.entity,
+  );
   return {
     rules,
-    body: bodyOf(evidence.call.body, echoed, Object.keys(evidence.call.body)),
+    body: bodyOf(
+      evidence.call.body,
+      new Set(
+        [...stored].filter(
+          (member) => !referenced.has(member) && !pinned.has(member),
+        ),
+      ),
+      Object.keys(evidence.call.body),
+    ),
     // A template rebuilds only its generated value, so other text it keeps ties it like a constant.
     tied: [
-      ...constants,
-      ...rules.flatMap((rule) =>
-        rule.rule === "template" ? [rule.field] : [],
-      ),
-    ].some((field) =>
-      tokens.some((token) => containsDelimited(evidence.entity[field]!, token)),
-    ),
+      ...[...constants, ...templates].map((field) => evidence.entity[field]!),
+      ...literals,
+    ].some((text) => tokens.some((token) => containsDelimited(text, token))),
   };
-};
-
-/** What explaining an update reads: the entity before and after, the call and its method. */
-export interface UpdateEvidence {
-  readonly before: JsonObject;
-  readonly after: JsonObject;
-  readonly call: WriteCall & { readonly body: JsonObject };
-  readonly method: string;
-  readonly idField: string;
-  readonly id: string;
-  readonly startMs: number | undefined;
-  /** Fields covered by a later read view. Missing fields outside that coverage remain unknown. */
-  readonly readFields?: readonly string[];
-  /** The fields of the observing read's view when that view showed the entity before, so one the entity lacked was added. */
-  readonly shown?: readonly string[];
-}
-
-/** The rule a field the update changed without sending follows, if any; `slugs` maps each echoed member's slug to the first such member. */
-const changeRule = (
-  evidence: UpdateEvidence,
-  field: string,
-  slugs: ReadonlyMap<string, string>,
-): FieldRule | undefined => {
-  const before = evidence.before[field];
-  const after = evidence.after[field]!;
-  if (readClock(after) !== undefined && isClockNear(after, evidence.startMs))
-    return { field, rule: "clock", format: readClock(after)!.format };
-  const was = integerOf(before);
-  if (was !== undefined && integerOf(after) === was + 1)
-    return { field, rule: "increment" };
-  const member = typeof after === "string" ? slugs.get(after) : undefined;
-  return member === undefined
-    ? undefined
-    : { field, rule: "slug", from: member };
 };
 
 /** Each slug an echoed string member slugs to, from the first such member. */
@@ -307,6 +395,24 @@ const echoedSlugs = (
   return slugs;
 };
 
+/** A reference an earlier call showed for a field this call left as it was, when the call names the entity the field repeats through its member. */
+const keptReference = (
+  evidence: UpdateEvidence,
+  field: string,
+): FieldRule | undefined => {
+  const known = evidence.references?.find((rule) => rule.field === field);
+  if (known === undefined || evidence.named === undefined) return undefined;
+  const shown = referenceRule(
+    field,
+    evidence.after[field],
+    evidence.call.body,
+    evidence.named,
+  );
+  return shown?.member === known.member && shown.type === known.type
+    ? known
+    : undefined;
+};
+
 /** Explain an update: echoed members, fixed members whose stored value is constant, and the changes it made unsent. */
 export const explainUpdate = (
   evidence: UpdateEvidence,
@@ -314,12 +420,21 @@ export const explainUpdate = (
   readonly rules: FieldRule[];
   readonly body: WriteBody;
   readonly unexplained: string[];
+  /** Unsent clocks left as they were in the call's own second, which the call cannot show it stamps. */
+  readonly unstamped: string[];
 } => {
   const { body } = evidence.call;
   const rules: FieldRule[] = [];
   const echoed = new Set<string>();
   const unexplained: string[] = [];
+  // A member the application replaces with a value it generates is accepted with any value.
+  const generated = new Set<string>();
   let identity: string | null = null;
+  // Two clocks sent back unchanged in the call's second cannot both be ones it stamps anew, as a whole-object PUT shows.
+  const held = Object.keys(body).filter(
+    (member) =>
+      member !== evidence.idField && heldClock(evidence, member, body[member]!),
+  );
   for (const [member, sent] of Object.entries(body)) {
     // The identity is the entity's key: the path's id repeated is the identity member; another value is one the application ignored, or used to re-key the entity, which no rule models.
     if (member === evidence.idField) {
@@ -329,15 +444,10 @@ export const explainUpdate = (
       continue;
     }
     if (!Object.hasOwn(evidence.after, member)) continue;
-    if (same(evidence.after[member], sent)) {
-      echoed.add(member);
-      rules.push({ field: member, rule: "echo" });
-    } else
-      rules.push({
-        field: member,
-        rule: "constant",
-        value: evidence.after[member]!,
-      });
+    const rule = sentRule(evidence, member, held);
+    rules.push(rule);
+    if (rule.rule === "echo") echoed.add(member);
+    else if (rule.rule !== "constant") generated.add(member);
   }
   // Serving keeps every field an update does not write, so one a read shows the update removed is a change no rule models.
   if (evidence.readFields !== undefined)
@@ -352,24 +462,40 @@ export const explainUpdate = (
     if (
       Object.hasOwn(body, field) ||
       (!Object.hasOwn(evidence.before, field) &&
-        !(evidence.shown ?? []).includes(field)) ||
-      same(evidence.before[field], evidence.after[field])
+        !(evidence.shown ?? []).includes(field))
     )
       continue;
+    if (same(evidence.before[field], evidence.after[field])) {
+      const kept = keptReference(evidence, field);
+      if (kept !== undefined) rules.push(kept);
+      continue;
+    }
     const rule = changeRule(evidence, field, slugs);
     if (rule === undefined) unexplained.push(field);
     else rules.push(rule);
   }
+  rules.push(...pairedStamps(evidence, rules));
+  // A member a reference reads names an entity, which any held one may be.
+  for (const rule of rules)
+    if (rule.rule === "reference") echoed.add(rule.member);
+  // Serving renews one UUID alike in every field, so the call must have.
+  unexplained.push(...unexplainedRenewals(rules, evidence));
+  const pinned = unreferenced(rules, pinnedEchoes(evidence.after, body));
   const shaped = bodyOf(
     Object.fromEntries(
       Object.entries(body).filter(([member]) => member !== identity),
     ),
-    echoed,
+    new Set([...echoed, ...generated].filter((member) => !pinned.has(member))),
     evidence.method === "PUT"
       ? Object.keys(body).filter((member) => member !== identity)
       : [],
   );
-  return { rules, body: { ...shaped, identity }, unexplained };
+  return {
+    rules,
+    body: { ...shaped, identity },
+    unexplained,
+    unstamped: sameSecondClocks(evidence),
+  };
 };
 
 /**
@@ -412,7 +538,8 @@ export const compareValues = (
   const [a, b] = [integerOf(left), integerOf(right)];
   if (a !== undefined && b !== undefined) return a - b;
   const [c, d] = [readClock(left), readClock(right)];
-  if (c !== undefined && d !== undefined) return c.ms - d.ms;
+  if (c !== undefined && d !== undefined)
+    return c.ms - d.ms || c.subMillisecond - d.subMillisecond;
   return typeof left === "string" && typeof right === "string"
     ? compare(left, right)
     : undefined;
@@ -432,10 +559,44 @@ const orderedBy = (
     );
   });
 
-/** Insert rules consistent with a collection's recorded order: sorted by identity or clock fields when shown, then last and first. */
+/** A version 4 UUID, which is random and so orders nothing. */
+const UUID_V4 =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
+
+/**
+ * Whether a collection's identities order nothing: version 4 UUIDs, or values every creation clock
+ * lists in another order. Time-ordered ids (ObjectId, ULID, TSID, version 7 UUIDs) follow a clock.
+ */
+export const randomIdentities = (
+  members: readonly JsonObject[],
+  idField: string,
+  clocks: readonly string[],
+): boolean => {
+  const ids = members.map((member) => scalarText(member[idField]) ?? "");
+  if (ids.length > 0 && ids.every((id) => UUID_V4.test(id))) return true;
+  if (members.length < 2 || clocks.length === 0) return false;
+  const byId = members.toSorted(
+    (left, right) => compareValues(left[idField], right[idField]) ?? 0,
+  );
+  return clocks.every((clock) =>
+    byId.some(
+      (member, index) =>
+        index > 0 &&
+        (compareValues(byId[index - 1]![clock], member[clock]) ?? 1) > 0,
+    ),
+  );
+};
+
+/**
+ * Insert rules consistent with a collection's recorded order: sorted by identity or clock fields when
+ * shown, then last and first. Sorts by a field of random values come after last, since they order
+ * nothing until a read shows a create placed by them; when the other sorts place the created entity
+ * differently, none is claimed before last.
+ */
 export const insertCandidates = (
   members: readonly JsonObject[],
   fields: readonly string[],
+  placing: { readonly random?: string; readonly created?: JsonObject } = {},
 ): InsertRule[] => {
   const sorted: InsertRule[] = [];
   if (members.length >= 2)
@@ -443,7 +604,20 @@ export const insertCandidates = (
       for (const direction of ["ascending", "descending"] as const)
         if (orderedBy(members, field, direction))
           sorted.push({ rule: "sorted", field, direction });
-  return [...sorted, { rule: "last" }, { rule: "first" }];
+  const byRandom = (rule: InsertRule) =>
+    rule.rule === "sorted" && rule.field === placing.random;
+  const early = sorted.filter((rule) => !byRandom(rule));
+  const { created } = placing;
+  const tied =
+    created !== undefined &&
+    new Set(early.map((rule) => insertIndex(rule, members, created))).size > 1;
+  return [
+    ...(tied ? [] : early),
+    { rule: "last" },
+    ...(tied ? early : []),
+    ...sorted.filter(byRandom),
+    { rule: "first" },
+  ];
 };
 
 /** Where an entity with these fields enters a collection under an insert rule. */
@@ -488,57 +662,4 @@ export const documentPointerOf = (
       best = { pointer, shared };
   }
   return best?.pointer;
-};
-
-/** A plan's body with the members and fixed values a later call's body adds, and the JSON types it stored those members as when the observation shows none. */
-export const refinedBody = (
-  body: WriteBody,
-  later: WriteBody,
-  values: { readonly observed: JsonObject; readonly stored: JsonObject },
-): WriteBody => {
-  const fixed = new Set(body.fixed.map((entry) => entry.member));
-  const accepted = later.accepted.filter(
-    (member) => !body.accepted.includes(member),
-  );
-  return {
-    ...body,
-    // A later call may be the first to show the body repeating the path's id.
-    identity: body.identity ?? later.identity,
-    accepted: [...body.accepted, ...accepted],
-    fixed: [
-      ...body.fixed,
-      ...later.fixed.filter((entry) => !fixed.has(entry.member)),
-    ],
-    // Serving reads member types from the observation, which may not show a member a later call stored.
-    kinds: [
-      ...body.kinds,
-      ...storedKinds(accepted, values.observed, values.stored),
-    ],
-  };
-};
-
-/** Whether a later call explains a member or field otherwise than the plan: echoed by one and stored as something else by the other, or ruled differently. */
-export const conflictsWithPlan = (
-  plan: Pick<StateWritePlan, "body" | "rules">,
-  explained: ReturnType<typeof explainUpdate>,
-): boolean => {
-  const body = plan.body!;
-  const fixed = new Map(body.fixed.map((entry) => [entry.member, entry.sent]));
-  const rules = new Map(plan.rules.map((rule) => [rule.field, rule]));
-  const { identity } = explained.body;
-  // Serving checks a call's identity member before its fixed values, so a member both cannot take every recorded call.
-  return (
-    explained.body.accepted.some((member) => fixed.has(member)) ||
-    explained.body.fixed.some(
-      (entry) =>
-        body.accepted.includes(entry.member) ||
-        entry.member === body.identity ||
-        (fixed.has(entry.member) && !same(fixed.get(entry.member), entry.sent)),
-    ) ||
-    (identity !== null && fixed.has(identity)) ||
-    explained.rules.some((rule) => {
-      const held = rules.get(rule.field);
-      return held !== undefined && !same(held, rule);
-    })
-  );
 };

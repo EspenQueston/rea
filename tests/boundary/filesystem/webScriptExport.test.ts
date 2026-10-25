@@ -105,13 +105,21 @@ describe("empty URL component publication", () => {
     for (const [index, script] of result.scripts.entries()) {
       if (script.content.state !== "exported")
         throw new Error("Missing source bytes");
-      expect(script.url).toBe(scripts[index]?.url);
+      const expected = scripts[index];
+      if (expected === undefined) throw new Error("Missing expected source");
+      expect(script.url).toBe(expected.url);
       expect(script.content.layout).toBe(index === 0 ? "url-path" : "isolated");
       expect(
-        await readFile(
-          join(result.analysis_input.input_path, script.content.relative_path),
+        Buffer.compare(
+          await readFile(
+            join(
+              result.analysis_input.input_path,
+              script.content.relative_path,
+            ),
+          ),
+          expected.bytes,
         ),
-      ).toEqual(scripts[index]?.bytes);
+      ).toBe(0);
     }
     const manifest = JSON.parse(await readFile(result.manifest.path, "utf8"));
     expect(manifest.scripts).toEqual(result.scripts);
@@ -158,15 +166,16 @@ describe("captured script publication boundary", () => {
       const bytes = await readFile(
         join(result.analysis_input.input_path, script.content.relative_path),
       );
-      expect(bytes).toEqual(
-        capture.events.items
-          .filter(({ kind }) => kind === "network-content")
-          .map((event) =>
-            event.kind === "network-content" && event.body.state === "captured"
-              ? Buffer.from(event.body.content, "base64")
-              : Buffer.alloc(0),
-          )[index],
-      );
+      const expected = capture.events.items
+        .filter(({ kind }) => kind === "network-content")
+        .map((event) =>
+          event.kind === "network-content" && event.body.state === "captured"
+            ? Buffer.from(event.body.content, "base64")
+            : Buffer.alloc(0),
+        )[index];
+      if (expected === undefined)
+        throw new Error("Missing expected script bytes");
+      expect(bytes.equals(expected)).toBe(true);
     }
     const analyzed = await analyzeJavaScriptApplication(result.analysis_input);
     if (!analyzed.ok) throw analyzed.error;
@@ -239,11 +248,10 @@ describe("captured script publication boundary", () => {
       expect(persisted.limitations).toContain(
         PLAYWRIGHT_RESPONSE_BODY_PROVENANCE_LIMITATION,
       );
-      expect(
-        await readFile(
-          join(parsed.analysis_input.input_path, first.content.relative_path),
-        ),
-      ).toEqual(binary);
+      const exportedBytes = await readFile(
+        join(parsed.analysis_input.input_path, first.content.relative_path),
+      );
+      expect(exportedBytes.equals(binary)).toBe(true);
       expect(
         await readFile(
           join(parsed.analysis_input.input_path, second.content.relative_path),
@@ -312,6 +320,11 @@ describe("captured script publication failures and cleanup", () => {
     );
     const result = await exportWebScripts(input, resources);
     if (result.ok) throw new Error("Expected exclusive output failure");
+    expect(result.error).toMatchObject({
+      _tag: "AnalysisInputError",
+      operation: "export_web_scripts",
+      issues: [{ path: ["output_directory"], reason: "invalid_value" }],
+    });
     expect(result.error.userMessage).toContain("already exists");
     expect(await readFile(marker, "utf8")).toBe("keep");
   });
@@ -513,6 +526,76 @@ describe("captured script publication failures and cleanup", () => {
   });
 });
 
+describe("independent script publication failure", () => {
+  it.each(
+    [false, true].flatMap((rollbackFails) =>
+      [false, true].map((sameReason) => ({ rollbackFails, sameReason })),
+    ),
+  )(
+    "keeps write failure primary after cancellation (rollback fails: $rollbackFails, same reason: $sameReason)",
+    async ({ rollbackFails, sameReason }) => {
+      const { input, resources } = await setup();
+      const controller = new AbortController();
+      const physical = Object.assign(
+        new Error("physical output write failed"),
+        { code: "EIO" },
+      );
+      openMock.mockImplementation(async (...args) => {
+        const handle = await actualFs.open(...args);
+        if (
+          String(args[0]).startsWith(input.output_directory) &&
+          typeof args[1] === "number" &&
+          (args[1] & constants.O_WRONLY) !== 0
+        )
+          vi.spyOn(handle, "write").mockImplementation(async () => {
+            controller.abort(
+              sameReason ? physical : { request: "later cancellation" },
+            );
+            throw physical;
+          });
+        return handle;
+      });
+      const rollback = rollbackFails
+        ? vi
+            .spyOn(SafeOutputTree.prototype, "rollback")
+            .mockRejectedValue(new Error("rollback refused"))
+        : undefined;
+      let result: Awaited<ReturnType<typeof exportWebScripts>>;
+      try {
+        result = await exportWebScripts(input, resources, {
+          signal: controller.signal,
+        });
+        if (result.ok) throw new Error("Expected physical output failure");
+        expect(projectAnalysisError(result.error)).toMatchObject({
+          code: rollbackFails
+            ? "cleanup_incomplete"
+            : "artifact_operation_failed",
+          details: { reason: "io" },
+        });
+        expect(result.error.partialObservation).toBeUndefined();
+        if (rollbackFails)
+          expect(result.error.cleanupResources).toEqual([
+            input.output_directory,
+          ]);
+        else {
+          expect(result.error.cause).toBe(physical);
+          await expect(access(input.output_directory)).rejects.toMatchObject({
+            code: "ENOENT",
+          });
+        }
+      } finally {
+        rollback?.mockRestore();
+      }
+      await resources.close();
+      if (result.ok) throw new Error("Expected failure");
+      expect(result.error.cleanupIncomplete).toBe(false);
+      await expect(access(input.output_directory)).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+    },
+  );
+});
+
 describe("captured script cancellation finalization", () => {
   it("keeps the caller reason when rollback also fails after an interrupted write", async () => {
     const { input, resources } = await setup(
@@ -530,9 +613,10 @@ describe("captured script cancellation finalization", () => {
       .spyOn(SafeOutputTree, "create")
       .mockImplementationOnce(async (...args) => {
         const tree = await create(...args);
-        vi.spyOn(tree, "write").mockImplementationOnce(async () => {
+        const write = tree.write.bind(tree);
+        vi.spyOn(tree, "write").mockImplementationOnce(async (...args) => {
           controller.abort(reason);
-          throw new Error("injected write failure");
+          return write(...args);
         });
         vi.spyOn(tree, "rollback").mockRejectedValueOnce(
           new Error("injected rollback failure"),
@@ -887,6 +971,78 @@ describe("captured script path and permission failures", () => {
   );
 });
 
+describe("capture read failure provenance", () => {
+  it.each(
+    ["EACCES", "EIO"].flatMap((code) =>
+      [0, 1, 2].flatMap((failedCloses) =>
+        [false, true].map((sameReason) => ({ code, failedCloses, sameReason })),
+      ),
+    ),
+  )(
+    "keeps $code primary through cancellation and $failedCloses failed closes (same reason: $sameReason)",
+    async ({ code, failedCloses, sameReason }) => {
+      const { input, resources } = await setup();
+      const controller = new AbortController();
+      const physical = Object.assign(
+        new Error("physical capture read failed"),
+        { code },
+      );
+      const closeFailure = new Error("capture close failed");
+      let handle: Awaited<ReturnType<typeof actualFs.open>> | undefined;
+      let closeCalls = 0;
+      openMock.mockImplementation(async (...args) => {
+        const opened = await actualFs.open(...args);
+        if (String(args[0]) !== input.capture_path) return opened;
+        handle = opened;
+        vi.spyOn(opened, "read").mockImplementation(async () => {
+          controller.abort(
+            sameReason ? physical : { request: "later cancellation" },
+          );
+          throw physical;
+        });
+        const close = opened.close.bind(opened);
+        vi.spyOn(opened, "close").mockImplementation(async () => {
+          closeCalls++;
+          if (closeCalls <= failedCloses) throw closeFailure;
+          await close();
+        });
+        return opened;
+      });
+      const result = await exportWebScripts(input, resources, {
+        signal: controller.signal,
+      });
+      if (result.ok) throw new Error("Expected physical capture read failure");
+      const expectedCode =
+        code === "EACCES" ? "access_denied" : "artifact_operation_failed";
+      if (failedCloses === 2) {
+        expect(projectAnalysisError(result.error)).toMatchObject({
+          code: "cleanup_incomplete",
+          details: {
+            resources: [input.capture_path],
+            diagnostics: { primary_error: { code: expectedCode } },
+          },
+        });
+        expect(handle?.fd).toBeGreaterThanOrEqual(0);
+      } else expect(projectAnalysisError(result.error).code).toBe(expectedCode);
+      const primary = result.error.cleanupPrimary ?? result.error;
+      if (failedCloses === 1)
+        expect(primary.cause).toMatchObject({
+          cause: physical,
+          errors: [physical, closeFailure],
+        });
+      else expect(primary.cause).toBe(physical);
+      await expect(access(input.output_directory)).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+      await resources.close();
+      expect(handle?.fd).toBe(-1);
+      expect(closeCalls).toBe(failedCloses + 1);
+      expect(result.error.cleanupIncomplete).toBe(false);
+      expect(projectAnalysisError(result.error).code).toBe(expectedCode);
+    },
+  );
+});
+
 describe("capture read and close failure", () => {
   it("retains a handle after capture read and close both fail", async () => {
     const { input, resources } = await setup();
@@ -1224,12 +1380,20 @@ it("isolates an observed exclusive-create alias using typed facts when diagnosti
     for (const [index, script] of result.scripts.entries()) {
       if (script.content.state !== "exported")
         throw new Error("Missing script bytes");
-      expect(script.url).toBe(scripts[index]?.url);
+      const expected = scripts[index];
+      if (expected === undefined) throw new Error("Missing expected script");
+      expect(script.url).toBe(expected.url);
       expect(
-        await readFile(
-          join(result.analysis_input.input_path, script.content.relative_path),
+        Buffer.compare(
+          await readFile(
+            join(
+              result.analysis_input.input_path,
+              script.content.relative_path,
+            ),
+          ),
+          expected.bytes,
         ),
-      ).toEqual(scripts[index]?.bytes);
+      ).toBe(0);
     }
   } finally {
     write.mockRestore();

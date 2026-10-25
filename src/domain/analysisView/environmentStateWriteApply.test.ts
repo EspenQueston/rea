@@ -4,7 +4,9 @@ import { err, ok } from "../result.js";
 import type { JsonObject, StateEntity } from "./environmentStateRules.js";
 import {
   bodyProblem,
+  storedKinds,
   createdFields,
+  renewUuids,
   updatedEntity,
   updatedFields,
   valueAt,
@@ -41,7 +43,15 @@ const callWith = (
 /** Generated values the store would supply, recording which rules asked. */
 const generator = () => {
   const asked: GeneratedRule[] = [];
-  const values = { identity: "id-9", sequence: 9, unique: "ref-9", clock: NOW };
+  const values = {
+    identity: "id-9",
+    sequence: 9,
+    unique: "ref-9",
+    renewed: ["renewed-9"],
+    clock: NOW,
+    "nested-clock": { at: NOW },
+    "held-clock": NOW,
+  };
   const generate = (rule: GeneratedRule) => {
     asked.push(rule);
     return ok(values[rule.rule]);
@@ -88,7 +98,7 @@ it.each<[string, JsonObject | undefined, string]>([
   [
     "a fixed member with another value",
     { title: "B", priority: "LOW" },
-    `Member priority is accepted only with the value the capture sent, because the application stored it differently (${LISTED}).`,
+    `Member priority is accepted only with the value the capture sent, "HIGH", because the application stored it differently or other recorded fields go with it (${LISTED}).`,
   ],
   [
     "a number for a string",
@@ -282,11 +292,15 @@ const AFTER: JsonObject = {
   revision: "10",
 };
 
-const update = (body: JsonObject | undefined, plan = UPDATE_PLAN) => {
+const update = (
+  body: JsonObject | undefined,
+  plan = UPDATE_PLAN,
+  before = BEFORE,
+) => {
   const { asked, generate } = generator();
   const result = updatedFields(
     plan,
-    { before: BEFORE, observed: AFTER },
+    { before, observed: AFTER },
     { ...callWith(body, { item: "42" }), id: "42" },
     generate,
   );
@@ -328,6 +342,74 @@ it("applies a constant from the recorded update only when the call sends it", ()
   expect(update({ notes: "m" }).result).toEqual(
     ok({ ...BEFORE, ...ADVANCED, notes: "m" }),
   );
+});
+
+const RENEWING_PLAN: Plan = {
+  rules: [
+    ...UPDATE_PLAN.rules,
+    { field: "versionId", rule: "unique" },
+    { field: "steps", rule: "renewed", pointers: ["/*"] },
+  ],
+  body: { ...UPDATE_PLAN.body!, accepted: ["title", "notes", "versionId"] },
+};
+
+it("takes an update's unique and renewed values from the generator, whether or not the call sends them", () => {
+  const { asked, result } = update(
+    { title: "New Title", versionId: "stale" },
+    RENEWING_PLAN,
+    { ...BEFORE, steps: ["step-1"] },
+  );
+  expect(result).toEqual(
+    ok({
+      ...BEFORE,
+      ...ADVANCED,
+      title: "New Title",
+      slug: "new-title",
+      versionId: "ref-9",
+      steps: ["renewed-9"],
+    }),
+  );
+  expect(asked.map((rule) => rule.rule)).toEqual([
+    "clock",
+    "unique",
+    "renewed",
+  ]);
+});
+
+const HELD_PLAN: Plan = {
+  rules: [
+    { field: "title", rule: "echo" },
+    { field: "updatedAt", rule: "held-clock", format: SECONDS },
+  ],
+  body: { ...UPDATE_PLAN.body!, accepted: ["title", "updatedAt"], fixed: [] },
+};
+
+it("stamps a held clock only on a call that sends the value the entity holds", () => {
+  expect(
+    update({ title: "New Title", updatedAt: BEFORE.updatedAt! }, HELD_PLAN)
+      .result,
+  ).toEqual(ok({ ...BEFORE, title: "New Title", updatedAt: NOW }));
+  const { asked, result } = update({ title: "New Title" }, HELD_PLAN);
+  expect(result).toEqual(
+    err(
+      "Member updatedAt must be sent with the value the entity holds, as the recorded call did.",
+    ),
+  );
+  expect(asked).toEqual([]);
+});
+
+it("renews no child rows on an entity that holds none", () => {
+  const { asked, result } = update({ title: "New Title" }, RENEWING_PLAN);
+  expect(result).toEqual(
+    ok({
+      ...BEFORE,
+      ...ADVANCED,
+      title: "New Title",
+      slug: "new-title",
+      versionId: "ref-9",
+    }),
+  );
+  expect(asked.map((rule) => rule.rule)).toEqual(["clock", "unique"]);
 });
 
 it.each<[string, JsonObject | undefined, string]>([
@@ -531,4 +613,144 @@ it("drops view-specific values of the fields an update changed and cites no reco
   expect(updatedEntity(entity, entity.fields).view_fields).toEqual(
     entity.view_fields,
   );
+});
+
+it("learns own stored JSON member kinds without inheriting prototype members", () => {
+  expect(storedKinds(["constructor"], {}, { constructor: "value" })).toEqual([
+    { member: "constructor", kind: "string" },
+  ]);
+  expect(storedKinds(["constructor", "toString"], {}, {})).toEqual([]);
+});
+
+const RENEW_ID = (n: number): string =>
+  `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
+
+it("renews the UUIDs at the renewed pointers alone, and keeps every other value", () => {
+  const renewed = renewUuids(
+    {
+      first: RENEW_ID(1),
+      rows: [
+        { id: RENEW_ID(1), author: RENEW_ID(3), text: "Step 0" },
+        { id: RENEW_ID(2), author: RENEW_ID(3), text: "Step 1" },
+      ],
+      note: "kept",
+    },
+    ["/first", "/rows/*/id"],
+    (uuid) => `${uuid}:new`,
+  );
+  expect(renewed).toEqual({
+    first: `${RENEW_ID(1)}:new`,
+    rows: [
+      { id: `${RENEW_ID(1)}:new`, author: RENEW_ID(3), text: "Step 0" },
+      { id: `${RENEW_ID(2)}:new`, author: RENEW_ID(3), text: "Step 1" },
+    ],
+    note: "kept",
+  });
+});
+
+it("checks a member stored only under another name against the type of the field it is copied into", () => {
+  const plan: Plan = {
+    rules: [
+      { field: "title", rule: "echo" },
+      { field: "code", rule: "copy", from: "/handle" },
+    ],
+    body: {
+      accepted: ["title", "handle"],
+      fixed: [],
+      required: [],
+      identity: null,
+      kinds: [],
+    },
+  };
+  const observed = { id: "id-1", title: "Old", code: "old-handle" };
+  const created = (handle: JsonValue) =>
+    createdFields(
+      plan,
+      observed,
+      callWith({ title: "New", handle }),
+      generator().generate,
+    );
+  expect(created("new-handle")).toEqual(
+    ok({ id: "id-1", title: "New", code: "new-handle" }),
+  );
+  expect(created({ not: "a string" }).ok).toBe(false);
+  expect(created(null).ok).toBe(false);
+});
+
+const ADDRESS: FieldRule = {
+  field: "url",
+  rule: "composed",
+  parts: [
+    { text: "/dashboards/f/" },
+    { from: "uid", as: "value" },
+    { text: "/" },
+    { from: "title", as: "slug" },
+  ],
+};
+const UNSPELLED =
+  'The write composes "url" from "uid", "title", and the entity holds no value one of them can spell.';
+
+it("rebuilds an updated composed address, and refuses one whose entity holds no field a part reads", () => {
+  const plan: Plan = {
+    rules: [{ field: "title", rule: "echo" }, ADDRESS],
+    body: {
+      accepted: ["title"],
+      fixed: [],
+      required: [],
+      identity: "uid",
+      kinds: [],
+    },
+  };
+  const rename = (before: JsonObject) =>
+    updatedFields(
+      plan,
+      { before, observed: before },
+      { ...callWith({ title: "Moved Folder" }, { item: "7" }), id: "7" },
+      generator().generate,
+    );
+  expect(
+    rename({ id: 7, uid: "f-7", title: "Old", url: "/dashboards/f/f-7/old" }),
+  ).toEqual(
+    ok({
+      id: 7,
+      uid: "f-7",
+      title: "Moved Folder",
+      url: "/dashboards/f/f-7/moved-folder",
+    }),
+  );
+  expect(rename({ id: 7, title: "Old", url: "/dashboards/f/f-7/old" })).toEqual(
+    err(UNSPELLED),
+  );
+});
+
+it("refuses a create whose composed address reads a member the call does not send", () => {
+  const plan: Plan = {
+    rules: [
+      { field: "uid", rule: "echo" },
+      { field: "title", rule: "echo" },
+      ADDRESS,
+    ],
+    body: {
+      accepted: ["uid", "title"],
+      fixed: [],
+      required: ["title"],
+      identity: null,
+      kinds: [],
+    },
+  };
+  const observed: JsonObject = {
+    uid: "f-1",
+    title: "Recorded",
+    url: "/dashboards/f/f-1/recorded",
+  };
+  const create = (body: JsonObject) =>
+    createdFields(plan, observed, callWith(body), generator().generate);
+  expect(create({ uid: "f-2", title: "New Folder" })).toEqual(
+    ok({
+      uid: "f-2",
+      title: "New Folder",
+      url: "/dashboards/f/f-2/new-folder",
+    }),
+  );
+  expect(create({ title: "New Folder" })).toEqual(err(UNSPELLED));
 });

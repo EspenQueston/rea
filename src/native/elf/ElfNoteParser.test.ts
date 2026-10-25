@@ -3,15 +3,23 @@ import { readFileSync } from "node:fs";
 import { expect, it } from "vitest";
 import { inspectElfNotesInputSchema } from "../../domain/native/elfNotes.js";
 import { ArtifactReaderFailure } from "../../artifacts/ArtifactReader.js";
+import { BinaryFormatFailure } from "../metadata/BinaryContainer.js";
+import { decodeElfSectionNameTable } from "../metadata/ElfSectionNameTable.js";
 import {
+  compressedElfNoteFixture,
+  compressedElfNoteSectionFixture,
   elfNote,
   elfNoteFixture,
   elfNoteTablePastEnd,
+  elfExtendedSectionCountFixture,
   gnuAbiTagNote,
   gnuBuildIdNote,
   gnuPropertyNote,
 } from "./ElfNotes.fixture.js";
-import { parseElfNotes } from "./ElfNoteParser.js";
+import {
+  ElfNoteSectionNameBudgetFailure,
+  parseElfNotes,
+} from "./ElfNoteParser.js";
 
 const defaults = inspectElfNotesInputSchema.parse({
   path: "/artifacts/app",
@@ -96,6 +104,193 @@ it("reads the same notes from an SHT_NOTE section including its name", () => {
     report.entries.some((entry) => entry.type_name === "gnu_build_id"),
   ).toBe(true);
 });
+
+it.each([
+  [32, true],
+  [32, false],
+  [64, true],
+  [64, false],
+] as const)(
+  "refuses compressed ELF%i %s-endian note storage without parsing its compression header",
+  (bits, little) => {
+    expect(() => parse(compressedElfNoteSectionFixture(bits, little))).toThrow(
+      expect.objectContaining({
+        kind: "unsupported",
+        message: expect.stringContaining(
+          "Compressed ELF note sections are unsupported",
+        ),
+      }),
+    );
+  },
+);
+
+it("does not allocate the declared decoded note size, but still validates stored ranges", () => {
+  const bytes = compressedElfNoteSectionFixture();
+  const noteSection = 64 + 64;
+  const storedOffset = Number(bytes.readBigUInt64LE(noteSection + 24));
+  bytes.writeBigUInt64LE(0xffffffffffffffffn, storedOffset + 8);
+  expect(() => parse(bytes)).toThrow(
+    expect.objectContaining({ kind: "unsupported" }),
+  );
+  bytes.writeBigUInt64LE(0n, noteSection + 32);
+  expect(() => parse(bytes)).toThrow(
+    expect.objectContaining({ kind: "unsupported" }),
+  );
+  bytes.writeBigUInt64LE(BigInt(bytes.length), noteSection + 32);
+  expect(() => parse(bytes)).toThrow(ArtifactReaderFailure);
+});
+
+it("preserves unknown ELF64 section flag bits without treating them as file sizes", () => {
+  const bytes = elfNoteFixture({ ownership: "section" });
+  bytes.writeBigUInt64LE(0x8000000000000000n, 64 + 64 + 8);
+  bytes.writeBigUInt64LE(0x8000000000000000n, 64 + 2 * 64 + 8);
+  expect(parse(bytes).entries[0]?.gnu?.build_id_hex).toBe(
+    "0123456789abcdef0123456789abcdef01234567",
+  );
+});
+
+it.each([
+  [32, true, 1],
+  [32, false, 1],
+  [64, true, 1],
+  [64, false, 1],
+  [32, true, 2],
+  [32, false, 2],
+  [64, true, 2],
+  [64, false, 2],
+] as const)(
+  "decompresses an ELF%i little-endian=%s section-name table using algorithm %i",
+  (bits, little, compressionType) => {
+    const report = parse(
+      compressedElfNoteFixture(bits, little, compressionType),
+    );
+    expect(report.tables).toEqual([
+      expect.objectContaining({ kind: "section", name: ".note.gnu.build-id" }),
+    ]);
+    expect(report.entries[0]?.gnu?.build_id_hex).toBe(
+      "0123456789abcdef0123456789abcdef01234567",
+    );
+  },
+);
+
+it.each([1, 2])(
+  "admits a decoded section name larger than algorithm %i storage",
+  (compressionType) => {
+    const name = "n".repeat(512);
+    const bytes = compressedElfNoteFixture(64, true, compressionType, name);
+    expect(bytes.length).toBeLessThan(name.length);
+    const report = parse(bytes);
+    expect(report.tables[0]?.name).toBe(name);
+  },
+);
+
+it.each([1, 2])(
+  "rejects malformed algorithm %i section-name storage",
+  (compressionType) => {
+    for (const damage of ["corrupt", "truncated", "too-large", "too-small"]) {
+      const bytes = compressedElfNoteFixture(64, true, compressionType);
+      const sectionOffset = Number(bytes.readBigUInt64LE(40));
+      const nameHeader = sectionOffset + bytes.readUInt16LE(62) * 64;
+      const namesOffset = Number(bytes.readBigUInt64LE(nameHeader + 24));
+      if (damage === "corrupt") bytes[namesOffset + 24] = 0;
+      else if (damage === "truncated")
+        bytes.writeBigUInt64LE(
+          bytes.readBigUInt64LE(nameHeader + 32) - 1n,
+          nameHeader + 32,
+        );
+      else
+        bytes.writeBigUInt64LE(
+          bytes.readBigUInt64LE(namesOffset + 8) +
+            (damage === "too-large" ? 1n : -1n),
+          namesOffset + 8,
+        );
+      expect(() => parse(bytes), damage).toThrow(
+        /compressed section-name table/u,
+      );
+    }
+  },
+);
+
+it("refuses a Zstandard frame requiring more than the decoder window allowance", () => {
+  const header = Buffer.alloc(24);
+  header.writeUInt32LE(2, 0);
+  header.writeBigUInt64LE(1n, 16);
+  // An empty last raw block with Window_Descriptor 0x90: a 2^28-byte window.
+  const frame = Buffer.from("28b52ffd0090010000", "hex");
+  expect(
+    decodeElfSectionNameTable(
+      Buffer.concat([header, frame]),
+      0x800n,
+      64,
+      true,
+      0,
+    ),
+  ).toMatchObject({
+    state: "malformed",
+    message: expect.stringMatching(/memory/iu),
+  });
+});
+
+it("keeps note facts but marks section names unavailable for unknown compression", () => {
+  const report = parse(compressedElfNoteFixture(64, true, 3));
+  expect(report.tables[0]?.name).toBeNull();
+  expect(report.entries[0]?.gnu?.build_id_hex).toBe(
+    "0123456789abcdef0123456789abcdef01234567",
+  );
+  expect(report.limitations).toContain(
+    "ELF section names are unavailable because compression type 3 is unsupported.",
+  );
+});
+
+it("tags valid extended section numbering as unsupported", () => {
+  let failure: unknown;
+  try {
+    parse(elfExtendedSectionCountFixture());
+  } catch (cause) {
+    failure = cause;
+  }
+  expect(failure).toBeInstanceOf(BinaryFormatFailure);
+  expect(failure).toMatchObject({
+    kind: "unsupported",
+    message: "ELF extended numbering is unsupported.",
+  });
+});
+
+it.each([1, 2])(
+  "admits algorithm %i section names when max_file_bytes includes expansion",
+  (compressionType) => {
+    const bytes = compressedElfNoteFixture(64, true, compressionType);
+    const sectionOffset = Number(bytes.readBigUInt64LE(40));
+    const nameHeader = sectionOffset + bytes.readUInt16LE(62) * 64;
+    const namesOffset = Number(bytes.readBigUInt64LE(nameHeader + 24));
+    const decodedNamesBytes = Number(bytes.readBigUInt64LE(namesOffset + 8));
+    const minimumMaxFileBytes = bytes.length + decodedNamesBytes;
+    const input = inspectElfNotesInputSchema.parse({
+      path: defaults.path,
+      max_file_bytes: bytes.length + 1,
+    });
+    let failure: unknown;
+    try {
+      parse(bytes, input);
+    } catch (cause) {
+      failure = cause;
+    }
+    expect(failure).toBeInstanceOf(ElfNoteSectionNameBudgetFailure);
+    expect(failure).toMatchObject({
+      minimumMaxFileBytes: BigInt(minimumMaxFileBytes),
+      selectedMaxFileBytes: bytes.length + 1,
+    });
+
+    const admitted = parse(
+      bytes,
+      inspectElfNotesInputSchema.parse({
+        path: defaults.path,
+        max_file_bytes: minimumMaxFileBytes,
+      }),
+    );
+    expect(admitted.tables[0]?.name).toBe(".note.gnu.build-id");
+  },
+);
 
 it("reports independent PT_NOTE and SHT_NOTE declarations of the same bytes", () => {
   const report = parse(elfNoteFixture({ ownership: "both" }));
@@ -280,8 +475,26 @@ const unterminatedNoteSections = (
 };
 
 it("bounds repeated scans of an unterminated section name", () => {
-  expect(parse(unterminatedNoteSections(1, 64)).tables[0]?.name).toBeNull();
-  expect(() => parse(unterminatedNoteSections(3, 400))).toThrow(/byte budget/u);
+  const report = parse(unterminatedNoteSections(2, 64));
+  expect(report.tables.map(({ name }) => name)).toEqual([null, null]);
+  expect(report.coverage.status).toBe("complete");
+  expect(
+    report.limitations.filter((value) => value.includes("not NUL-terminated")),
+  ).toEqual([
+    "ELF section names are incomplete because a name is not NUL-terminated.",
+  ]);
+  let failure: unknown;
+  try {
+    parse(unterminatedNoteSections(3, 400));
+  } catch (cause) {
+    failure = cause;
+  }
+  expect(failure).toBeInstanceOf(ArtifactReaderFailure);
+  expect(failure).toMatchObject({ reason: "limit", boundary: "memory" });
+  expect(failure).toHaveProperty(
+    "message",
+    expect.stringMatching(/byte budget/u),
+  );
 });
 
 it("rejects note text that repeats beyond the shared byte budget", () => {

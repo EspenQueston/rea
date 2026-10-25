@@ -92,7 +92,6 @@ export const mapElectronFileAuthorizationFailure = (
   const primary = hasCancellation
     ? new AnalysisCancelledError(operation, {
         cause: cancellationReason,
-        ...(diagnostics === undefined ? {} : { diagnostics }),
       })
     : physicalPrimary instanceof AnalysisError
       ? physicalPrimary
@@ -108,8 +107,14 @@ export const mapElectronFileAuthorizationFailure = (
     { operation, cause },
   );
   bindArtifactFileCleanup(cause, cleanup);
+  if (diagnostics !== undefined)
+    (primary ?? cleanup).retainDiagnostics(diagnostics);
   if (primary === undefined) return cleanup;
-  const composed = analysisErrorWithCleanupFailure(primary, cleanup, operation);
+  const composed = analysisErrorWithCleanupFailure(
+    primary,
+    cleanup,
+    operation,
+  ).bindCleanupDependencies([primary, cleanup]);
   bindArtifactFileCleanup(cause, composed);
   return composed;
 };
@@ -120,7 +125,6 @@ const resolveAuthorizedElectronFile = async (
   asarHeaderAdmission: AsarHeaderAdmission,
 ): Promise<string | undefined> => {
   throwIfAborted(signal);
-  if (/%(?:2f|5c)/iu.test(value)) return undefined;
   let url: URL;
   try {
     url = new URL(value);
@@ -133,7 +137,8 @@ const resolveAuthorizedElectronFile = async (
     url.protocol !== "file:" ||
     url.hostname !== "" ||
     url.username !== "" ||
-    url.password !== ""
+    url.password !== "" ||
+    /%(?:2f|5c)/iu.test(url.pathname)
   )
     return undefined;
   let path: string;
@@ -241,7 +246,7 @@ const asarFiles = async (
   if (cached?.identity === identity) {
     // A header cached under a larger caller's admission stays refused here.
     if (cached.headerBytes > admission.maximumBytes)
-      throw asarHeaderAdmissionFailure(admission);
+      throw asarHeaderAdmissionFailure(admission, cached.headerBytes);
     return cached.files;
   }
   const handle = await open(archive, "r");

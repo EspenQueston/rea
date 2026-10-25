@@ -183,6 +183,7 @@ describe its recorded investigation; update them only when repeating that work.
 - `public/faq/index.html`: concise answers about setup, updates, analysis and troubleshooting.
 - `public/contributors/index.html`: one searchable, alphabetical grid of GitHub contributors, with profile links and contribution guidance.
 - `public/guides/`: a guide hub and native, JavaScript/Electron and browser examples.
+- `public/guides/rl-environments/index.html`: recording a web app, exporting a runnable environment, and adding tasks and reward checks.
 - `public/examples/`: downloadable Electron source and an interactive Notes browser app.
 - `public/assets/`: shared styles, interactions, favicon and explanatory figures.
 
@@ -362,7 +363,8 @@ and complete private Evidence records are not website assets.
 The homepage pairs a short introduction with the installation prompt and
 ordinary setup command. Get started is the primary action; a second link goes
 straight to the first interactive example. Short Showcases and Blog descriptions
-below those actions keep both reading paths available. The introduction and
+below those actions keep both reading paths available. An RL environments link
+in the same group leads to the recording and environment-building workflow. The introduction and
 setup retain the original equal-width desktop columns. Platform links go
 directly to the Windows, macOS and Linux steps in Get started; the optional
 curl installer is listed separately and links to its on-site instructions.
@@ -376,7 +378,9 @@ Three case-study previews lead to further investigations. The closing sections
 offer a guided first task and target-specific guides. FAQ, Discord and issue
 links each have their own line explaining their purpose.
 Every content page's header and footer link GitHub, Discord and X.
-A right-side table of contents stays visible at widths of 1440px and above.
+A right-side table of contents stays visible at widths of 1680px and above,
+with a 32px gap from the content. CSS owns this layout choice; the homepage
+script reads the displayed position when opening or closing the menu.
 On narrower screens it becomes a sticky, native disclosure; selecting a link
 closes the menu and focuses the destination. The homepage script follows
 the reading position and marks the current link. Without JavaScript, the
@@ -396,8 +400,8 @@ Each introduces the goal, then follows three named steps: ask a question,
 find the rule, and try a reconstruction. The question and plain-language finding
 are on the left, with the demo on the right; mobile keeps that reading order.
 Code excerpts and source details join the optional investigation flow and checks
-in each disclosure. Calculator’s excerpt
-comes from an installed model DLL; Microsoft’s public implementation supplies
+in each disclosure. Calculator's excerpt
+comes from an installed model DLL; Microsoft's public implementation supplies
 names and a crosscheck. Its controls apply the percentage rule to generic inputs.
 The target guides end with an optional larger-project disclosure, preserving
 the original website-cloning and game-reconstruction prompts.

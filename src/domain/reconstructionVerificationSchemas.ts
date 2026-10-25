@@ -1,9 +1,9 @@
 import { z } from "zod";
 
 import { IDENTIFIER_PATTERN } from "./stringPatterns.js";
-import { digestSchema } from "./../domain/digests.js";
-import { prefixedDigestSchema } from "./../domain/digests.js";
+import { digestSchema, prefixedDigestSchema } from "./../domain/digests.js";
 import { PROCESS_COMPARISON_DIMENSIONS } from "./process/processComparison.js";
+import { functionComparisonDimensionNameSchema } from "./functionComparisonSchemas.js";
 
 const evidenceIdSchema = prefixedDigestSchema("ev");
 const unknownIdSchema = prefixedDigestSchema("unk");
@@ -26,14 +26,7 @@ const functionClaimSchema = z.object({
   kind: z.literal("structural-function"),
   dimension: z.enum([
     "overall",
-    "identity",
-    "pseudocode",
-    "assembly",
-    "comments",
-    "calls",
-    "references",
-    "strings_names",
-    "cfg",
+    ...functionComparisonDimensionNameSchema.options,
   ]),
 });
 const artifactClaimSchema = z.object({

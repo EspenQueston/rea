@@ -1,3 +1,4 @@
+import { objcClassSymbol } from "../objcClassSymbol.js";
 import { z } from "zod";
 import {
   BINARY_ARCHITECTURES,
@@ -8,6 +9,10 @@ import { providerSchema } from "../evidence.js";
 import { isSwiftMangledSymbolName } from "../swiftSymbolClassification.js";
 import { nativeCallReferenceSchema } from "./nativeCallReference.js";
 import { machoTargetSelectionSchema } from "../apple/machoTargetSelection.js";
+import {
+  nativeAddressCoordinateInputSchema,
+  nativeAddressInputSchema,
+} from "./nativeAddress.js";
 
 import {
   compareUnicodeCodePoints,
@@ -36,7 +41,12 @@ export const objcPropertyAttributeSchema = z.strictObject({
 export const objcMethodSchema = z.strictObject({
   selector: z.string().min(1),
   method_type: objcMethodTypeSchema,
-  address: z.int().nullable(),
+  address: z
+    .int()
+    .nullable()
+    .describe(
+      "Unique unqualified implementation address; null if unknown, ambiguous, or not a safe integer.",
+    ),
   is_required: z.boolean().nullable(),
   is_optional: z.boolean().nullable(),
 });
@@ -183,6 +193,33 @@ export const objcDispatchImplementationSchema = z.strictObject({
 type ObjcDispatchImplementation = z.infer<
   typeof objcDispatchImplementationSchema
 >;
+
+/** Project class declarations without selecting an ambiguous or unrepresentable address. */
+export const projectObjcClassMethods = (
+  implementations: readonly ObjcDispatchImplementation[],
+): ObjcMethod[] => {
+  const methods = new Map<string, ObjcMethod>();
+  for (const implementation of implementations) {
+    const key = compositeKey([
+      implementation.selector,
+      implementation.method_type,
+    ]);
+    const address = parseMetadataAddress(implementation.implementation_address);
+    const previous = methods.get(key);
+    if (previous !== undefined) {
+      if (previous.address !== address) previous.address = null;
+      continue;
+    }
+    methods.set(key, {
+      selector: implementation.selector,
+      method_type: implementation.method_type,
+      address,
+      is_required: null,
+      is_optional: null,
+    });
+  }
+  return [...methods.values()];
+};
 
 /** Objective-C category: methods, protocols and properties added to a class. */
 export const objcCategorySchema = z.strictObject({
@@ -356,7 +393,6 @@ export const objcSwiftMetadataSchema = z.strictObject({
 });
 export type ObjcSwiftMetadata = z.infer<typeof objcSwiftMetadataSchema>;
 
-/** Provider and target identity for one normalized dispatch-metadata result. */
 /** Retained-image budget when the caller selects none. */
 export const DEFAULT_DISPATCH_METADATA_INPUT_BYTES = 64 * 1024 * 1024;
 
@@ -366,6 +402,42 @@ export const DEFAULT_DISPATCH_METADATA_INPUT_BYTES = 64 * 1024 * 1024;
  * its own process.
  */
 export const MAXIMUM_DISPATCH_METADATA_INPUT_BYTES = 1024 * 1024 * 1024;
+
+/** Shared metadata row allowance for provider reads and class-import discovery. */
+export const MAX_DISPATCH_METADATA_RECORDS = 20_000;
+export const DEFAULT_DISPATCH_METADATA_RECORDS = 5_000;
+
+/** Selected dispatch facts and retained-image budget, shared by providers and adapters. */
+export const nativeDispatchMetadataInputSchema = z.strictObject({
+  max_records: z
+    .number()
+    .int()
+    .min(1)
+    .max(MAX_DISPATCH_METADATA_RECORDS)
+    .default(DEFAULT_DISPATCH_METADATA_RECORDS),
+  objc_class_import_addresses: z
+    .array(z.string())
+    .max(MAX_DISPATCH_METADATA_RECORDS)
+    .describe(
+      "Optional exact pointer-slot addresses from the selected name inventory; used to report decoded Objective-C class import bindings.",
+    )
+    .optional(),
+  objc_class_import_addresses_complete: z
+    .boolean()
+    .describe(
+      "Whether the candidate addresses include every selected class-label row; false keeps binding coverage partial when the existing record budget truncates the scan.",
+    )
+    .optional(),
+  max_input_bytes: z
+    .number()
+    .int()
+    .min(1)
+    .max(MAXIMUM_DISPATCH_METADATA_INPUT_BYTES)
+    .optional()
+    .describe(
+      "Largest target file REA reads into memory for binary metadata, in bytes. Omitted: 67108864 (64 MiB). The whole file counts, including every slice of a universal Mach-O. At most 1073741824 (1 GiB).",
+    ),
+});
 
 /** Effective input budget of one binary metadata read and the bytes it retained. */
 export const dispatchMetadataInputAdmissionSchema = z.strictObject({
@@ -381,6 +453,7 @@ export type DispatchMetadataInputAdmission = z.infer<
   typeof dispatchMetadataInputAdmissionSchema
 >;
 
+/** Provider and target identity for one normalized dispatch-metadata result. */
 export const nativeDispatchMetadataResultSchema = z.strictObject({
   target_sha256: z
     .string()
@@ -401,7 +474,7 @@ export const nativeDispatchMetadataResultSchema = z.strictObject({
 /** Decode only facts visible in a provider's existing name inventory. */
 export const inspectNativeDispatchMetadata = (
   names: readonly { readonly address: string; readonly name: string }[],
-  maxRecords = 5_000,
+  maxRecords: number,
 ): ObjcSwiftMetadata => {
   const symbolEvidence = (
     entry: (typeof names)[number],
@@ -417,30 +490,45 @@ export const inspectNativeDispatchMetadata = (
     },
   ];
   const classNames = new Set<string>();
-  const implementations = new Map<string, ObjcDispatchImplementation>();
+  const implementations = new Map<
+    string | symbol,
+    ObjcDispatchImplementation
+  >();
   const swiftSymbols: SwiftSymbol[] = [];
 
   const examinedNames = names.slice(0, maxRecords);
   for (const entry of examinedNames) {
-    const address = entry.address === "" ? null : entry.address;
-    const classMatch = /(?:OBJC_CLASS_|OBJC_METACLASS_)\$_([^\s]+)/u.exec(
-      entry.name,
-    );
-    if (classMatch?.[1] !== undefined) classNames.add(classMatch[1]);
+    const parsedAddress = nativeAddressInputSchema.safeParse(entry.address);
+    const address = parsedAddress.success ? parsedAddress.data : null;
+    const sourceAddress = parsedAddress.success ? entry.address : null;
+    const classSymbol = objcClassSymbol(entry.name);
+    if (classSymbol !== undefined) classNames.add(classSymbol.name);
 
     const methodMatch = /^([+-])\[([^\s\]]+)\s+([^\]]+)\]$/u.exec(entry.name);
     if (methodMatch?.[1] !== undefined && methodMatch[2] && methodMatch[3]) {
       const methodType = methodMatch[1] === "+" ? "class" : "instance";
       const selector = methodMatch[3];
-      implementations.set(`${methodMatch[2]}:${selector}:${methodType}`, {
-        class_name: methodMatch[2],
-        selector,
-        method_type: methodType,
-        implementation_address: address,
-        location: { address, file_offset: null },
-        decode: { status: "partial", reason: "symbol_name_only" },
-        evidence: symbolEvidence(entry, address),
-      });
+      const key = parsedAddress.success
+        ? compositeKey([
+            methodMatch[2],
+            selector,
+            methodType,
+            parsedAddress.data,
+          ])
+        : Symbol();
+      const evidence = symbolEvidence(entry, sourceAddress);
+      const previous = implementations.get(key);
+      if (previous !== undefined) previous.evidence.push(...evidence);
+      else
+        implementations.set(key, {
+          class_name: methodMatch[2],
+          selector,
+          method_type: methodType,
+          implementation_address: address,
+          location: { address, file_offset: null },
+          decode: { status: "partial", reason: "symbol_name_only" },
+          evidence,
+        });
       classNames.add(methodMatch[2]);
     }
 
@@ -449,28 +537,26 @@ export const inspectNativeDispatchMetadata = (
         mangled_name: entry.name,
         address,
         decode: { status: "partial", reason: "mangled_symbol_not_demangled" },
-        evidence: symbolEvidence(entry, address),
+        evidence: symbolEvidence(entry, sourceAddress),
       });
   }
 
-  const methodsByClass = new Map<string, ObjcMethod[]>();
+  const implementationsByClass = new Map<
+    string,
+    ObjcDispatchImplementation[]
+  >();
   for (const implementation of implementations.values()) {
-    const methods = methodsByClass.get(implementation.class_name) ?? [];
-    methods.push({
-      selector: implementation.selector,
-      method_type: implementation.method_type,
-      address: parseMetadataAddress(implementation.implementation_address),
-      is_required: null,
-      is_optional: null,
-    });
-    methodsByClass.set(implementation.class_name, methods);
+    const candidates =
+      implementationsByClass.get(implementation.class_name) ?? [];
+    candidates.push(implementation);
+    implementationsByClass.set(implementation.class_name, candidates);
   }
   const classes: ObjcClass[] = [...classNames].sort().map((name) => ({
     name,
     super_class: null,
     is_meta_class: null,
     is_root_class: null,
-    methods: methodsByClass.get(name) ?? [],
+    methods: projectObjcClassMethods(implementationsByClass.get(name) ?? []),
     properties: [],
     protocols: [],
     ivar_count: null,
@@ -479,8 +565,18 @@ export const inspectNativeDispatchMetadata = (
   const decodedImplementations = [...implementations.values()].sort(
     (left, right) =>
       compareUnicodeCodePoints(
-        compositeKey([left.class_name, left.selector]),
-        compositeKey([right.class_name, right.selector]),
+        compositeKey([
+          left.class_name,
+          left.selector,
+          left.method_type,
+          left.implementation_address ?? "",
+        ]),
+        compositeKey([
+          right.class_name,
+          right.selector,
+          right.method_type,
+          right.implementation_address ?? "",
+        ]),
       ),
   );
   const swift = swiftSymbols.length > 0;
@@ -508,9 +604,17 @@ export const inspectNativeDispatchMetadata = (
             ? "record_limit_reached_and_only_symbolized_methods_are_resolved"
             : decodedImplementations.length > 0
               ? "only_symbolized_methods_are_resolved"
-              : "provider_name_inventory_has_no_objc_method_symbols",
+              : "provider_name_inventory_has_no_supported_objc_method_symbols",
         examined: examinedNames.length,
         decoded: decodedImplementations.length,
+      },
+      {
+        facet: "objc_class_definitions",
+        status: "unsupported",
+        reason:
+          "symbol_inventory_does_not_establish_class_definitions_import_origins_or_namespace_declarations",
+        examined: examinedNames.length,
+        decoded: 0,
       },
       {
         facet: "objc_ivar_layouts",
@@ -550,9 +654,10 @@ export const inspectNativeDispatchMetadata = (
 };
 
 const parseMetadataAddress = (address: string | null): number | null => {
-  if (address === null) return null;
-  const match = /(?:^|:)0x([0-9a-f]+)$/iu.exec(address);
-  if (match?.[1] === undefined) return null;
-  const value = Number.parseInt(match[1], 16);
-  return Number.isSafeInteger(value) ? value : null;
+  const parsed = nativeAddressCoordinateInputSchema.safeParse(address);
+  return parsed.success &&
+    parsed.data.space === null &&
+    parsed.data.offset <= BigInt(Number.MAX_SAFE_INTEGER)
+    ? Number(parsed.data.offset)
+    : null;
 };

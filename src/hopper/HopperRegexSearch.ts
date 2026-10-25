@@ -16,6 +16,10 @@ import {
   DEFAULT_REGEX_MATCHING_DEADLINE,
   type RegexMatchingDeadline,
 } from "../config/regexMatchingDeadline.js";
+import {
+  DEFAULT_REGEX_WORKER_HEAP_REQUEST,
+  type RegexWorkerHeapRequest,
+} from "../config/regexWorkerHeapRequest.js";
 import { matchRegexValues } from "../process/RegexMatcher.js";
 import { analysisClientFailureForOperation } from "../providers/AnalysisClientFailure.js";
 
@@ -33,6 +37,7 @@ export class HopperRegexSearch {
   constructor(
     private readonly client: Pick<HopperClient, "callTool">,
     private readonly deadline: RegexMatchingDeadline = DEFAULT_REGEX_MATCHING_DEADLINE,
+    private readonly heapRequest: RegexWorkerHeapRequest = DEFAULT_REGEX_WORKER_HEAP_REQUEST,
   ) {}
 
   execute(
@@ -137,11 +142,7 @@ export class HopperRegexSearch {
       values: parsed.data.map((item) => item.value),
       signal: options.signal,
       deadline: this.deadline,
-      invalidPattern: (reason) =>
-        new HopperRemoteError(-32000, `Invalid regex pattern: ${reason}`, {
-          diagnosticType: "invalid_request",
-          operation,
-        }),
+      heapRequest: this.heapRequest,
     });
     if (!matched.ok) return matched;
     if (options.signal?.aborted)

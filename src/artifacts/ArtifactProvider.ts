@@ -1,4 +1,5 @@
-import { resolveAsarHeaderAdmission } from "./AsarHeader.js";
+import type { AnalysisSettingsReader } from "../domain/analysisSettings.js";
+import { runtimeAsarHeaderAdmission } from "../config/runtimeAnalysisSettings.js";
 import { artifactTargetRefusal } from "../domain/apple/artifactTargetApplicability.js";
 import { bindArtifactFileCleanup } from "./ArtifactFileOperation.js";
 import type { AnalysisError } from "../domain/analysisErrorBase.js";
@@ -38,10 +39,13 @@ import { err, ok, type Result } from "../domain/result.js";
 import { ArtifactReaderFailure } from "./ArtifactReader.js";
 import { ArtifactResourceScope } from "./ArtifactResourceScope.js";
 import { artifactCapabilities } from "./ArtifactProviderMetadata.js";
-import { ARTIFACT_GRAPH_PROVIDER } from "../application/InvestigationProviders.js";
+import { ARTIFACT_GRAPH_PROVIDER } from "../domain/investigationProviders.js";
 import { createEvidence } from "../domain/evidence.js";
 import { freezeJsonSnapshot } from "../domain/immutableJson.js";
-import { createArtifactInspection } from "../domain/artifactInspection.js";
+import {
+  artifactInspectionSources,
+  createArtifactInspection,
+} from "../domain/artifactInspection.js";
 import { ProviderCleanupError } from "../domain/providerCleanupError.js";
 import type { ResolvedAppBundleResourceRoot } from "../application/AppBundleExecutable.js";
 import type { BundleResourceRoot } from "../domain/apple/bundleResourceRoot.js";
@@ -56,6 +60,7 @@ export class ArtifactProvider implements AnalysisProvider {
   constructor(
     environment: Readonly<NodeJS.ProcessEnv>,
     platform: NodeJS.Platform = process.platform,
+    private readonly settings?: AnalysisSettingsReader,
   ) {
     this.environment = snapshotEnvironment(environment, platform);
     this.#capabilities = artifactCapabilities(platform);
@@ -71,7 +76,12 @@ export class ArtifactProvider implements AnalysisProvider {
   }
 
   createClient(target: BinaryTarget): AnalysisClient {
-    return new ArtifactClient(target, this.environment, this.#platform);
+    return new ArtifactClient(
+      target,
+      this.environment,
+      this.#platform,
+      this.settings,
+    );
   }
 
   createBundleResourceClient(
@@ -127,6 +137,7 @@ class BundleResourceArtifactClient implements AnalysisClient {
               bundlePath: this.root.canonicalPath,
               targetSha256: null,
               resourceRoot,
+              resources: this.#resourceScope,
               limits: interfaceBuilderLimitsSchema.parse(parameters),
               ...(options?.signal === undefined
                 ? {}
@@ -139,6 +150,7 @@ class BundleResourceArtifactClient implements AnalysisClient {
                 resourceRoot,
                 parameters,
                 platform: this.platform,
+                resources: this.#resourceScope,
                 ...(options?.signal === undefined
                   ? {}
                   : { signal: options.signal }),
@@ -149,6 +161,7 @@ class BundleResourceArtifactClient implements AnalysisClient {
                   targetSha256: null,
                   resourceRoot,
                   environment: this.environment,
+                  resources: this.#resourceScope,
                   page: parameters,
                   ...(options?.signal === undefined
                     ? {}
@@ -196,6 +209,7 @@ class ArtifactClient implements AnalysisClient {
     private readonly target: BinaryTarget,
     private readonly environment: Readonly<NodeJS.ProcessEnv>,
     private readonly platform: NodeJS.Platform,
+    private readonly settings?: AnalysisSettingsReader,
   ) {}
 
   async execute(
@@ -227,6 +241,7 @@ class ArtifactClient implements AnalysisClient {
           bundlePath: this.target.sourcePath ?? this.target.path,
           targetSha256: this.target.sha256,
           limits,
+          resources: this.#resourceScope,
           ...(options?.signal === undefined ? {} : { signal: options.signal }),
         });
         return ok(
@@ -267,6 +282,7 @@ class ArtifactClient implements AnalysisClient {
             ? { ...parameters, path: basename(this.target.path) }
             : parameters,
           platform: this.platform,
+          resources: this.#resourceScope,
           ...(options?.signal === undefined ? {} : { signal: options.signal }),
         });
         if (standalone && result.archive_sha256 !== this.target.sha256)
@@ -294,6 +310,10 @@ class ArtifactClient implements AnalysisClient {
             inputFormat: this.target.format,
             outputRoot: parsed.output_root,
             environment: this.environment,
+            asarHeaderAdmission: runtimeAsarHeaderAdmission(
+              this.environment,
+              this.settings,
+            ),
             integrityPolicy: parsed.integrity_policy,
             resourceScope: this.#resourceScope,
           },
@@ -375,6 +395,7 @@ class ArtifactClient implements AnalysisClient {
     const result = await analyzeAppleAssetCatalogs({
       environment: this.environment,
       bundlePath,
+      resources: this.#resourceScope,
       targetSha256: this.target.sha256,
       page: parameters,
       ...(options?.signal === undefined ? {} : { signal: options.signal }),
@@ -466,6 +487,7 @@ class ArtifactClient implements AnalysisClient {
       createAnalysisExecution(result, ARTIFACT_GRAPH_PROVIDER, {
         rawResult: null,
         limitations: result.limitations,
+        sourceEvidence: artifactInspectionSources(result),
         subject,
         locations: [],
       }),
@@ -481,7 +503,10 @@ class ArtifactClient implements AnalysisClient {
     return inventoryArtifact(this.target.sourcePath ?? this.target.path, {
       resourceScope: this.#resourceScope,
       environment: this.environment,
-      asarHeaderAdmission: resolveAsarHeaderAdmission(this.environment),
+      asarHeaderAdmission: runtimeAsarHeaderAdmission(
+        this.environment,
+        this.settings,
+      ),
       ...(options?.signal === undefined ? {} : { signal: options.signal }),
       integrity: { mode: parsed.integrity_policy },
     });

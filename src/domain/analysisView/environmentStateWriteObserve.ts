@@ -1,17 +1,55 @@
 import type { JsonValue } from "../jsonValue.js";
 import { overlapsWrite } from "./environmentStateWriteAttribution.js";
 import {
+  at,
   collectionPathOf,
   isObject,
   lastSegmentValue,
   listItems,
   pointerTo,
+  projectsFields,
   scalarText,
   type JsonObject,
   type StateEntity,
   type StateRecordFacts,
   type StateView,
 } from "./environmentStateRules.js";
+import { queryValues, replayReason } from "./environmentStateVariants.js";
+import { readClock } from "./environmentStateWriteValues.js";
+
+/** A read a create's observation takes fields from: an item read's respell the response's clocks and add fields, a list read's only add fields. */
+export interface ObservedRead {
+  readonly ordinal: number;
+  readonly pointer: string;
+  readonly shape: "item" | "list";
+}
+
+/** Whether two clocks agree at the coarser recorded fraction precision, retaining all digits through nanoseconds. */
+export const respelledInstant = (
+  left: JsonValue | undefined,
+  right: JsonValue | undefined,
+): boolean => {
+  const [a, b] = [readClock(left), readClock(right)];
+  if (a?.format.kind !== "iso" || b?.format.kind !== "iso") return false;
+  const [fine, coarse] =
+    a.format.fraction >= b.format.fraction ? [a, b] : [b, a];
+  if (coarse.format.kind !== "iso") return false;
+  const unit = 10 ** (9 - coarse.format.fraction);
+  const fraction = (clock: typeof fine) =>
+    (((clock.ms % 1000) + 1000) % 1000) * 1_000_000 + clock.subMillisecond;
+  return (
+    Math.floor(fine.ms / 1000) === Math.floor(coarse.ms / 1000) &&
+    Math.floor(fraction(fine) / unit) * unit === fraction(coarse)
+  );
+};
+
+/** A create's response object with a read's fields: an item read's values win, a list read only adds fields the response lacks. */
+export const withRead = (
+  response: JsonObject,
+  read: JsonObject,
+  shape: ObservedRead["shape"],
+): JsonObject =>
+  shape === "item" ? { ...response, ...read } : { ...read, ...response };
 
 /** Where an observed entity object was found: the record and a JSON pointer into its response. */
 export interface Observed {
@@ -19,6 +57,8 @@ export interface Observed {
   readonly pointer: string;
   readonly object: JsonObject;
   readonly id: string;
+  /** A create's later read whose fields the object adds to the response's, and whose clock spellings an item read lends it. */
+  readonly read?: ObservedRead;
 }
 
 /** Objects a response carries where an entity may be, in precedence tiers: the root, one member, then the element of a one-element array at the root or in one member. */
@@ -90,7 +130,36 @@ export interface ObservationSearch {
     ordinal: number,
     use: (body: JsonValue | undefined) => T,
   ) => T;
+  readonly queryOf: (ordinal: number) => string | null | undefined;
 }
+
+/** Whether a successful read neither checks the state nor observes a write: serving replays it, or it asked for some fields only and shows no whole entity. */
+export const projectedRead = (
+  view: StateView,
+  record: StateRecordFacts,
+  io: Pick<ObservationSearch, "withBody" | "queryOf">,
+): boolean => {
+  if (view.shape !== "item" && view.shape !== "list") return false;
+  // An absence or error holds no entity, so it is never a partial one and stays evidence.
+  if (!succeeded(record)) return false;
+  if (replayReason(view, queryValues(record.query), io.queryOf) !== undefined)
+    return true;
+  // Serving answers such a selection with the whole entity, which part of one can neither confirm nor check.
+  if (!projectsFields(record.query)) return false;
+  return io.withBody(record.ordinal, (body) => {
+    const objects =
+      body === undefined || body === null
+        ? []
+        : view.shape === "item"
+          ? [at(body, view.pointer)]
+          : (listItems(body, view.pointer) ?? []);
+    return objects.some(
+      (object) =>
+        !isObject(object) ||
+        view.required_fields.some((field) => !Object.hasOwn(object, field)),
+    );
+  });
+};
 
 const succeeded = (record: StateRecordFacts): boolean =>
   record.status !== null && record.status >= 200 && record.status < 300;
@@ -126,7 +195,8 @@ export const laterObservation = (
     if (
       !succeeded(record) ||
       (view?.shape !== "item" && view?.shape !== "list") ||
-      view.type !== target.type
+      view.type !== target.type ||
+      projectedRead(view, record, search)
     )
       continue;
     if (target.covers !== undefined && !target.covers(view)) continue;

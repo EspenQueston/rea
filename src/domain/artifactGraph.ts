@@ -70,6 +70,7 @@ const artifactFormatSchema = z.enum([
   "dos-mz",
   "dos-com",
   "raw-binary",
+  "gamecube-dol",
   "hopper",
   "analysis-database",
   "ipa",
@@ -84,6 +85,7 @@ const artifactFormatSchema = z.enum([
   "directory",
   "file",
   "pyinstaller",
+  "node-sea",
   "unknown",
 ]);
 
@@ -146,8 +148,12 @@ export const artifactOccurrenceSchema = z.object({
   compressed_size: z.int().min(0).max(Number.MAX_SAFE_INTEGER).nullable(),
   executable: z.boolean(),
   encrypted: z.boolean(),
+  /** Positive ASAR companion declaration; older inventories may not record it. */
+  unpacked: z.literal(true).exactOptional(),
   hash_status: z.enum(["verified", "mismatched", "not-hashed", "unavailable"]),
   source_location: artifactByteRangeSchema.nullable(),
+  /** Exact reader-source path or opaque key, including an observed empty key. */
+  source_path: z.string().exactOptional(),
   declared_integrity: artifactIntegrityClaimSchema.exactOptional(),
   format_metadata: artifactFormatMetadataSchema.exactOptional(),
   limitations: z.array(z.string()),
@@ -256,6 +262,7 @@ export const artifactExtractionResultSchema = z.object({
     verified: z.boolean(),
     residual_paths: z.array(boundedRelativePathSchema),
   }),
+  coverage: artifactInventoryCoverageSchema,
   provenance: z.array(artifactCommandSchema),
   integrity_contradictions: z.array(integrityContradictionSchema),
   limitations: z.array(z.string()),
