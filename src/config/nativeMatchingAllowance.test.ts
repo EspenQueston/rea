@@ -1,3 +1,4 @@
+import { projectAnalysisError } from "../domain/analysisErrorProjection.js";
 import { expect, it } from "vitest";
 import { ConfigurationError } from "../domain/configurationErrors.js";
 import { parseEnvironment } from "./environment.js";
@@ -75,4 +76,20 @@ it("refuses invalid launch values instead of falling back to the default", () =>
       value: { maximumBytes: 4096, source: "runtime" },
     });
   }
+});
+
+it("advertises current-session repair for an invalid native matching launch seed", () => {
+  const parsed = parseNativeMatchingAllowance({
+    [NATIVE_MATCHING_ALLOWANCE_SETTING]: "0",
+  });
+  if (parsed.ok) throw new Error("Invalid seed was accepted");
+  const projection = projectAnalysisError(parsed.error);
+  expect(projection.code).toBe("configuration_invalid");
+  expect(projection.remediation.action).toContain("update_analysis_settings");
+  expect(projection.remediation.action).toContain(
+    "native.matching_representation_bytes",
+  );
+  expect(projection.remediation.action).toContain(
+    NATIVE_MATCHING_ALLOWANCE_SETTING,
+  );
 });

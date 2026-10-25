@@ -47,6 +47,7 @@ export const parseNativeMatchingAllowance = (
     ? ok({ maximumBytes: parsed.data, source: "setting" })
     : err(
         new ConfigurationError(nativeMatchingRepresentationBytesConstraint, {
+          remediationAction: `On a running MCP session, call update_analysis_settings with ${JSON.stringify({ changes: [{ setting: "native.matching_representation_bytes", action: "set", value: DEFAULT_NATIVE_MATCHING_REPRESENTATION_BYTES }] })}, then retry matching. This repairs the current session for the next operation. For CLI or future REA processes, correct ${NATIVE_MATCHING_ALLOWANCE_SETTING} in the launch environment.`,
           settings: [
             {
               setting: NATIVE_MATCHING_ALLOWANCE_SETTING,

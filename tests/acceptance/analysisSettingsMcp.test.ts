@@ -266,6 +266,9 @@ it("lowers, restores and seeds the native matching allowance over MCP", async ()
     if (text?.type !== "text") throw new Error("Missing projected error");
     expect(JSON.parse(text.text).error).toMatchObject({
       code: "configuration_invalid",
+      remediation: {
+        action: expect.stringContaining("update_analysis_settings"),
+      },
       details: {
         settings: [{ setting: "REA_NATIVE_MATCHING_REPRESENTATION_BYTES" }],
       },
