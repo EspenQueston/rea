@@ -1544,6 +1544,39 @@ describe("Ghidra native decompiler remediation", () => {
         "Provide an executable Ghidra/Features/Decompiler/os/linux_x86_64/decompile, or its build/os equivalent. REA does not build or install native tools.",
     });
   });
+
+  it("names a foreign decompiler selected from build/os, not the os/ path", async () => {
+    const built = `${INSTALL}/Ghidra/Features/Decompiler/build/os/mac_arm_64/decompile`;
+    const result = await inspectGhidraInstallation(
+      {
+        resourceOwner: inspectionResources.owner,
+        environment: {},
+        installDir: INSTALL,
+        platform: "darwin",
+        architecture: "arm64",
+      },
+      host({
+        executable: (path) => path === HEADLESS || path === built,
+        probeJava: () =>
+          javaProbeOk<GhidraJavaObservation>({
+            ...JAVA,
+            osArch: "aarch64",
+            osName: "Mac OS X",
+          }),
+        executableHeader: (path: string) =>
+          path === built ? headerProbe(elf(2, 1, 62)) : javaProbeOk(undefined),
+      }),
+    );
+    expect(result.status).toBe("unavailable");
+    if (result.status !== "unavailable") return;
+    expect(
+      result.checks.find(({ name }) => name === "native_decompiler"),
+    ).toMatchObject({
+      status: "failed",
+      detail: `${built} reports elf x86_64, but darwin/arm64 requires mach-o arm64`,
+      remediation: `REA selects ${built} (os/ takes precedence over build/os/), but it is not built for mach-o arm64. Remove it or replace it with an executable built for mach-o arm64. To build one with Ghidra's buildNatives task instead, remove it first so REA selects build/os/mac_arm_64/decompile. REA does not build or install native tools.`,
+    });
+  });
 });
 
 describe("Ghidra JVM native directory admission", () => {
