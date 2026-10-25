@@ -68,11 +68,10 @@ const USER_BUILT_NATIVE_PLATFORMS: ReadonlySet<string> = new Set([
   "mac_arm_64",
 ]);
 
-/** Remediation for a missing or foreign native decompiler on the host. */
+/** Remediation for a host without a native decompiler. */
 const nativeDecompilerRemediation = (
   platform: NodeJS.Platform,
   architecture: NodeJS.Architecture,
-  builtFor?: string,
 ): string => {
   const directory = NATIVE_PLATFORMS[platform]?.[architecture];
   const executable = platform === "win32" ? "decompile.exe" : "decompile";
@@ -80,7 +79,28 @@ const nativeDecompilerRemediation = (
     directory !== undefined && USER_BUILT_NATIVE_PLATFORMS.has(directory)
       ? ` Official Ghidra release archives do not include it; build it once from <GhidraInstallDir>/support/gradle/ with ./gradlew buildNatives (or gradle buildNatives), which writes build/os/${directory}/${executable}.`
       : "";
-  return `Provide an executable Ghidra/Features/Decompiler/os/${directory ?? "<platform>"}/${executable}${builtFor === undefined ? "" : ` built for ${builtFor}`}, or its build/os equivalent.${build} REA does not build or install native tools.`;
+  return `Provide an executable Ghidra/Features/Decompiler/os/${directory ?? "<platform>"}/${executable}, or its build/os equivalent.${build} REA does not build or install native tools.`;
+};
+
+/**
+ * Remediation for a selected native decompiler built for another host.
+ *
+ * Discovery selects `os/` before `build/os/`, so a fresh `buildNatives` output
+ * cannot displace a foreign `os/` executable until that file is removed.
+ */
+const foreignNativeDecompilerRemediation = (
+  path: string,
+  platform: NodeJS.Platform,
+  architecture: NodeJS.Architecture,
+  expected: string,
+): string => {
+  const directory = NATIVE_PLATFORMS[platform]?.[architecture];
+  const executable = platform === "win32" ? "decompile.exe" : "decompile";
+  const build =
+    directory !== undefined && USER_BUILT_NATIVE_PLATFORMS.has(directory)
+      ? ` To build one with Ghidra's buildNatives task instead, remove it first so REA selects build/os/${directory}/${executable}.`
+      : "";
+  return `REA selects ${path} (os/ takes precedence over build/os/), but it is not built for ${expected}. Remove it or replace it with an executable built for ${expected}.${build} REA does not build or install native tools.`;
 };
 
 /** Executable format each supported host runs its own Ghidra native tools as. */
@@ -174,7 +194,12 @@ const assessNativeDecompiler = (
   return {
     status: "incompatible",
     detail: `${path} reports ${observed}, but ${platform}/${architecture} requires ${expected}`,
-    remediation: nativeDecompilerRemediation(platform, architecture, expected),
+    remediation: foreignNativeDecompilerRemediation(
+      path,
+      platform,
+      architecture,
+      expected,
+    ),
   };
 };
 

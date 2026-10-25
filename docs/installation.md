@@ -986,7 +986,9 @@ Ghidra's own Gradle task: from `<GhidraInstallDir>/support/gradle/`, run
 REA checks the executable prerequisite by inspecting the file's own executable
 header, so a native component built for another platform or architecture is
 reported as incompatible instead of being admitted from its directory name, and
-a header that cannot be read or recognized is reported as unknown. REA does not
+a header that cannot be read or recognized is reported as unknown. REA selects
+`os/<platform>/` before `build/os/<platform>/`, so remove an incompatible
+`os/<platform>/` executable before relying on `buildNatives`. REA does not
 build or install native tools, or change Gatekeeper quarantine settings.
 
 The adapter exposes 26 read-only operations: fourteen inventory/name/search
