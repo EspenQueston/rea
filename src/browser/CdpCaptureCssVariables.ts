@@ -2,6 +2,7 @@ import {
   sanitizeBrowserUrl,
   type InspectWebPageInput,
 } from "../domain/browserObservation.js";
+import { parseRecordedTransportUrl } from "../domain/recordedTransportUrl.js";
 import {
   browserCssVariableItemSchema,
   type BrowserCssVariableItem,
@@ -31,12 +32,29 @@ const CSS_URL_UNQUOTED_PATTERN = /(url\(\s*)([^"'\s()\r\n]+)(\s*\))/gi;
 const sanitizeDiagnosticPreview = (text: string): string =>
   text.replace(/[\u0000-\u001F\u007F-\u009F\u202A-\u202E\u2066-\u2069]/gu, "");
 
+const redactCssUrl = (
+  rawUrl: string,
+): { readonly url: string; readonly redacted: boolean } => {
+  const { credentials } = parseRecordedTransportUrl(rawUrl);
+  if (credentials !== null && typeof credentials === "object") {
+    return {
+      url: `${rawUrl.slice(0, credentials.start)}${rawUrl.slice(credentials.end)}`,
+      redacted: true,
+    };
+  }
+  const sanitized = sanitizeBrowserUrl(rawUrl);
+  if (sanitized.redacted) {
+    return { url: sanitized.url, redacted: true };
+  }
+  return { url: rawUrl, redacted: false };
+};
+
 const redactUrlPattern = (text: string, pattern: RegExp): string =>
   text.replace(
     pattern,
     (fullMatch, prefix: string, rawUrl: string, suffix: string) => {
       try {
-        const sanitized = sanitizeBrowserUrl(rawUrl);
+        const sanitized = redactCssUrl(rawUrl);
         if (!sanitized.redacted) return fullMatch;
         return `${prefix}${sanitized.url}${suffix}`;
       } catch {

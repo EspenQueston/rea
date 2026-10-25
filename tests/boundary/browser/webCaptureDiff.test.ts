@@ -1371,6 +1371,25 @@ describe("web capture CSS variables comparison", () => {
       reason:
         "CSS variables capture was incomplete in at least one observation.",
     });
+
+    // Added tokens are detected even when another token is redacted
+    const afterWithAddedToken = structuredClone(beforeRedacted);
+    afterWithAddedToken.css_variables.items = [
+      { name: "--asset", value: "url(https://host/a)", redacted: true },
+      { name: "--primary", value: "#0066cc", redacted: false },
+    ];
+    afterWithAddedToken.css_variables.total = 2;
+    afterWithAddedToken.css_variables.retained_count = 2;
+    const addedTokenResult = compareWebCaptures(
+      compareWebCapturesInputSchema.parse({
+        before: { inspection: beforeRedacted },
+        after: { inspection: afterWithAddedToken },
+      }),
+    );
+    expect(addedTokenResult.dimensions.metadata).toMatchObject({
+      status: "changed",
+      changes: [{ identity: "css_variables", change: "modified" }],
+    });
   });
 });
 

@@ -1132,12 +1132,7 @@ const metadataDimension = (
 
   let cssComplete = true;
   if (beforeCssSelected && afterCssSelected) {
-    const hasRedactedTokens =
-      before.css_variables.items.some((item) => item.redacted) ||
-      after.css_variables.items.some((item) => item.redacted);
-
-    cssComplete =
-      !hasRedactedTokens &&
+    const inventoryComplete =
       before.css_variables.status === "included" &&
       after.css_variables.status === "included" &&
       sectionsComplete(before, ["css_variables"]) &&
@@ -1165,23 +1160,29 @@ const metadataDimension = (
       }
     }
 
-    if (cssModified) {
-      changes.push({ identity: "css_variables", change: "modified" });
-    } else if (cssComplete) {
-      const beforeCssDigest = digestCanonicalValue(
-        before.css_variables.items.map(
-          (item) => `${item.name}:${item.value}:${String(item.redacted)}`,
-        ),
-      );
-      const afterCssDigest = digestCanonicalValue(
-        after.css_variables.items.map(
-          (item) => `${item.name}:${item.value}:${String(item.redacted)}`,
-        ),
-      );
-      if (beforeCssDigest !== afterCssDigest) {
-        changes.push({ identity: "css_variables", change: "modified" });
+    let cssTokensAddedOrRemoved = false;
+    if (inventoryComplete) {
+      if (beforeCssMap.size !== afterCssMap.size) {
+        cssTokensAddedOrRemoved = true;
+      } else {
+        for (const name of afterCssMap.keys()) {
+          if (!beforeCssMap.has(name)) {
+            cssTokensAddedOrRemoved = true;
+            break;
+          }
+        }
       }
     }
+
+    if (cssModified || cssTokensAddedOrRemoved) {
+      changes.push({ identity: "css_variables", change: "modified" });
+    }
+
+    const hasRedactedTokens =
+      before.css_variables.items.some((item) => item.redacted) ||
+      after.css_variables.items.some((item) => item.redacted);
+
+    cssComplete = inventoryComplete && !hasRedactedTokens;
   }
 
   if (changes.length > 0) {

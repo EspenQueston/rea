@@ -759,6 +759,10 @@ it("redacts credentials from quoted and unquoted CSS URLs including opposite quo
           name: "--unquoted",
           value: "url(https://alice:secret@example.com/path)",
         },
+        {
+          name: "--scheme-relative",
+          value: 'url("//alice:secret@example.com/a.png")',
+        },
       ],
     },
     "CSS.disable": {},
@@ -781,6 +785,11 @@ it("redacts credentials from quoted and unquoted CSS URLs including opposite quo
   expect(result.status).toBe("included");
   expect(result.items).toEqual([
     {
+      name: "--scheme-relative",
+      redacted: true,
+      value: 'url("//example.com/a.png")',
+    },
+    {
       name: "--unquoted",
       redacted: true,
       value: "url(https://example.com/path)",
@@ -799,7 +808,7 @@ it("redacts credentials from quoted and unquoted CSS URLs including opposite quo
   expect(
     limitations.some((lim) =>
       lim.includes(
-        "3 root CSS custom property values had transport credentials redacted",
+        "4 root CSS custom property values had transport credentials redacted",
       ),
     ),
   ).toBe(true);
