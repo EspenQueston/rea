@@ -23,11 +23,7 @@ const MAX_RETAINED_CSS_VARIABLES = 250;
 const MAX_INTAKE_CSS_VARIABLES = 2000;
 const MAX_REJECTED_PREVIEWS = 3;
 const MAX_PREVIEW_NAME_LENGTH = 64;
-
 const MAX_CSS_VALUE_LENGTH = 512;
-const CSS_URL_DOUBLE_QUOTED_PATTERN = /(url\(\s*")([^"\r\n]+)("\s*\))/gi;
-const CSS_URL_SINGLE_QUOTED_PATTERN = /(url\(\s*')([^'\r\n]+)('\s*\))/gi;
-const CSS_URL_UNQUOTED_PATTERN = /(url\(\s*)([^"'\s()\r\n]+)(\s*\))/gi;
 
 const sanitizeDiagnosticPreview = (text: string): string =>
   text.replace(/[\u0000-\u001F\u007F-\u009F\u202A-\u202E\u2066-\u2069]/gu, "");
@@ -49,19 +45,192 @@ const redactCssUrl = (
   return { url: rawUrl, redacted: false };
 };
 
-const redactUrlPattern = (text: string, pattern: RegExp): string =>
-  text.replace(
-    pattern,
-    (fullMatch, prefix: string, rawUrl: string, suffix: string) => {
-      try {
-        const sanitized = redactCssUrl(rawUrl);
-        if (!sanitized.redacted) return fullMatch;
-        return `${prefix}${sanitized.url}${suffix}`;
-      } catch {
-        return fullMatch;
+interface CssUrlMatch {
+  readonly start: number;
+  readonly end: number;
+  readonly prefix: string;
+  readonly rawUrl: string;
+  readonly suffix: string;
+}
+
+const findCssUrlMatches = (text: string): readonly CssUrlMatch[] => {
+  const matches: CssUrlMatch[] = [];
+  let pos = 0;
+  const len = text.length;
+
+  while (pos < len) {
+    const urlIdx = text.toLowerCase().indexOf("url(", pos);
+    if (urlIdx === -1) break;
+
+    if (urlIdx > 0 && /[\w-]/u.test(text[urlIdx - 1]!)) {
+      pos = urlIdx + 4;
+      continue;
+    }
+
+    const start = urlIdx;
+    let curr = urlIdx + 4;
+
+    while (curr < len && /[\s\f]/u.test(text[curr]!)) {
+      curr++;
+    }
+
+    if (curr >= len) break;
+
+    const firstChar = text[curr]!;
+    if (firstChar === '"' || firstChar === "'") {
+      const quote = firstChar;
+      curr++;
+      const urlStart = curr;
+      let closed = false;
+
+      while (curr < len) {
+        const ch = text[curr]!;
+        if (ch === quote) {
+          closed = true;
+          break;
+        }
+        if (ch === "\r" || ch === "\n" || ch === "\f") {
+          break;
+        }
+        if (ch === "\\") {
+          curr++;
+          if (curr >= len) break;
+          if (/[0-9a-fA-F]/u.test(text[curr]!)) {
+            let hexDigits = 0;
+            while (
+              curr < len &&
+              /[0-9a-fA-F]/u.test(text[curr]!) &&
+              hexDigits < 6
+            ) {
+              curr++;
+              hexDigits++;
+            }
+            if (curr < len && /[\s\f]/u.test(text[curr]!)) {
+              curr++;
+            }
+            continue;
+          } else if (
+            text[curr] === "\r" &&
+            curr + 1 < len &&
+            text[curr + 1] === "\n"
+          ) {
+            curr += 2;
+            continue;
+          } else {
+            curr++;
+            continue;
+          }
+        }
+        curr++;
       }
-    },
-  );
+
+      if (!closed) {
+        pos = urlIdx + 4;
+        continue;
+      }
+
+      const urlEnd = curr;
+      curr++;
+
+      while (curr < len && /[\s\f]/u.test(text[curr]!)) {
+        curr++;
+      }
+
+      if (curr < len && text[curr] === ")") {
+        curr++;
+        matches.push({
+          start,
+          end: curr,
+          prefix: text.slice(start, urlStart),
+          rawUrl: text.slice(urlStart, urlEnd),
+          suffix: text.slice(urlEnd, curr),
+        });
+        pos = curr;
+      } else {
+        pos = urlIdx + 4;
+      }
+    } else if (firstChar !== ")") {
+      const urlStart = curr;
+      let closed = false;
+      let urlEnd = curr;
+
+      while (curr < len) {
+        const ch = text[curr]!;
+        if (ch === ")") {
+          closed = true;
+          urlEnd = curr;
+          curr++;
+          break;
+        }
+        if (/[\s\f]/u.test(ch)) {
+          urlEnd = curr;
+          while (curr < len && /[\s\f]/u.test(text[curr]!)) {
+            curr++;
+          }
+          if (curr < len && text[curr] === ")") {
+            closed = true;
+            curr++;
+          }
+          break;
+        }
+        if (
+          ch === '"' ||
+          ch === "'" ||
+          ch === "(" ||
+          /[\x00-\x08\x0B\x0E-\x1F\x7F]/u.test(ch)
+        ) {
+          break;
+        }
+        if (ch === "\\") {
+          curr++;
+          if (curr >= len) break;
+          if (/[0-9a-fA-F]/u.test(text[curr]!)) {
+            let hexDigits = 0;
+            while (
+              curr < len &&
+              /[0-9a-fA-F]/u.test(text[curr]!) &&
+              hexDigits < 6
+            ) {
+              curr++;
+              hexDigits++;
+            }
+            if (curr < len && /[\s\f]/u.test(text[curr]!)) {
+              curr++;
+            }
+            continue;
+          } else if (
+            text[curr] === "\r" ||
+            text[curr] === "\n" ||
+            text[curr] === "\f"
+          ) {
+            break;
+          } else {
+            curr++;
+            continue;
+          }
+        }
+        curr++;
+      }
+
+      if (closed) {
+        matches.push({
+          start,
+          end: curr,
+          prefix: text.slice(start, urlStart),
+          rawUrl: text.slice(urlStart, urlEnd),
+          suffix: text.slice(urlEnd, curr),
+        });
+        pos = curr;
+      } else {
+        pos = urlIdx + 4;
+      }
+    } else {
+      pos = curr + 1;
+    }
+  }
+
+  return matches;
+};
 
 export const redactCssUrlCredentials = (value: string): string => {
   if (
@@ -70,9 +239,27 @@ export const redactCssUrlCredentials = (value: string): string => {
   ) {
     return value;
   }
-  const step1 = redactUrlPattern(value, CSS_URL_DOUBLE_QUOTED_PATTERN);
-  const step2 = redactUrlPattern(step1, CSS_URL_SINGLE_QUOTED_PATTERN);
-  return redactUrlPattern(step2, CSS_URL_UNQUOTED_PATTERN);
+  const matches = findCssUrlMatches(value);
+  if (matches.length === 0) return value;
+
+  let result = "";
+  let lastIndex = 0;
+  for (const match of matches) {
+    result += value.slice(lastIndex, match.start);
+    try {
+      const sanitized = redactCssUrl(match.rawUrl);
+      if (sanitized.redacted) {
+        result += `${match.prefix}${sanitized.url}${match.suffix}`;
+      } else {
+        result += value.slice(match.start, match.end);
+      }
+    } catch {
+      result += value.slice(match.start, match.end);
+    }
+    lastIndex = match.end;
+  }
+  result += value.slice(lastIndex);
+  return result;
 };
 
 const emptyCssVariables = (

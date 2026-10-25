@@ -264,7 +264,7 @@ const browserSafeMetadataSchema = z.object({
 export const browserCssVariableItemSchema = z.object({
   name: z
     .string()
-    .regex(/^--[\p{L}\p{N}\p{M}_-]+$/u)
+    .regex(/^--[\p{L}\p{N}\p{M}_\-]+$/u)
     .max(128),
   value: z
     .string()
