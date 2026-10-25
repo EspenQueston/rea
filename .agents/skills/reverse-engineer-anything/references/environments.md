@@ -81,20 +81,28 @@ shape, with the application's own locators, paths and headers:
       "expected_status": [200]
     },
     {
-      "step_id": "create-folder-1",
-      "action": "request",
+      "step_id": "new-folder-1",
+      "action": "click",
       "timeout_ms": 15000,
-      "method": "POST",
-      "path": "/api/folders",
-      "json": { "title": "Scratch folder 1" },
-      "headers": [
-        {
-          "name": "X-CSRFToken",
-          "value": { "source": "cookie", "name": "csrftoken" }
-        }
-      ],
-      "save": [{ "name": "folder_1", "json_pointer": "/id" }],
-      "expected_status": [200, 201]
+      "locator": { "kind": "role", "role": "button", "name": "New folder" }
+    },
+    {
+      "step_id": "folder-title-1",
+      "action": "fill",
+      "timeout_ms": 15000,
+      "locator": { "kind": "css", "selector": "input[name=title]" },
+      "value": { "source": "literal", "value": "Scratch folder 1" }
+    },
+    {
+      "step_id": "create-folder-1",
+      "action": "click",
+      "timeout_ms": 15000,
+      "locator": { "kind": "role", "role": "button", "name": "Create" },
+      "save_response": {
+        "method": "POST",
+        "path": "/api/folders",
+        "save": [{ "name": "folder_1", "json_pointer": "/id" }]
+      }
     },
     {
       "step_id": "read-folder-1",
@@ -127,8 +135,10 @@ client with it. Match `wait_for` locators to exactly one element.
    `request` steps instead only when the UI cannot reach the operation (an
    API-only resource, or a UI that does not call the JSON API), or when coverage
    withholds the UI-shaped write as `unexplained-change` or `contradicted`;
-   that counts as one of the two re-recordings. If a journey cannot be
-   scripted, leave the write unserved and report the limitation.
+   that counts as one of the two re-recordings. A `request` step write that
+   coverage withholds that way usually lacks fields the UI sends: record it
+   through the UI instead. If a journey cannot be scripted, leave the write
+   unserved and report the limitation.
    Record two numbered scratch objects per write type,
    with varied free text. After each write, and before the next one, read the
    object back by id and then its list: create 1, read 1, list, create 2,
@@ -149,10 +159,9 @@ About `request` steps:
   base64 of `username:password` and redacted), with an optional `prefix` such as
   `"Bearer "` or `"Basic "`. Each credential part is a literal, secret, saved
   value, cookie or local storage entry, so a header the frontend builds from a
-  login token (the username and the token) can be copied too. An API that
-  takes Basic auth needs no session from the UI. Copy the
-  headers the application's own requests send (a CSRF header, a bearer
-  token). Values read from the page are redacted from records made after they
+  login token (the username and the token) can be copied too. Copy the
+  headers the application's own requests send (a CSRF header such as
+  `X-CSRFToken` from the `csrftoken` cookie, a bearer token). Values read from the page are redacted from records made after they
   are read, not from the login response that returned them, and values
   shorter than 8 characters are not redacted at all.
 - `save: [{name, json_pointer, secret}]` keeps a string or number from the
