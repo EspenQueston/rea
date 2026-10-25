@@ -126,8 +126,8 @@ charged for the copies their authentication or loading creates. An exact
 session reference to retained Evidence is borrowed without a copy, so only
 what matching derives from it is charged; the inventory's own Evidence ID is
 charged once, not per function. Selected observations are charged in full.
-Measured under the 96 MiB default with Ghidra-shaped rows, about 20-character names and no
-observations, about 22,000 rows per side fit through retained
+Measured under the 96 MiB default with Ghidra-shaped rows, about 20-character
+names and no observations, about 22,000 rows per side fit through retained
 `list_procedures` references, and about 10,000 through inline Evidence or CLI
 `source_bundle` inputs. Work yields to
 cancellation. No worker/provider concurrency is introduced; this budget is not
@@ -144,6 +144,7 @@ by matching only, and a runtime value repairs it. A refusal carries
 allowance lets matching retain more in the REA process. The 1 GiB maximum is
 an REA policy, not a host-capacity claim, and peak heap during a request can
 exceed the allowance.
+
 Summary delivery happens after complete matching Evidence is constructed and
 retained. It reduces the initial reply, but does not avoid that construction or
 raise the allowance. Repeated provenance remains
