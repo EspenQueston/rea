@@ -277,8 +277,8 @@ const decodeMethodDebug = (
       accessFlags: method.accessFlags,
       thisTypeIdx: classTypeIdx,
       paramTypes,
-      stringIdsSize: resolver.header.stringIdsSize,
-      typeIdsSize: resolver.header.typeIdsSize,
+      stringValid: resolver.isValidReference,
+      typeValid: resolver.isValidTypeReference,
     },
     options,
   );

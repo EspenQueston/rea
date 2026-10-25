@@ -247,8 +247,8 @@ describe("decodeDebugInfo pool references", () => {
     accessFlags: 0x8,
     thisTypeIdx: 0,
     paramTypes: dexParameterList([]),
-    stringIdsSize: 8,
-    typeIdsSize: 4,
+    stringValid: (idx: number) => idx < 8,
+    typeValid: (idx: number) => idx < 4,
   };
   const startLocal = (nameIdx: number, typeIdx: number): Uint8Array =>
     stream(
@@ -272,6 +272,17 @@ describe("decodeDebugInfo pool references", () => {
       true,
     );
     expect(decodeDebugInfo(startLocal(7, 4), 1, 4, layout).malformed).toBe(
+      true,
+    );
+  });
+
+  it("marks an in-pool reference the pools report unreadable malformed", () => {
+    const unreadable = { ...layout, stringValid: (idx: number) => idx !== 5 };
+    expect(decodeDebugInfo(startLocal(5, 3), 1, 4, unreadable).malformed).toBe(
+      true,
+    );
+    const badType = { ...layout, typeValid: (idx: number) => idx !== 3 };
+    expect(decodeDebugInfo(startLocal(7, 3), 1, 4, badType).malformed).toBe(
       true,
     );
   });

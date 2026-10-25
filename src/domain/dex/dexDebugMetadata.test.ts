@@ -302,6 +302,22 @@ describe("dexDebugMetadata checks the references a stream depends on", () => {
     expect(detail.value.methods[0]?.state).toBe("malformed");
   });
 
+  it("does not count a parameter name whose string data is unreadable as evidence", async () => {
+    const bytes = debuggableDex();
+    const view = new DataView(bytes.buffer);
+    const stringIdsOff = view.getUint32(60, true);
+    // string_id 2 ("x", the parameter name) stays in the pool, but its data
+    // lies past the end of the file; ART's verifier rejects such a file.
+    view.setUint32(stringIdsOff + 2 * 4, bytes.length + 0x1000, true);
+    const summary = await summaryOf(bytes);
+    expect(summary.unreadable.debugInfo).toBe(1);
+    expect(summary.methodsWithParameterNames).toBe(0);
+    expect(summary.readiness).toBe("unknown");
+    const detail = await detailOf(bytes);
+    if (!detail.ok || detail.value === null) throw new Error("class must read");
+    expect(detail.value.methods[0]?.state).toBe("malformed");
+  });
+
   it("counts a valid stream longer than two million opcodes in full", async () => {
     const bytes = debuggableDex(2_000_000);
     const parsed = parseDexFile(bytes);

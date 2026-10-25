@@ -50,6 +50,8 @@ export class DexStringResolver {
   private readonly view: DataView;
   readonly #strings = new Map<number, string | null>();
   readonly #bounds = new Map<number, number>();
+  /** Validity per `string_data` offset, so a reference is charged once. */
+  readonly #valid = new Map<number, boolean>();
   #retainedChars = 0;
   #retainedParams = 0;
   constructor(
@@ -93,9 +95,22 @@ export class DexStringResolver {
     if (raw === null) return false;
     if (this.#strings.has(raw.dataOffset))
       return this.#strings.get(raw.dataOffset) !== null;
+    const known = this.#valid.get(raw.dataOffset);
+    if (known !== undefined) return known;
     this.charge(raw.bytes.length);
-    return modifiedUtf8Units(raw.bytes) === raw.utf16Size;
+    const valid = modifiedUtf8Units(raw.bytes) === raw.utf16Size;
+    this.#remember(this.#valid, raw.dataOffset, valid);
+    return valid;
   }
+
+  /** {@link isValid} as a callback, for the debug stream's reference checks. */
+  readonly isValidReference = (index: number): boolean => this.isValid(index);
+
+  /** Whether a type id resolves to a readable descriptor string. */
+  readonly isValidTypeReference = (index: number): boolean => {
+    const stringIdx = this.#typeStringIndex(index);
+    return stringIdx !== null && this.isValid(stringIdx);
+  };
 
   /**
    * Upper bound on the JSON bytes `string(index)` serialises to (4 for `null`),

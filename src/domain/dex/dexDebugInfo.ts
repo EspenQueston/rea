@@ -53,12 +53,14 @@ export interface DexParameterLayout {
   /** `null` when the method's proto cannot be resolved (count unknown). */
   readonly paramTypes: DexParameterList | null;
   /**
-   * The member's `string_ids_size` and `type_ids_size`. ART's verifier rejects
-   * a stream whose name, type, signature or source-file reference falls outside
-   * them, so such a reference makes the stream malformed.
+   * Whether a string or type reference names a readable entry of the member's
+   * pools. ART's verifier rejects a stream whose name, type, signature or
+   * source-file reference falls outside them, and a file whose string data is
+   * unreadable, so such a reference makes the stream malformed rather than
+   * counting as surviving debug evidence.
    */
-  readonly stringIdsSize?: number;
-  readonly typeIdsSize?: number;
+  readonly stringValid?: (idx: number) => boolean;
+  readonly typeValid?: (idx: number) => boolean;
 }
 
 /**
@@ -249,16 +251,16 @@ export class DexDebugInfoWalk {
     return true;
   }
 
-  /** A string reference (`-1` = none) that lies inside the member's string_ids. */
+  /** A string reference (`-1` = none) naming a readable string. */
   private stringRef(idx: number): boolean {
-    const size = this.layout?.stringIdsSize;
-    return idx === -1 || size === undefined || idx < size;
+    const valid = this.layout?.stringValid;
+    return idx === -1 || valid === undefined || valid(idx);
   }
 
-  /** A type reference (`-1` = none) that lies inside the member's type_ids. */
+  /** A type reference (`-1` = none) naming a type with a readable descriptor. */
   private typeRef(idx: number): boolean {
-    const size = this.layout?.typeIdsSize;
-    return idx === -1 || size === undefined || idx < size;
+    const valid = this.layout?.typeValid;
+    return idx === -1 || valid === undefined || valid(idx);
   }
 
   /** Seed the implicit parameter locals (and `this`) live at address 0. */

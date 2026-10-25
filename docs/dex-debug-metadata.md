@@ -149,8 +149,9 @@ Limits and refusals a caller can meet:
   readiness), never "absent" or "stripped". So does a method whose proto
   parameter list cannot be read, or a `debug_info_item` whose parameter name,
   local name, type or signature, or `DBG_SET_FILE` name lies outside the
-  member's string or type pool, as ART's verifier rejects it: such a name is
-  never counted as surviving debug evidence.
+  member's string or type pool, or names a string whose data cannot be read,
+  as ART's verifier rejects both: such a name is never counted as surviving
+  debug evidence.
 - **Completed members survive a later failure.** When summarising several
   members, a refusal of a later member, a cancellation or a failed read still
   returns the members already summarised, as the failure's
