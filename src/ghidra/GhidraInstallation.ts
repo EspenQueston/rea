@@ -86,14 +86,18 @@ const nativeDecompilerRemediation = (
  * Remediation for a selected native decompiler built for another host.
  *
  * Discovery selects `os/` before `build/os/`, so a fresh `buildNatives` output
- * cannot displace a foreign `os/` executable until that file is removed.
+ * cannot displace a foreign `os/` executable until that file is removed. A
+ * foreign `build/os/` executable is itself stale `buildNatives` output.
  */
 const foreignNativeDecompilerRemediation = (
   path: string,
+  built: boolean,
   platform: NodeJS.Platform,
   architecture: NodeJS.Architecture,
   expected: string,
 ): string => {
+  if (built)
+    return `REA selects ${path}, but it is not built for ${expected}. Remove it and rerun ./gradlew buildNatives (or gradle buildNatives) from <GhidraInstallDir>/support/gradle/ to rebuild it for this host. REA does not build or install native tools.`;
   const directory = NATIVE_PLATFORMS[platform]?.[architecture];
   const executable = platform === "win32" ? "decompile.exe" : "decompile";
   const build =
@@ -143,6 +147,7 @@ type NativeDecompilerCompatibility =
  */
 const assessNativeDecompiler = (
   path: string,
+  built: boolean,
   platform: NodeJS.Platform,
   architecture: NodeJS.Architecture,
   probe: GhidraExecutableHeaderProbe | undefined,
@@ -196,6 +201,7 @@ const assessNativeDecompiler = (
     detail: `${path} reports ${observed}, but ${platform}/${architecture} requires ${expected}`,
     remediation: foreignNativeDecompilerRemediation(
       path,
+      built,
       platform,
       architecture,
       expected,
@@ -351,6 +357,8 @@ interface GhidraInstallationCoordinates {
   readonly applicationPropertiesPath: string | null;
   readonly analyzeHeadlessPath: string | null;
   readonly nativeDecompilerPath: string | null;
+  /** Whether the selected decompiler came from `build/os/` rather than `os/`. */
+  readonly nativeDecompilerBuilt: boolean;
   readonly nativeDecompilerHeader: Result<
     GhidraExecutableHeaderProbe | undefined,
     AnalysisError
@@ -516,30 +524,37 @@ const installationCoordinates = async (
   const decompilerPlatform = NATIVE_PLATFORMS[platform]?.[architecture];
   const decompilerExecutable =
     platform === "win32" ? "decompile.exe" : "decompile";
-  const nativeDecompilerPath =
+  const nativeDecompiler =
     installDir === null || decompilerPlatform === undefined
-      ? null
-      : ([
-          path.join(
-            installDir,
-            "Ghidra",
-            "Features",
-            "Decompiler",
-            "os",
-            decompilerPlatform,
-            decompilerExecutable,
-          ),
-          path.join(
-            installDir,
-            "Ghidra",
-            "Features",
-            "Decompiler",
-            "build",
-            "os",
-            decompilerPlatform,
-            decompilerExecutable,
-          ),
-        ].find((candidate) => host.executable(candidate)) ?? null);
+      ? undefined
+      : [
+          {
+            path: path.join(
+              installDir,
+              "Ghidra",
+              "Features",
+              "Decompiler",
+              "os",
+              decompilerPlatform,
+              decompilerExecutable,
+            ),
+            built: false,
+          },
+          {
+            path: path.join(
+              installDir,
+              "Ghidra",
+              "Features",
+              "Decompiler",
+              "build",
+              "os",
+              decompilerPlatform,
+              decompilerExecutable,
+            ),
+            built: true,
+          },
+        ].find((candidate) => host.executable(candidate.path));
+  const nativeDecompilerPath = nativeDecompiler?.path ?? null;
   const properties =
     applicationPropertiesPath === null
       ? undefined
@@ -663,6 +678,7 @@ const installationCoordinates = async (
     applicationPropertiesPath,
     analyzeHeadlessPath,
     nativeDecompilerPath,
+    nativeDecompilerBuilt: nativeDecompiler?.built ?? false,
     nativeDecompilerHeader,
     properties:
       properties === undefined
@@ -911,6 +927,7 @@ const nativeDecompilerCheck = ({
           }
         : assessNativeDecompiler(
             path,
+            coordinates.nativeDecompilerBuilt,
             platform,
             architecture,
             coordinates.nativeDecompilerHeader.value,

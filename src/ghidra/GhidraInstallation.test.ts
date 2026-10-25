@@ -1574,7 +1574,7 @@ describe("Ghidra native decompiler remediation", () => {
     ).toMatchObject({
       status: "failed",
       detail: `${built} reports elf x86_64, but darwin/arm64 requires mach-o arm64`,
-      remediation: `REA selects ${built} (os/ takes precedence over build/os/), but it is not built for mach-o arm64. Remove it or replace it with an executable built for mach-o arm64. To build one with Ghidra's buildNatives task instead, remove it first so REA selects build/os/mac_arm_64/decompile. REA does not build or install native tools.`,
+      remediation: `REA selects ${built}, but it is not built for mach-o arm64. Remove it and rerun ./gradlew buildNatives (or gradle buildNatives) from <GhidraInstallDir>/support/gradle/ to rebuild it for this host. REA does not build or install native tools.`,
     });
   });
 });
