@@ -1,23 +1,35 @@
 import { execFile } from "node:child_process";
 import { performance } from "node:perf_hooks";
 import { promisify } from "node:util";
+import { setTimeout as delay } from "node:timers/promises";
 
 import {
   errorMessage,
   readNativeProcessIdentityMap,
   readProcessOwnershipFacts,
+  settleExitingProcessIdentities,
   systemProcessOwnershipHost as systemHost,
 } from "./ProcessOwnershipObservation.js";
 import { launcherIdentityFailure } from "./ProcessOwnershipIdentity.js";
 import { descendantsOf, liveProcesses } from "./ProcessOwnershipProcessTree.js";
-import { readProcessRunTokens } from "./ProcessRunTokenObservations.js";
+import {
+  processRunIdFromEnvironment,
+  readProcessRunTokens,
+} from "./ProcessRunTokenObservations.js";
 import { compareUnicodeCodePoints } from "../domain/unicodeCodePointOrder.js";
+import type { LinuxEnvironmentRestriction } from "./LinuxProcessStatus.js";
 import { ProcessOwnershipEvidenceOwner } from "./ProcessOwnershipEvidence.js";
 
-const execFileAsync = promisify(execFile);
+import {
+  PROCESS_CLEANUP_VERIFICATION_GRACE_MS,
+  PROCESS_CLEANUP_VERIFICATION_INTERVAL_MS,
+  processIdentityHasExited,
+  processIdentityIsExiting,
+  type ProcessLifecycleObservation,
+  type ProcessExitSettlementBudget,
+} from "./ProcessLifecycle.js";
 
-const PROCESS_CLEANUP_VERIFICATION_GRACE_MS = 1_000;
-const PROCESS_CLEANUP_VERIFICATION_INTERVAL_MS = 25;
+const execFileAsync = promisify(execFile);
 
 /** Shared fields for a process group acquired by a resource owner. */
 interface OwnedProcessGroupFacts {
@@ -82,6 +94,8 @@ export type ProcessIdentityObservation =
       readonly identity: string;
       /** Effective UID from the same native observation, when that boundary reports it. */
       readonly effectiveUid?: number;
+      /** Linux procfs reason the kernel withholds this generation's environment from REA. */
+      readonly environmentRestriction?: LinuxEnvironmentRestriction;
       /** Kept separate from the start identity; optional for older/custom hosts. */
       readonly lifecycle?: ProcessLifecycleObservation;
       /** Native relation facts read with this identity, never copied from a process-table row. */
@@ -98,14 +112,6 @@ export type ProcessIdentityObservation =
     }
   | { readonly state: "unavailable"; readonly reason: string };
 
-/** Native lifecycle fact observed alongside (but independent of) start identity. */
-export type ProcessLifecycleObservation =
-  | {
-      readonly state: "observed";
-      readonly lifecycle: "non-zombie" | "zombie";
-    }
-  | { readonly state: "unavailable"; readonly reason: string };
-
 /** Parent and process-group membership from the same native identity read. */
 export type ProcessNativeRelationObservation =
   | {
@@ -116,7 +122,7 @@ export type ProcessNativeRelationObservation =
   | { readonly state: "unavailable"; readonly reason: string };
 
 /** One caller-supplied process row validated across identity/token/identity reads. */
-export interface ProcessOwnershipFact {
+interface ProcessOwnershipFactSnapshot {
   /** Caller-supplied candidate row; its parent/group may predate this read. */
   readonly process: ProcessTableEntry;
   /** Identity relation only; token ownership still requires matching readable runId. */
@@ -126,6 +132,11 @@ export interface ProcessOwnershipFact {
   readonly token: ProcessRunTokenObservation;
   /** Current membership is only this read's native relation, when available. */
   readonly identityAfter: ProcessIdentityObservation;
+}
+
+export interface ProcessOwnershipFact extends ProcessOwnershipFactSnapshot {
+  /** Bracketed ownership proof before a later native exit observation. */
+  readonly beforeExitSettlement?: ProcessOwnershipFactSnapshot;
 }
 
 /** Token-verified process lineage retained for one owned provider run. */
@@ -179,6 +190,8 @@ export interface ProcessOwnershipHost {
   processIdentities?(
     processes: readonly ProcessTableEntry[],
     signal?: AbortSignal,
+    /** Linux credential enrichment is selective; omitted means UID and environment restriction remain unknown. */
+    credentialPids?: ReadonlySet<number>,
   ): Promise<ReadonlyMap<number, ProcessIdentityObservation>>;
   /** Snapshot identities before launch, honoring startup cancellation. */
   captureBaseline?(signal?: AbortSignal): Promise<ProcessOwnershipBaseline>;
@@ -300,7 +313,7 @@ export const readProcessRunId = async (
   host: ProcessOwnershipHost = systemHost,
   signal?: AbortSignal,
 ): Promise<string | undefined> =>
-  (await host.environment(pid, signal)).REA_PROCESS_RUN_ID;
+  processRunIdFromEnvironment(await host.environment(pid, signal));
 
 /** Merge duplicate uncertainty rows from discovery and final verification. */
 const mergeUnverifiedObservations = (
@@ -319,11 +332,19 @@ const mergeUnverifiedObservations = (
   return { ...result, unverified: merged };
 };
 
+/**
+ * Times one group may be revalidated in a single cleanup. The second pass
+ * covers a group that reappears after it was already processed. Another
+ * appearance stays unresolved instead of reporting success.
+ */
+const OWNED_GROUP_REVALIDATION_LIMIT = 2;
+
 /** Token-validate every rooted POSIX process group before signaling any. */
 export const cleanupOwnedProcessGroup = async (
   ownership: OwnedProcessGroup,
   host: ProcessOwnershipHost = systemHost,
 ): Promise<ProcessCleanupResult> => {
+  const exitSettlement: ProcessExitSettlementBudget = { deadline: undefined };
   const processTable = await readLiveProcessTable(host);
   if (!processTable.available)
     return {
@@ -334,18 +355,49 @@ export const cleanupOwnedProcessGroup = async (
     ownership,
     processTable.processes,
     host,
+    exitSettlement,
   );
   if ("cleaned" in plan) return plan;
   let signaled = false;
-  for (const processGroupId of plan.signalOrder) {
+  const pendingGroups = [...plan.signalOrder];
+  const pending = new Set(pendingGroups);
+  const passes = new Map<number, number>();
+  while (pendingGroups.length > 0) {
+    const processGroupId = pendingGroups.shift();
+    if (processGroupId === undefined) break;
+    pending.delete(processGroupId);
+    const seen = passes.get(processGroupId) ?? 0;
+    if (seen >= OWNED_GROUP_REVALIDATION_LIMIT)
+      return mergeUnverifiedObservations(
+        {
+          cleaned: false,
+          reason: `owned process group ${String(processGroupId)} reappeared after ${String(OWNED_GROUP_REVALIDATION_LIMIT)} revalidation passes. This release has no runtime override.`,
+        },
+        plan.unverified,
+      );
+    passes.set(processGroupId, seen + 1);
     const revalidation = await revalidateOwnedProcessGroup(
       processGroupId,
       ownership,
       host,
       plan.tokenOwnedIdentities,
+      exitSettlement,
     );
     if ("cleaned" in revalidation)
       return mergeUnverifiedObservations(revalidation, plan.unverified);
+    for (const groupId of revalidation.escapedProcessGroupIds) {
+      if (groupId === processGroupId || pending.has(groupId)) continue;
+      if ((passes.get(groupId) ?? 0) >= OWNED_GROUP_REVALIDATION_LIMIT)
+        return mergeUnverifiedObservations(
+          {
+            cleaned: false,
+            reason: `owned process group ${String(groupId)} reappeared after ${String(OWNED_GROUP_REVALIDATION_LIMIT)} revalidation passes. This release has no runtime override.`,
+          },
+          plan.unverified,
+        );
+      pending.add(groupId);
+      pendingGroups.push(groupId);
+    }
     if (revalidation.empty) continue;
     try {
       host.signalGroup(processGroupId, "SIGKILL");
@@ -383,21 +435,20 @@ export const cleanupOwnedProcessGroup = async (
         host,
         ownership.captureBaseline,
         relation,
+        exitSettlement,
       );
       while (!verification.cleaned) {
         const remaining = deadline - performance.now();
         if (remaining <= 0) break;
-        await new Promise<void>((resolve) =>
-          setTimeout(
-            resolve,
-            Math.min(PROCESS_CLEANUP_VERIFICATION_INTERVAL_MS, remaining),
-          ),
+        await delay(
+          Math.min(PROCESS_CLEANUP_VERIFICATION_INTERVAL_MS, remaining),
         );
         verification = await verifyNoTokenOwnedProcesses(
           ownership.runId,
           host,
           ownership.captureBaseline,
           relation,
+          exitSettlement,
         );
       }
     } catch (cause: unknown) {
@@ -429,6 +480,7 @@ export const verifyNoTokenOwnedProcesses = async (
   host: ProcessOwnershipHost = systemHost,
   captureBaseline?: ProcessOwnershipBaseline,
   relation?: OwnershipSweepRelation,
+  exitSettlement: ProcessExitSettlementBudget = { deadline: undefined },
 ): Promise<ProcessCleanupResult> => {
   const processTable = await readLiveProcessTable(host);
   if (!processTable.available)
@@ -442,6 +494,7 @@ export const verifyNoTokenOwnedProcesses = async (
     host,
     captureBaseline,
     relation,
+    exitSettlement,
   );
   if (scan.failures.length > 0)
     return cleanupValidationFailure(scan.failures, scan.unverified);
@@ -482,6 +535,12 @@ interface OwnedCleanupPlan {
   readonly tokenOwnedIdentities: ReadonlyMap<number, string | null>;
   readonly unresolved: readonly ProcessOwnershipValidationFailure[];
   readonly unverified: readonly OwnershipSweepUnverifiedProcess[];
+}
+
+/** Process table retained after launcher-exit settlement, plus groups proven by token. */
+interface SettledProcessTable {
+  readonly processes: readonly ProcessTableEntry[];
+  readonly escapedProcessGroupIds: readonly number[];
 }
 
 interface ProcessRelationSnapshot {
@@ -526,12 +585,7 @@ const readProcessRelationSnapshot = async (
   const failures: ProcessOwnershipValidationFailure[] = [];
   for (const process of processes) {
     const identity = identities.get(process.pid);
-    if (
-      identity?.state === "readable" &&
-      identity.lifecycle?.state === "observed" &&
-      identity.lifecycle.lifecycle === "zombie"
-    )
-      continue;
+    if (processIdentityHasExited(identity)) continue;
     if (
       identity?.state === "readable" &&
       identity.relation?.state === "observed"
@@ -553,31 +607,208 @@ const readProcessRelationSnapshot = async (
   return { currentRelations, identities, failures };
 };
 
+const settledProcessTable = (
+  processes: readonly ProcessTableEntry[],
+): SettledProcessTable => ({
+  processes,
+  escapedProcessGroupIds: [],
+});
+
+/** Confirmation tables taken after an unreadable exit-refresh row disappears. */
+const EXIT_REFRESH_CONFIRMATION_LIMIT = 8;
+
+/** Parent and group recorded for a PID in the pre-exit process table. */
+interface InitialProcessRelation {
+  readonly parentPid: number;
+  readonly processGroupId: number;
+}
+
+/**
+ * Newcomers are token-checked. A PID from the pre-exit table is checked only
+ * when its parent or group changed, which is the identityless sign that the
+ * PID may have been reused. An unchanged pre-existing row stays unread.
+ */
+const isExitRefreshCandidate = (
+  process: ProcessTableEntry,
+  ownership: OwnedProcessGroup,
+  initialRelations: ReadonlyMap<number, InitialProcessRelation>,
+): boolean => {
+  if (process.processGroupId === ownership.processGroupId) return false;
+  const initial = initialRelations.get(process.pid);
+  return (
+    initial === undefined ||
+    initial.parentPid !== process.parentPid ||
+    initial.processGroupId !== process.processGroupId
+  );
+};
+
+/**
+ * Token-check rows that exist only in the post-exit table. A prior PID, group,
+ * or ancestry link is handled by the caller; these rows have none of those.
+ * Foreign tokens are not owned. A matching token authorizes only a group whose
+ * leader also carries that token. An unreadable live row stays unresolved.
+ */
+const classifyUnlinkedExitRows = async (
+  ownership: OwnedProcessGroup,
+  refreshed: readonly ProcessTableEntry[],
+  unlinked: readonly ProcessTableEntry[],
+  host: ProcessOwnershipHost,
+  initialRelations: ReadonlyMap<number, InitialProcessRelation>,
+): Promise<
+  | { readonly kind: "clear"; readonly processes: readonly ProcessTableEntry[] }
+  | { readonly kind: "uncertain"; readonly reason: string }
+  | {
+      readonly kind: "escaped";
+      readonly processes: readonly ProcessTableEntry[];
+      readonly groupIds: readonly number[];
+    }
+> => {
+  let current = refreshed;
+  let pending = unlinked;
+  let confirmations = 0;
+  const matched: ProcessTableEntry[] = [];
+  const inspected = new Set<number>();
+  // A readable token does not expire when the PID's parent and group return
+  // to the pre-exit values. Those PIDs are read again on the next table.
+  const tokenRead = new Set<number>();
+  while (pending.length > 0) {
+    const due = pending.filter((process) => !inspected.has(process.pid));
+    if (due.length === 0) break;
+    for (const process of due) inspected.add(process.pid);
+    const unreadable: { readonly pid: number; readonly reason: string }[] = [];
+    for await (const { process, observation } of readProcessRunTokens(
+      host,
+      due,
+    )) {
+      if (observation.state === "readable") {
+        tokenRead.add(process.pid);
+        if (observation.runId === ownership.runId) matched.push(process);
+        continue;
+      }
+      unreadable.push({ pid: process.pid, reason: observation.reason });
+    }
+    if (unreadable.length === 0) break;
+    let liveRows: readonly ProcessTableEntry[] | undefined;
+    try {
+      liveRows = liveProcesses(await host.listProcesses());
+    } catch (cause: unknown) {
+      void cause;
+      liveRows = undefined;
+    }
+    const live =
+      liveRows === undefined
+        ? undefined
+        : new Set(liveRows.map(({ pid }) => pid));
+    const stillLive = unreadable.filter(
+      (candidate) => live === undefined || live.has(candidate.pid),
+    );
+    if (stillLive.length > 0) {
+      const only = stillLive.length === 1 ? stillLive[0] : undefined;
+      const pids = stillLive
+        .map(({ pid }) => pid)
+        .sort((left, right) => left - right);
+      return {
+        kind: "uncertain",
+        reason:
+          only === undefined
+            ? `process ownership could not be revalidated for PID(s): ${pids.join(", ")}`
+            : `process ownership could not be revalidated for PID ${String(only.pid)}: ${only.reason}`,
+      };
+    }
+    if (liveRows === undefined) break;
+    confirmations += 1;
+    if (confirmations > EXIT_REFRESH_CONFIRMATION_LIMIT)
+      return {
+        kind: "uncertain",
+        reason: `process ownership could not be revalidated: the exit refresh confirmation limit of ${String(EXIT_REFRESH_CONFIRMATION_LIMIT)} reads was exceeded. This release has no runtime override.`,
+      };
+    // The confirmation read is its own table. A PID classified on the previous
+    // table, including a readable foreign token, does not identify the process
+    // now using that PID. Read newcomers again, read a pre-exit PID again
+    // when its parent or group changed, and read a PID again when its token
+    // was already read even if that parent and group have returned.
+    current = liveRows;
+    inspected.clear();
+    matched.length = 0;
+    pending = current.filter(
+      (process) =>
+        tokenRead.has(process.pid) ||
+        isExitRefreshCandidate(process, ownership, initialRelations),
+    );
+  }
+  const livePids = new Set(current.map(({ pid }) => pid));
+  const stillMatched = matched.filter((process) => livePids.has(process.pid));
+  if (stillMatched.length === 0) return { kind: "clear", processes: current };
+  const matchedPids = new Set(stillMatched.map(({ pid }) => pid));
+  const groupIds = new Set<number>();
+  for (const process of stillMatched) {
+    const leader = current.find(
+      (candidate) =>
+        candidate.pid === process.processGroupId &&
+        candidate.processGroupId === process.processGroupId,
+    );
+    if (leader === undefined || !matchedPids.has(leader.pid))
+      return {
+        kind: "uncertain",
+        reason:
+          "descendant process-group leader identity could not be verified",
+      };
+    groupIds.add(process.processGroupId);
+  }
+  return {
+    kind: "escaped",
+    processes: current,
+    groupIds: [...groupIds].sort((left, right) => left - right),
+  };
+};
+
 // A process-table read can race exit and retain the old state with an altered
-// command. Only a fresh table proving that PID is no longer live can settle
-// that mismatch; surviving group members still require normal token checks.
+// command. Native terminal facts can settle that mismatch; exit-in-progress
+// must be confirmed first. Surviving members still require normal token checks.
 const settleLauncherExit = async (
   ownership: OwnedProcessGroup,
   processes: readonly ProcessTableEntry[],
   host: ProcessOwnershipHost,
+  exitSettlement: ProcessExitSettlementBudget,
 ): Promise<
-  | readonly ProcessTableEntry[]
+  | SettledProcessTable
   | Extract<ProcessCleanupResult, { readonly cleaned: false }>
 > => {
   const launcher = processes.find(({ pid }) => pid === ownership.leaderPid);
-  if (launcher === undefined) return processes;
+  if (launcher === undefined) return settledProcessTable(processes);
   let identityCheckedLauncher = launcher;
   if (host.processIdentities !== undefined) {
-    const identities = await readNativeProcessIdentityMap([launcher], host);
+    const initialIdentities = await readNativeProcessIdentityMap(
+      [launcher],
+      host,
+    );
+    const identities = await settleExitingProcessIdentities(
+      [launcher],
+      host,
+      initialIdentities,
+      undefined,
+      exitSettlement,
+    );
     const identity = identities.get(launcher.pid);
-    if (identity?.state === "absent")
-      return processes.filter(({ pid }) => pid !== launcher.pid);
+    const initialIdentity = initialIdentities.get(launcher.pid);
     if (
+      initialIdentity?.state === "readable" &&
       identity?.state === "readable" &&
-      identity.lifecycle?.state === "observed" &&
-      identity.lifecycle.lifecycle === "zombie"
+      initialIdentity.identity !== identity.identity
     )
-      return processes.filter(({ pid }) => pid !== launcher.pid);
+      return {
+        cleaned: false,
+        reason: "owned launcher identity changed while verifying exit",
+      };
+    if (processIdentityIsExiting(identity))
+      return {
+        cleaned: false,
+        reason: "owned launcher exit could not be confirmed",
+      };
+    if (processIdentityHasExited(identity))
+      return settledProcessTable(
+        processes.filter(({ pid }) => pid !== launcher.pid),
+      );
     if (
       identity?.state !== "readable" ||
       identity.relation?.state !== "observed"
@@ -593,7 +824,7 @@ const settleLauncherExit = async (
     };
   }
   const reason = launcherIdentityFailure(identityCheckedLauncher, ownership);
-  if (reason === null) return processes;
+  if (reason === null) return settledProcessTable(processes);
   // A native identity read already says that the launcher still exists and
   // supplies its current parent/group relation. Refreshing the process table
   // cannot repair a command or launch-relation mismatch for that generation.
@@ -626,7 +857,36 @@ const settleLauncherExit = async (
       )
     )
       return { cleaned: false, reason };
-    return refreshed.processes;
+    const initialRelations = new Map(
+      processes.map((process) => [
+        process.pid,
+        {
+          parentPid: process.parentPid,
+          processGroupId: process.processGroupId,
+        },
+      ]),
+    );
+    const unlinked = refreshed.processes.filter(
+      (process) =>
+        isExitRefreshCandidate(process, ownership, initialRelations) &&
+        !descendantPids.has(process.pid) &&
+        !descendantGroupIds.has(process.processGroupId) &&
+        !refreshedDescendantPids.has(process.pid),
+    );
+    const classified = await classifyUnlinkedExitRows(
+      ownership,
+      refreshed.processes,
+      unlinked,
+      host,
+      initialRelations,
+    );
+    if (classified.kind === "uncertain")
+      return { cleaned: false, reason: classified.reason };
+    return {
+      processes: classified.processes,
+      escapedProcessGroupIds:
+        classified.kind === "escaped" ? classified.groupIds : [],
+    };
   }
   return { cleaned: false, reason };
 };
@@ -635,9 +895,17 @@ const createOwnedCleanupPlan = async (
   ownership: OwnedProcessGroup,
   initialProcesses: readonly ProcessTableEntry[],
   host: ProcessOwnershipHost,
+  exitSettlement: ProcessExitSettlementBudget,
 ): Promise<OwnedCleanupPlan | ProcessCleanupResult> => {
-  const processes = await settleLauncherExit(ownership, initialProcesses, host);
-  if ("cleaned" in processes) return processes;
+  const settled = await settleLauncherExit(
+    ownership,
+    initialProcesses,
+    host,
+    exitSettlement,
+  );
+  if ("cleaned" in settled) return settled;
+  const processes = settled.processes;
+  const escapedProcessGroupIds = new Set(settled.escapedProcessGroupIds);
   const relationSnapshot = await readProcessRelationSnapshot(
     ownership,
     processes,
@@ -664,6 +932,7 @@ const createOwnedCleanupPlan = async (
               ? {}
               : { sampledProcessGroupIds: [...sampledProcessGroupIds] }),
           },
+          exitSettlement,
         )
       : { owned: [], failures: [], unverified: [], identities: new Map() };
   const tokenOwnedGroupIds = new Set(
@@ -679,6 +948,7 @@ const createOwnedCleanupPlan = async (
     launcher === undefined &&
     rootMembers.length === 0 &&
     tokenOwned.owned.length === 0 &&
+    escapedProcessGroupIds.size === 0 &&
     !relationSnapshot.currentRelations.some(({ processGroupId }) =>
       sampledProcessGroupIds.has(processGroupId),
     )
@@ -713,6 +983,8 @@ const createOwnedCleanupPlan = async (
     processGroupIds.add(process.processGroupId);
   for (const processGroupId of sampledProcessGroupIds)
     processGroupIds.add(processGroupId);
+  for (const processGroupId of escapedProcessGroupIds)
+    processGroupIds.add(processGroupId);
   const signalableGroups = new Set<number>();
   const unresolved = [...tokenOwned.failures, ...relationSnapshot.failures];
   const unverifiableSampledGroups = new Set<number>();
@@ -722,9 +994,12 @@ const createOwnedCleanupPlan = async (
       ({ pid, processGroupId: observedGroupId }) =>
         pid === processGroupId && observedGroupId === processGroupId,
     );
+    const provenGroup =
+      tokenOwnedGroupIds.has(processGroupId) ||
+      escapedProcessGroupIds.has(processGroupId);
     if (
       (groupLeader === undefined || !descendantPids.has(groupLeader.pid)) &&
-      !tokenOwnedGroupIds.has(processGroupId) &&
+      !provenGroup &&
       !sampledProcessGroupIds.has(processGroupId)
     )
       return {
@@ -734,7 +1009,7 @@ const createOwnedCleanupPlan = async (
       };
     if (
       (groupLeader === undefined || !descendantPids.has(groupLeader.pid)) &&
-      !tokenOwnedGroupIds.has(processGroupId)
+      !provenGroup
     )
       unverifiableSampledGroups.add(processGroupId);
   }
@@ -752,6 +1027,7 @@ const createOwnedCleanupPlan = async (
       ownership.runId,
       host,
       tokenOwned.identities,
+      exitSettlement,
     );
     if (failures.length === 0 && unverifiableSampledGroups.has(processGroupId))
       unresolved.push(
@@ -827,15 +1103,26 @@ const revalidateOwnedProcessGroup = async (
   ownership: OwnedProcessGroup,
   host: ProcessOwnershipHost,
   expectedIdentities: ReadonlyMap<number, string | null>,
-): Promise<{ readonly empty: boolean } | ProcessCleanupResult> => {
+  exitSettlement: ProcessExitSettlementBudget,
+): Promise<
+  | {
+      readonly empty: boolean;
+      readonly escapedProcessGroupIds: readonly number[];
+    }
+  | ProcessCleanupResult
+> => {
   let members: readonly ProcessTableEntry[];
+  let escapedProcessGroupIds: readonly number[] = [];
   try {
-    const processes = await settleLauncherExit(
+    const settled = await settleLauncherExit(
       ownership,
       liveProcesses(await host.listProcesses()),
       host,
+      exitSettlement,
     );
-    if ("cleaned" in processes) return processes;
+    if ("cleaned" in settled) return settled;
+    escapedProcessGroupIds = settled.escapedProcessGroupIds;
+    const processes = settled.processes;
     const relationSnapshot = await readProcessRelationSnapshot(
       ownership,
       processes,
@@ -858,6 +1145,7 @@ const revalidateOwnedProcessGroup = async (
     ownership.runId,
     host,
     expectedIdentities,
+    exitSettlement,
   );
   if (failures.length > 0) return cleanupValidationFailure(failures);
   if (
@@ -871,7 +1159,7 @@ const revalidateOwnedProcessGroup = async (
       reason:
         "descendant process-group leader identity could not be revalidated",
     };
-  return { empty: members.length === 0 };
+  return { empty: members.length === 0, escapedProcessGroupIds };
 };
 
 const cleanupValidationFailure = (
@@ -970,18 +1258,24 @@ const processOwnershipFailures = async (
   runId: string,
   host: ProcessOwnershipHost,
   expectedIdentities: ReadonlyMap<number, string | null> = new Map(),
+  exitSettlement: ProcessExitSettlementBudget = { deadline: undefined },
 ): Promise<readonly ProcessOwnershipValidationFailure[]> => {
   if (host.processIdentities !== undefined) {
-    const facts = await readProcessOwnershipFacts(members, host);
+    const facts = await readProcessOwnershipFacts(members, host, undefined, {
+      exitSettlement,
+    });
     const failures: ProcessOwnershipValidationFailure[] = [];
     for (const fact of facts) {
-      if (fact.identityAfter.state === "absent") continue;
-      if (
-        fact.identityAfter.state === "readable" &&
-        fact.identityAfter.lifecycle?.state === "observed" &&
-        fact.identityAfter.lifecycle.lifecycle === "zombie"
-      )
+      if (processIdentityHasExited(fact.identityAfter)) continue;
+      if (processIdentityIsExiting(fact.identityAfter)) {
+        failures.push({
+          pid: fact.process.pid,
+          reason: "process-identity-unavailable",
+          diagnostic:
+            "native process exit could not be confirmed before signal",
+        });
         continue;
+      }
       const relation =
         fact.identityAfter.state === "readable" &&
         fact.identityAfter.relation?.state === "observed"
@@ -1085,9 +1379,7 @@ const recheckOwnershipFailures = async (
       );
       attempt += 1
     ) {
-      await new Promise<void>((resolve) =>
-        setTimeout(resolve, TOKEN_READ_RETRY_DELAY_MS),
-      );
+      await delay(TOKEN_READ_RETRY_DELAY_MS);
       processes = await host.listProcesses();
     }
     const live = new Set(liveProcesses(processes).map(({ pid }) => pid));
@@ -1136,15 +1428,19 @@ const currentProcessUid = (): number | undefined =>
  * Whether the operating system provably withheld this candidate's run token:
  * current macOS omits the environment of Apple platform binaries and
  * CS_RESTRICT processes from KERN_PROCARGS2, and fails with EINVAL for
- * processes owned by another account. These classes cannot be token-verified
- * by this caller. An unrelated candidate is recorded as unverified instead
- * of failing an otherwise clean capture; every related or otherwise
- * unreadable candidate stays fail-closed.
+ * processes owned by another account. Linux denies `/proc/<pid>/environ` for
+ * another account, mismatched real/saved IDs (setgid and setuid programs) and
+ * non-dumpable processes. These classes cannot be token-verified by this
+ * caller. An unrelated candidate is recorded as unverified instead of failing
+ * an otherwise clean capture; every related or otherwise unreadable candidate
+ * stays fail-closed.
  */
 const environmentWithheldFromInspection = (
   diagnostic: string,
   observedUid: number | undefined,
+  restriction?: LinuxEnvironmentRestriction,
 ): boolean => {
+  if (restriction !== undefined) return true;
   const uid = currentProcessUid();
   if (uid !== undefined && observedUid !== undefined && observedUid !== uid)
     return true;
@@ -1160,6 +1456,7 @@ const scanTokenOwnedProcesses = async (
   host: ProcessOwnershipHost,
   captureBaseline?: ProcessOwnershipBaseline,
   relation?: OwnershipSweepRelation,
+  exitSettlement: ProcessExitSettlementBudget = { deadline: undefined },
 ): Promise<TokenOwnedProcessScan> => {
   if (host.processIdentities !== undefined)
     return scanWithOwnershipEvidence(
@@ -1168,6 +1465,7 @@ const scanTokenOwnedProcesses = async (
       host,
       captureBaseline,
       relation,
+      exitSettlement,
     );
 
   const candidates = processes;
@@ -1260,6 +1558,7 @@ const scanWithOwnershipEvidence = async (
   host: ProcessOwnershipHost,
   captureBaseline: ProcessOwnershipBaseline | undefined,
   relation: OwnershipSweepRelation | undefined,
+  exitSettlement: ProcessExitSettlementBudget,
 ): Promise<TokenOwnedProcessScan> => {
   const evidenceOwner =
     relation === undefined
@@ -1289,21 +1588,14 @@ const scanWithOwnershipEvidence = async (
     observationRows,
     host,
   );
-  const baselineIdentityFailures: ProcessOwnershipValidationFailure[] = [];
   const candidates = observationRows.filter((process) => {
     if (retainedPids.has(process.pid)) return true;
     if (!baseline.has(process.pid)) return true;
     const before = baseline.get(process.pid);
     const now = firstIdentities.get(process.pid);
     if (before === null || now?.state !== "readable") {
-      baselineIdentityFailures.push({
-        pid: process.pid,
-        reason: "process-identity-unavailable",
-        diagnostic: "process identity was unavailable during token validation",
-      });
-      // Keep the row in the owning fact pass. The failure is not evidence that
-      // the process is absent, and a related unknown generation must survive
-      // a later process-table omission.
+      // The baseline selects candidates; current native facts and retained
+      // ownership evidence decide identity, liveness and applicability.
       return true;
     }
     return now.identity !== before;
@@ -1317,25 +1609,27 @@ const scanWithOwnershipEvidence = async (
     undefined,
     {
       identityBefore: firstIdentities,
+      exitSettlement,
     },
   );
   let facts = initialFacts;
-  for (
-    let attempt = 0;
-    attempt < TOKEN_READ_RETRY_ATTEMPTS &&
-    facts.some(({ token }) => token.state === "unavailable");
-    attempt += 1
-  ) {
-    await new Promise<void>((resolve) =>
-      setTimeout(resolve, TOKEN_READ_RETRY_DELAY_MS),
+  for (let attempt = 0; attempt < TOKEN_READ_RETRY_ATTEMPTS; attempt += 1) {
+    const retryRows = facts
+      .filter(
+        ({ token, identityAfter }) =>
+          token.state === "unavailable" &&
+          !processIdentityHasExited(identityAfter) &&
+          !processIdentityIsExiting(identityAfter),
+      )
+      .map(({ process }) => process);
+    if (retryRows.length === 0) break;
+    await delay(TOKEN_READ_RETRY_DELAY_MS);
+    const retries = await readProcessOwnershipFacts(
+      retryRows,
+      host,
+      undefined,
+      { exitSettlement },
     );
-    const pendingPids = new Set(
-      facts
-        .filter(({ token }) => token.state === "unavailable")
-        .map(({ process }) => process.pid),
-    );
-    const retryRows = candidates.filter(({ pid }) => pendingPids.has(pid));
-    const retries = await readProcessOwnershipFacts(retryRows, host);
     const retryByPid = new Map(retries.map((fact) => [fact.process.pid, fact]));
     facts = facts.map((fact) => retryByPid.get(fact.process.pid) ?? fact);
   }
@@ -1356,24 +1650,24 @@ const scanWithOwnershipEvidence = async (
   const retainedByPid = new Map(
     retained.map((candidate) => [candidate.pid, candidate]),
   );
-  const failures: ProcessOwnershipValidationFailure[] = [
-    ...baselineIdentityFailures,
-  ];
+  const failures: ProcessOwnershipValidationFailure[] = [];
   const unverified: OwnershipSweepUnverifiedProcess[] = [];
   const owned: ProcessTableEntry[] = [];
   const identities = new Map<number, string | null>();
 
   for (const fact of facts) {
+    // The table row and baseline predate the final native observation. An
+    // exited candidate needs no ownership proof or signal, even when its
+    // token became unreadable while exiting. Unknown native state stays a
+    // cleanup failure; table omission alone is never proof of exit.
+    if (processIdentityHasExited(fact.identityAfter)) continue;
     if (fact.state === "replaced")
       failures.push({
         pid: fact.process.pid,
         reason: "process-identity-unavailable",
         diagnostic: "process identity changed during token validation",
       });
-    else if (
-      fact.state === "unavailable" &&
-      fact.identityAfter.state !== "absent"
-    )
+    else if (fact.state === "unavailable")
       failures.push({
         pid: fact.process.pid,
         reason: "process-identity-unavailable",
@@ -1392,7 +1686,6 @@ const scanWithOwnershipEvidence = async (
         reason: "run-token-mismatch",
       });
     if (fact.token.state !== "unavailable") continue;
-    if (fact.identityAfter.state === "absent") continue;
     const relationBefore =
       fact.identityBefore.state === "readable"
         ? fact.identityBefore.relation
@@ -1409,14 +1702,18 @@ const scanWithOwnershipEvidence = async (
       relationAfter?.state === "observed" &&
       relationBefore.parentPid === relationAfter.parentPid &&
       relationBefore.processGroupId === relationAfter.processGroupId;
-    const observedUid =
+    const observed =
       fact.state === "same-generation" &&
       fact.identityAfter.state === "readable"
-        ? fact.identityAfter.effectiveUid
+        ? fact.identityAfter
         : undefined;
     if (
       knownUnrelated &&
-      environmentWithheldFromInspection(fact.token.reason, observedUid)
+      environmentWithheldFromInspection(
+        fact.token.reason,
+        observed?.effectiveUid,
+        observed?.environmentRestriction,
+      )
     ) {
       unverified.push({
         pid: fact.process.pid,
@@ -1504,9 +1801,7 @@ const settleUnreadableTokenCandidates = async (
     attempt < TOKEN_READ_RETRY_ATTEMPTS && remaining.length > 0;
     attempt += 1
   ) {
-    await new Promise<void>((resolve) =>
-      setTimeout(resolve, TOKEN_READ_RETRY_DELAY_MS),
-    );
+    await delay(TOKEN_READ_RETRY_DELAY_MS);
     let live: ReadonlySet<number> | undefined;
     try {
       live = new Set(

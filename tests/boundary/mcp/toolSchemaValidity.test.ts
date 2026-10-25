@@ -5,15 +5,31 @@ import { describe, expect, it } from "vitest";
 import { z } from "zod";
 
 import { advertisedInputExamples } from "../../../src/contracts/advertisedInputExamples.js";
-import { TOOL_CONTRACTS } from "../../../src/contracts/toolContracts.js";
+import {
+  TOOL_CONTRACTS,
+  toolContract,
+} from "../../../src/contracts/toolContracts.js";
+import {
+  ADVERTISED_INPUT_SCHEMA_LIMIT_BYTES,
+  presentInputJsonSchema,
+} from "../../../src/contracts/inputSchemaPresentation.js";
 import { emptyArraySchema } from "../../../src/domain/emptyArraySchema.js";
 import { processScenarioSchema } from "../../../src/domain/process/processScenario.js";
 import { GENERATED_MCP_TOOL_CATALOG } from "../../fixtures/mcpToolCatalog.js";
 import {
   arrayItemSchemaError,
-  booleanLiteralSchemaError,
+  unsupportedInputLiteralSchemaError,
 } from "../../fixtures/mcpClientSchemaConstraints.js";
 import { toolRegistrationOptions } from "../../../src/server/toolRegistrationOptions.js";
+import { servedCatalog } from "../../../src/application/environment/environmentState.js";
+import { servedFrom } from "../../fixtures/environmentStateServing.js";
+import type { TimedCaptureRow } from "../../fixtures/analysisView.js";
+import {
+  BOOK_INIT_ROWS,
+  BOOK_NOT_FOUND,
+  FIRST_BOOK,
+  THIRD_BOOK,
+} from "../../fixtures/environmentStateWrites.js";
 
 interface ToolSchemas {
   readonly name: string;
@@ -45,7 +61,7 @@ function schemaErrors(tools: readonly ToolSchemas[]): string[] {
         );
         if (clientError !== undefined) return [clientError];
         if (kind === "inputSchema") {
-          const literalError = booleanLiteralSchemaError(
+          const literalError = unsupportedInputLiteralSchemaError(
             schema,
             `${tool.name}.${kind}`,
           );
@@ -432,6 +448,59 @@ const advertiseAndEnforceProcessEnvironmentKeyConstraint =
     }
   };
 
+describe("served environment catalogs", () => {
+  it("advertises served environment catalogs in schemas clients accept: bulk bodies, pinned queries and fixed members", () => {
+    const edition = { format: "HC", featured: 1 };
+    const stored = { ...THIRD_BOOK, ...edition };
+    const captures: readonly (readonly TimedCaptureRow[])[] = [
+      [
+        ...BOOK_INIT_ROWS,
+        ["DELETE", "/api/books", [{ id: 2 }], 200, [{ id: 2 }]],
+        ["GET", "/api/books/2", BOOK_NOT_FOUND, 404],
+        ["GET", "/api/books", [FIRST_BOOK]],
+      ],
+      [
+        ["GET", "/api/books", [{ ...FIRST_BOOK, ...edition }]],
+        ["GET", "/api/books/1", { ...FIRST_BOOK, ...edition }],
+        [
+          "POST",
+          "/api/books?notify=quiet",
+          stored,
+          201,
+          {
+            books: [
+              { name: "Third Book", format: "hardcover", featured: true },
+            ],
+          },
+        ],
+        ["GET", "/api/books/3", stored],
+      ],
+    ];
+    const tools = captures.flatMap((rows) => {
+      const served = servedFrom(rows);
+      const catalog = servedCatalog(served.source, served.state, "books");
+      if (!catalog.ok) throw catalog.error;
+      return catalog.value.tools;
+    });
+    const create = tools.find((tool) => tool.name === "post_books");
+    expect(create?.inputSchema.properties["notify"]).toMatchObject({
+      enum: ["quiet"],
+    });
+    expect(JSON.stringify(create?.inputSchema)).toContain(
+      '"const":"hardcover"',
+    );
+    expect(tools.some((tool) => tool.name === "delete_books")).toBe(true);
+    expect(
+      schemaErrors(
+        tools.map((tool) => ({
+          name: tool.name,
+          inputSchema: tool.inputSchema as unknown as Record<string, unknown>,
+        })),
+      ),
+    ).toEqual([]);
+  });
+});
+
 describe("MCP JSON Schema validity", () => {
   it("preserves empty-array validation in the advertised representation", () => {
     const schema = z.toJSONSchema(emptyArraySchema);
@@ -477,8 +546,19 @@ describe("MCP JSON Schema validity", () => {
       expect(recursiveReferences(tools)).toEqual([]);
       expectKnownAuthorityHints(tools);
       const byName = new Map(tools.map((tool) => [tool.name, tool]));
+      // The advertisement is fitted to the client size limit. Check the
+      // relaxed producer union in the complete self-contained projection.
+      const completeCaptureInput = presentInputJsonSchema(
+        toolContract("compare_web_captures").inputSchema[
+          "~standard"
+        ].jsonSchema.input({
+          target: "draft-2020-12",
+          libraryOptions: { reused: "inline" },
+        }) as Record<string, unknown>,
+        () => undefined,
+      );
       for (const side of ["before", "after"])
-        expect(byName.get("compare_web_captures")?.inputSchema).toHaveProperty(
+        expect(completeCaptureInput).toHaveProperty(
           [
             "properties",
             side,
@@ -825,6 +905,16 @@ it("ships input schemas without local references in the generated catalog", () =
   expect(localInputReferences(GENERATED_MCP_TOOL_CATALOG)).toEqual([]);
 });
 
+it("ships every input schema within the client per-tool size limit in the generated catalog", () => {
+  // Claude Desktop drops a tool whose compact-JSON input schema exceeds 64 KiB.
+  expect(
+    GENERATED_MCP_TOOL_CATALOG.flatMap(({ name, inputSchema }) => {
+      const bytes = Buffer.byteLength(JSON.stringify(inputSchema), "utf8");
+      return bytes > ADVERTISED_INPUT_SCHEMA_LIMIT_BYTES ? [[name, bytes]] : [];
+    }),
+  ).toEqual([]);
+});
+
 it("rejects unresolved output-schema references even for uncalled tools", () => {
   const errors = schemaErrors([
     {
@@ -882,14 +972,32 @@ it("checks client array constraints in schema positions while preserving literal
     examples: [{ enum: [false] }],
   };
   expect(
-    booleanLiteralSchemaError(
+    unsupportedInputLiteralSchemaError(
       { ...booleanMetadata, properties: {} },
       "literal",
     ),
   ).toBeUndefined();
-  expect(booleanLiteralSchemaError(booleanMetadata, "literal")).toBe(
+  expect(unsupportedInputLiteralSchemaError(booleanMetadata, "literal")).toBe(
     "literal.properties.default.const is boolean",
   );
+  for (const [literal, reason] of [
+    [{ const: "" }, "const is an empty string"],
+    [{ enum: ["named", ""] }, "enum contains an empty string"],
+    [{ type: "integer", const: 2 }, "const is a number"],
+    [{ enum: ["named", 1.5] }, "enum contains a number"],
+  ] as const) {
+    expect(
+      unsupportedInputLiteralSchemaError(
+        {
+          type: "object",
+          properties: { value: literal },
+          default: { const: "" },
+          examples: [{ enum: [""] }],
+        },
+        "literal",
+      ),
+    ).toBe(`literal.properties.value.${reason}`);
+  }
 });
 
 it.each([false, true])(
