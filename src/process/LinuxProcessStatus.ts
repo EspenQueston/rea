@@ -32,10 +32,14 @@ export const parseLinuxProcessIds = (
 /**
  * Why Linux withholds `/proc/<pid>/environ` from a caller without
  * CAP_SYS_PTRACE (PTRACE_MODE_READ_FSCREDS): the target's real, effective or
- * saved UID/GID differs from the caller's, or the target is non-dumpable, which
- * procfs reports as root ownership of `/proc/<pid>/environ`.
+ * saved UID/GID differs from the caller's, the target is non-dumpable (which
+ * procfs reports as root ownership of `/proc/<pid>/environ`), or the target
+ * occupies another user namespace.
  */
-export type LinuxEnvironmentRestriction = "credentials" | "non-dumpable";
+export type LinuxEnvironmentRestriction =
+  | "credentials"
+  | "non-dumpable"
+  | "user-namespace";
 
 /** Derive the kernel's environment restriction from one generation's procfs facts. */
 export const linuxEnvironmentRestriction = (facts: {
@@ -44,8 +48,18 @@ export const linuxEnvironmentRestriction = (facts: {
   readonly procfsOwnerUid: number | undefined;
   readonly callerUid: number | undefined;
   readonly callerGid: number | undefined;
+  readonly callerUserNamespace?: string | undefined;
+  readonly targetUserNamespace?: string | undefined;
 }): LinuxEnvironmentRestriction | undefined => {
-  const { uids, gids, procfsOwnerUid, callerUid, callerGid } = facts;
+  const {
+    uids,
+    gids,
+    procfsOwnerUid,
+    callerUid,
+    callerGid,
+    callerUserNamespace,
+    targetUserNamespace,
+  } = facts;
   if (
     (callerUid !== undefined &&
       uids.slice(0, 3).some((uid) => uid !== callerUid)) ||
@@ -54,7 +68,11 @@ export const linuxEnvironmentRestriction = (facts: {
       gids.slice(0, 3).some((gid) => gid !== callerGid))
   )
     return "credentials";
-  return procfsOwnerUid !== undefined && procfsOwnerUid !== uids[1]
-    ? "non-dumpable"
+  if (procfsOwnerUid !== undefined && procfsOwnerUid !== uids[1])
+    return "non-dumpable";
+  return callerUserNamespace !== undefined &&
+    targetUserNamespace !== undefined &&
+    callerUserNamespace !== targetUserNamespace
+    ? "user-namespace"
     : undefined;
 };

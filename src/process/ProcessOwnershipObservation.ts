@@ -1,4 +1,4 @@
-import { readFile, stat as statPath } from "node:fs/promises";
+import { readFile, readlink, stat as statPath } from "node:fs/promises";
 import { performance } from "node:perf_hooks";
 import { setTimeout as delay } from "node:timers/promises";
 import {
@@ -1020,7 +1020,11 @@ export const createSystemProcessOwnershipHost = (
     ProcessOwnershipHost["processIdentities"]
   > = async (processes, signal, credentialPids) => {
     if (processes.length === 0) return new Map();
-    if (platform === "linux")
+    if (platform === "linux") {
+      const callerUserNamespace =
+        credentialPids !== undefined && credentialPids.size > 0
+          ? readlink("/proc/self/ns/user").catch(() => undefined)
+          : undefined;
       return new Map<number, ProcessIdentityObservation>(
         await Promise.all(
           processes.map(async ({ pid }) => {
@@ -1105,13 +1109,30 @@ export const createSystemProcessOwnershipHost = (
                 void cause;
               }
               signal?.throwIfAborted();
-              const environmentRestriction = linuxEnvironmentRestriction({
+              const restrictionFacts = {
                 uids,
                 gids: parseLinuxProcessIds(status, "Gid"),
                 procfsOwnerUid,
                 callerUid: process.geteuid?.(),
                 callerGid: process.getegid?.(),
-              });
+              };
+              let environmentRestriction =
+                linuxEnvironmentRestriction(restrictionFacts);
+              if (environmentRestriction === undefined) {
+                try {
+                  const targetUserNamespace = await readlink(
+                    `/proc/${String(pid)}/ns/user`,
+                  );
+                  environmentRestriction = linuxEnvironmentRestriction({
+                    ...restrictionFacts,
+                    callerUserNamespace: await callerUserNamespace,
+                    targetUserNamespace,
+                  });
+                } catch (cause: unknown) {
+                  void cause;
+                }
+              }
+              signal?.throwIfAborted();
 
               let afterStatus: string;
               try {
@@ -1193,6 +1214,7 @@ export const createSystemProcessOwnershipHost = (
           }),
         ),
       );
+    }
     if (darwinTokens === undefined) return new Map();
     try {
       return await darwinTokens.identities(processes, signal);
