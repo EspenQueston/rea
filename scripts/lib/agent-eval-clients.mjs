@@ -188,9 +188,10 @@ const prepareCodex = async (
 };
 
 const prepareClaudeCode = async (profile, { model, authPaths }) => {
+  // An empty override counts as unset, as REA's own client resolver reads it.
   await copyAuthentication(
     join(
-      process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude"),
+      process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude"),
       ".credentials.json",
     ),
     join(profile, ".credentials.json"),

@@ -318,3 +318,28 @@ it.each([
     ]);
   },
 );
+
+it.each([undefined, ""])(
+  "copies Claude's account credentials from the home directory when the override is %j",
+  async (override) => {
+    const root = await createTestTempDirectory("rea-agent-claude-home-");
+    const caller = join(root, "caller");
+    await mkdir(join(caller, ".claude"), { recursive: true });
+    await writeFile(
+      join(caller, ".claude", ".credentials.json"),
+      "fixture-claude",
+    );
+    vi.stubEnv("HOME", caller);
+    vi.stubEnv("USERPROFILE", caller);
+    vi.stubEnv("CLAUDE_CONFIG_DIR", override);
+    const authPaths: string[] = [];
+    await prepareAgentEvalClient(selectAgentEvalClient("claude-code"), {
+      evaluationRoot: root,
+      account: join(root, "account"),
+      authPaths,
+    });
+    const copy = join(root, "claude-code", ".credentials.json");
+    expect(authPaths).toEqual([copy]);
+    expect(await readFile(copy, "utf8")).toBe("fixture-claude");
+  },
+);
