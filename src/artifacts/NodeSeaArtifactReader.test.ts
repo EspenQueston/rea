@@ -521,6 +521,49 @@ it("maps an unsafe main path and opaque asset keys without losing their sources"
   );
 });
 
+it("carries pre-NFC Node SEA code and asset spellings into inventory", async () => {
+  const nfdScript = "caf\u0065\u0301/main.js";
+  const nfdAsset = "caf\u0065\u0301.txt";
+  expect(nfdScript.normalize("NFC")).toBe("caf\u00e9/main.js");
+  expect(nfdAsset.normalize("NFC")).toBe("caf\u00e9.txt");
+  const graph = await scanCanonicalArtifactInventory(
+    await writeCarrier(
+      "node-sea-nfd",
+      nodeSeaElf({
+        codePath: nfdScript,
+        main: script,
+        assets: [{ name: nfdAsset, body: "evidence" }],
+        disableExperimentalSeaWarning: true,
+        fuse: "set",
+      }),
+    ),
+  );
+  const scriptRow = graph.occurrences.find(
+    (row) => row.logical_path === "caf\u00e9/main.js",
+  );
+  expect(scriptRow?.format_metadata).toMatchObject({
+    kind: "node-sea-entry",
+    role: "main-script",
+  });
+  const scriptLimitations = scriptRow?.limitations.filter((item) =>
+    item.includes("Unicode-normalized to NFC"),
+  );
+  expect(scriptLimitations).toHaveLength(1);
+  expect(scriptLimitations?.[0]).toContain(JSON.stringify(nfdScript));
+  const assetRow = graph.occurrences.find(
+    (row) => row.logical_path === "caf\u00e9.txt",
+  );
+  expect(assetRow?.format_metadata).toMatchObject({
+    kind: "node-sea-entry",
+    role: "asset",
+  });
+  const assetLimitations = assetRow?.limitations.filter((item) =>
+    item.includes("Unicode-normalized to NFC"),
+  );
+  expect(assetLimitations).toHaveLength(1);
+  expect(assetLimitations?.[0]).toContain(JSON.stringify(nfdAsset));
+});
+
 it("maps a script collision and later file-prefix asset collision", async () => {
   const graph = await scanCanonicalArtifactInventory(
     await writeCarrier(

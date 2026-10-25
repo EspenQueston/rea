@@ -7,6 +7,7 @@ import type { NodeSeaMetadata } from "../domain/artifactFormatMetadata.js";
 import {
   ArtifactPathRegistry,
   normalizeArtifactPath,
+  unicodeNormalizationLimitation,
 } from "./ArtifactPaths.js";
 import {
   ArtifactReaderFailure,
@@ -224,6 +225,28 @@ export class NodeSeaArtifactReader implements ArtifactReader {
       const start = location.blobOffset + member.range.offset;
       if (start > initial.size || member.range.length > initial.size - start)
         throw formatFailure(`member exceeds the carrier: ${member.path}`);
+      // seaMembers projects through NFC before scanReader sees the entry,
+      // so scanReader's own spelling check cannot observe the change. Carry
+      // the pre-NFC source spelling here, through the same channel the
+      // PyInstaller projection uses; scanReader copies entry limitations
+      // onto the occurrence and adds nothing twice, since its own check
+      // sees only the NFC spelling. Only a path that really is the NFC
+      // form of its source qualifies: a name mapped to a fallback (reserved
+      // prefix, collision, or invalid path) was not normalized to that
+      // fallback, so it carries no such limitation.
+      let normalizationLimitation: string | undefined;
+      if (member.path !== member.sourcePath) {
+        try {
+          if (normalizeArtifactPath(member.sourcePath) === member.path)
+            normalizationLimitation = unicodeNormalizationLimitation(
+              member.sourcePath,
+              member.path,
+              "file",
+            );
+        } catch {
+          normalizationLimitation = undefined;
+        }
+      }
       const entry = {
         path: member.path,
         kind: "file" as const,
@@ -234,7 +257,10 @@ export class NodeSeaArtifactReader implements ArtifactReader {
         byteOffset: start,
         declaredIntegrity: null,
         unpacked: false,
-        limitations: [],
+        limitations:
+          normalizationLimitation === undefined
+            ? []
+            : [normalizationLimitation],
         adapterKey: `node-sea:${String(index)}`,
         formatMetadata: {
           kind: "node-sea-entry" as const,
