@@ -15,6 +15,7 @@ import { createToolResultDelivery } from "../../../src/server/toolResult.js";
 import type { ToolContract } from "../../../src/contracts/toolContractTypes.js";
 import { FULL_CATALOG_IDENTITY } from "../../../src/catalogIdentity.js";
 import type { McpOutputSchemaProfile } from "../../../src/config/mcpOutputSchemaProfile.js";
+import { advertisedSchemaErrors } from "../../fixtures/mcpAdvertisedSchemaValidity.js";
 
 const createServer = (
   outputSchemaProfile: McpOutputSchemaProfile,
@@ -200,11 +201,26 @@ it("keeps the default compact-input catalog below a measured one-megabyte frame"
     await client.connect(clientTransport);
     try {
       const listed = await client.listTools();
-      if (profile === "compact")
-        for (const tool of listed.tools)
+      if (profile === "compact") {
+        // Validate the advertised documents as the client receives them, not
+        // just their bytes: a projection that broke a reference or left an
+        // invalid schema would otherwise still pass the budget assertion.
+        expect(
+          advertisedSchemaErrors(
+            listed.tools.map((tool) => ({
+              name: tool.name,
+              inputSchema: tool.inputSchema,
+              outputSchema: tool.outputSchema,
+            })),
+          ),
+        ).toEqual([]);
+        for (const tool of listed.tools) {
+          expect(tool.outputSchema).toBeDefined();
           expect(
             Buffer.byteLength(JSON.stringify(tool.outputSchema), "utf8"),
           ).toBeLessThanOrEqual(COMPACT_OUTPUT_SCHEMA_BUDGET_BYTES);
+        }
+      }
       return Buffer.byteLength(JSON.stringify(listed), "utf8");
     } finally {
       await client.close();
