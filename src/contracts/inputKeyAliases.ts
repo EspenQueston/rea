@@ -79,9 +79,7 @@ export const compatibleToolInputSchema = <Schema extends z.ZodObject>(
     const projected = accepted["~standard"].jsonSchema.input(options);
     const alternatives = (
       Array.isArray(projected.anyOf) ? projected.anyOf : []
-    ).map((branch: unknown) =>
-      withoutAliasDescriptions(branch, Object.keys(aliases)),
-    );
+    ).map((branch: unknown) => describeAliasesByCanonical(branch, aliases));
     const invalidSelections = Object.entries(aliases).flatMap(
       ([alias, key]) => {
         const selectorRequired =
@@ -124,13 +122,15 @@ export const compatibleToolInputSchema = <Schema extends z.ZodObject>(
 };
 
 /**
- * An alias branch repeats its canonical property schema. Its description stays
- * on the canonical spelling, because every advertised byte counts against the
- * full catalog's bounded transport frame.
+ * An alias branch repeats its canonical property schema. The alias names its
+ * canonical spelling instead of copying the description: every advertised byte
+ * counts against the full catalog's bounded transport frame, and an alias left
+ * without a description would receive the key-based fallback, whose meaning
+ * can differ from the canonical property (`query` on `search_bytes`).
  */
-const withoutAliasDescriptions = (
+const describeAliasesByCanonical = (
   branch: unknown,
-  aliases: readonly string[],
+  aliases: Readonly<Record<string, string>>,
 ): unknown => {
   if (
     typeof branch !== "object" ||
@@ -144,17 +144,16 @@ const withoutAliasDescriptions = (
     ...branch,
     properties: Object.fromEntries(
       Object.entries(branch.properties).map(([name, property]) => {
+        const canonical = Object.hasOwn(aliases, name)
+          ? aliases[name]
+          : undefined;
         if (
-          !aliases.includes(name) ||
+          canonical === undefined ||
           typeof property !== "object" ||
           property === null
         )
           return [name, property];
-        const { description: _description, ...rest } = property as Record<
-          string,
-          unknown
-        >;
-        return [name, rest];
+        return [name, { ...property, description: `Same as ${canonical}.` }];
       }),
     ),
   };

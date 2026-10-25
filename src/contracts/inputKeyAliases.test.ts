@@ -77,7 +77,7 @@ describe("named compatible input contracts", () => {
       ],
     });
   });
-  it("keeps a canonical property description off its alias spelling", () => {
+  it("describes an alias by its canonical spelling instead of a copy", () => {
     const projected = compatibleToolInputSchema(
       z.strictObject({
         procedure: z.string().describe("The procedure name or address"),
@@ -92,7 +92,11 @@ describe("named compatible input contracts", () => {
           },
         },
       }),
-      expect.objectContaining({ properties: { address: { type: "string" } } }),
+      expect.objectContaining({
+        properties: {
+          address: { type: "string", description: "Same as procedure." },
+        },
+      }),
     ]);
   });
   it("retains canonical value checks, defaults and cross-field refinements", () => {

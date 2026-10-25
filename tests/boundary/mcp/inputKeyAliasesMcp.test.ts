@@ -203,3 +203,26 @@ describe("MCP input key aliases", () => {
     }
   });
 });
+
+describe("MCP input key alias descriptions", () => {
+  it("names the canonical spelling instead of a key-based fallback in the full profile", async () => {
+    const { client, close } = await connectCatalog(false);
+    try {
+      const { tools } = await client.listTools();
+      for (const [tool, alias, canonical] of [
+        ["procedure_pseudo_code", "address", "procedure"],
+        ["search_strings", "query", "pattern"],
+        ["search_bytes", "query", "pattern"],
+      ] as const) {
+        const properties = tools.find(({ name }) => name === tool)?.inputSchema
+          .properties as Record<string, { description?: string }> | undefined;
+        expect(properties?.[alias]?.description, tool).toBe(
+          `Same as ${canonical}.`,
+        );
+        expect(properties?.[canonical]?.description, tool).toBeDefined();
+      }
+    } finally {
+      await close();
+    }
+  });
+});
