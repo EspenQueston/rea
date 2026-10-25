@@ -7,6 +7,7 @@ import { CLI_COMMANDS } from "../cliCommandNames.js";
 import { parseCliJsonInput } from "../cliJsonInput.js";
 import { logCliCommand } from "../cliLogging.js";
 import { parseEnvironmentName } from "../config/environmentName.js";
+import { mcpHttpPortSchema } from "../config/mcpHttpEndpoint.js";
 import {
   parseMcpHttpEndpoint,
   type McpHttpEndpoint,
@@ -282,14 +283,10 @@ export const registerEnvironmentCommands = (
         .min(1)
         .optional()
         .describe("Listener address; default MCP_HOST, else 127.0.0.1"),
-      port: z
-        .number()
-        .int()
-        .min(0)
-        .max(65535)
+      port: mcpHttpPortSchema
         .optional()
         .describe(
-          "Listener port; default MCP_PORT, else 0 for an ephemeral port",
+          "Listener port; decimal integer 0-65535, default MCP_PORT, else 0 for an ephemeral port",
         ),
     }),
     run: ({ args, options }) =>
