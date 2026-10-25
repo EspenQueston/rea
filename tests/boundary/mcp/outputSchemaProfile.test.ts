@@ -1,4 +1,5 @@
 import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
+import { Ajv2020 } from "ajv/dist/2020.js";
 import { z } from "zod";
 import { expect, it } from "vitest";
 
@@ -238,4 +239,110 @@ it("keeps the default compact-input catalog below a measured one-megabyte frame"
   expect(fullInputOffBytes).toBeLessThan(1024 * 1024);
   expect(compactBytes).toBeLessThan(fullBytes);
   expect(compactBytes).toBeGreaterThan(offBytes);
+});
+
+it("rejects canonical-invalid output that the reduced advertisement accepts", async () => {
+  // Enough nested detail that the compact projection cannot inline the
+  // canonical schema within the budget, so the advertised form is the shallow
+  // root shape rather than the complete validation structure.
+  const nestedDetail = Object.fromEntries(
+    Array.from({ length: 150 }, (_, index) => [
+      `nested_${String(index).padStart(3, "0")}`,
+      z.string().optional(),
+    ]),
+  );
+  const outputSchema = z.strictObject({
+    value: z.string(),
+    payload: z.object({
+      inner: z.string(),
+      count: z.number().int(),
+      ...nestedDetail,
+    }),
+  });
+  const server = createServer("compact");
+  const [clientTransport, serverTransport] =
+    InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: "reduced-output-test", version: "1" });
+  const contract = {
+    ...toolContract("comment"),
+    name: "reduced_output_schema_fixture",
+    inputSchema: z.strictObject({}),
+    outputSchema,
+  } satisfies ToolContract;
+  server.registerTool(
+    contract.name,
+    toolRegistrationOptions(contract),
+    async () => ({
+      content: [{ type: "text" as const, text: "fixture" }],
+      structuredContent: {
+        value: "complete",
+        payload: { inner: "text", count: 1 },
+      },
+    }),
+  );
+  // `payload.inner` is a string canonically. The shallow advertisement keeps
+  // only `payload: {type: "object"}`, so it accepts the malformed value.
+  const malformed = {
+    value: "complete",
+    payload: { inner: 42, count: 1 },
+  };
+  const invalidContract = {
+    ...contract,
+    name: "invalid_reduced_output_schema_fixture",
+  } satisfies ToolContract;
+  server.registerTool(
+    invalidContract.name,
+    toolRegistrationOptions(invalidContract),
+    async () => ({
+      content: [{ type: "text" as const, text: "invalid fixture" }],
+      structuredContent: malformed,
+    }),
+  );
+
+  await server.connect(serverTransport);
+  await client.connect(clientTransport);
+  try {
+    const tools = (await client.listTools()).tools;
+    const advertised = tools.find((tool) => tool.name === contract.name)!
+      .outputSchema as Record<string, unknown>;
+    expect(advertised.description).toContain("reduced form");
+    expect((advertised.properties as Record<string, unknown>).payload).toEqual({
+      type: "object",
+    });
+    expect(
+      Buffer.byteLength(JSON.stringify(advertised), "utf8"),
+    ).toBeLessThanOrEqual(COMPACT_OUTPUT_SCHEMA_BUDGET_BYTES);
+    // The regression this guards: the advertisement accepts a value the
+    // canonical contract rejects, so validating results against the
+    // advertisement instead of the contract would deliver malformed output.
+    const validateAdvertised = new Ajv2020({
+      strict: false,
+      validateFormats: false,
+    }).compile(advertised);
+    expect(validateAdvertised(malformed)).toBe(true);
+
+    const success = await client.callTool({
+      name: contract.name,
+      arguments: {},
+    });
+    expect(success.isError).not.toBe(true);
+    expect(success.structuredContent).toEqual({
+      value: "complete",
+      payload: { inner: "text", count: 1 },
+    });
+    const invalid = await client.callTool({
+      name: invalidContract.name,
+      arguments: {},
+    });
+    expect(invalid.isError).toBe(true);
+    expect(invalid.content).toEqual([
+      expect.objectContaining({
+        type: "text",
+        text: expect.stringContaining("Output validation error"),
+      }),
+    ]);
+  } finally {
+    await client.close();
+    await server.close();
+  }
 });
