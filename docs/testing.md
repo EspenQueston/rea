@@ -166,17 +166,38 @@ operation names, schemas or types; display-only selection remains allowed.
 `rea/no-fixture-root-cleanup` follows `const` fixture-root aliases into teardown
 deletion; mutable bindings and mixed root arrays remain outside its scope.
 
+`rea/no-shared-module-mock` resolves Vitest import bindings before rejecting
+module mocks in projects without per-file isolation. The test-project definitions
+own isolation for Vitest and lint; the executable gate checks the resolved policy
+and runs the same collector. Aliases and namespace imports count; comments,
+shadowed locals, ordinary methods and `spyOn` do not. Negative CLI probes use an
+external temporary project so concurrent repository checks cannot discover them.
+
 Focused `.only` declarations, broken assertion promise chains, and unused disable
 directives are errors. `vitest/valid-expect` warns (`maxArgs: 2`) because valid stored and
 collected assertions can be awaited later. `import/no-duplicates` warns with
-`preferInline: false`, preserving separate type imports.
+`preferInline: false`.
+
+`no-useless-escape` keeps intentional `\-` regex escapes because advertised
+patterns must also compile in `v` mode; the catalog regression checks every
+advertised pattern.
 
 Fast lint stays syntax-based. `npm run lint:typed` runs serially with pinned
 `oxlint-tsgolint` 7.0.2005 and records native plus typed diagnostics in
 `.cache/static-checks/typed-oxlint.json`. Production `src` treats
 `no-misused-promises` as an error; tests/fixtures warn. `no-floating-promises` is
-an error in `src/**/*.test.ts`; other scopes, return-await and exhaustiveness
-findings warn pending triage.
+an error throughout the lint inventory. `return-await` is an error in
+error-handling scopes so asynchronous completion stays inside its catch or
+cleanup boundary. Exhaustiveness is an error when a union member has neither a
+case nor a default. Intentional defaults count as handling the remaining union;
+new members covered by those defaults therefore require behavioral review.
+
+Two HTTP/3 source-test files allow the runner-owned `node:test` registration API;
+ordinary unowned promises in those files still fail. The authored code-split
+recovery input is exempt from floating-promise policy because it is analysis
+input, rather than application orchestration. Preserve framework-owned callbacks
+such as an awaited `Promise.finally`; inspect the actual completion owner before
+changing a callback solely to satisfy its declared `void` return type.
 
 `npm run knip:production` writes advisory candidates to
 `.cache/static-checks/production-reachability.json`; execution/report errors fail.
@@ -365,6 +386,16 @@ Trivial helper assertions need no replacement. Remove abandoned production
 scaffolding only after checking runtime and verifier consumers, including
 compiled imports.
 
+Assert error codes, structured limit facts, source provenance, and observed
+recovery behavior instead of freezing explanatory sentences or banning obsolete
+phrases. Keep exact checks for protocol values, setting and parameter names,
+caller data, and diagnostic provenance. To verify guidance delivery, compare the
+consumer with the owning formatter or constant, alongside independent assertions
+for the behavior and facts; shared text alone is not a correctness oracle.
+Documentation wording belongs in review, not substring tests of source files.
+When replacing prose assertions, verify that a harmless wording change passes
+and an incorrect budget or lost fact still fails.
+
 After an owner changes, move fault injection and event spies to the path the
 production consumer actually uses, and assert that the intended boundary was
 reached. Keep independent expectations from authored input, producer output, or
@@ -443,6 +474,19 @@ When a matrix already holds a named tool definition from live `tools/list`,
 pass that definition through the SDK's `toolDefinition` call option. This keeps
 the selected output-schema validation without eagerly compiling unrelated
 catalog schemas. Re-read definitions if the server advertises a changed list.
+
+For exact nested input constraints, select the full profile explicitly or use
+the full-SDK conformance suite that owns the field. Compact workflow tests
+should assert canonical failure categories and provider-call controls where
+rejection before provider work matters. Do not make today's omission of a
+constraint a compact-profile invariant.
+
+When a file repeatedly validates the same MCP schemas, use
+`createMcpSchemaValidation` for file-owned preparation and clear it in
+`afterAll`. Its content keys include the complete schema, and the SDK provider
+keeps dialect and format validation. Keep sessions and connections scoped to
+each test; share immutable schema preparation through the fixture's validator
+dependency.
 
 Artifact verification uses `artifactMcpCall` for both lifecycle and analysis
 calls. A fresh SDK client has no held tool listing, so a bare `callTool` can
@@ -1964,12 +2008,16 @@ coverage limits.
 
 ### Offline binary layout
 
-`npm run verify:binary:layout` requires Linux x64, GCC/binutils, absolute
+`npm run verify:binary:layout` requires Linux x64, GCC/binutils, the
+`i686-linux-gnu`, `arm-linux-gnueabi`, `mips-linux-gnu` and `mipsel-linux-gnu`
+cross `gcc`/`readelf` toolchains, absolute
 `REA_PWNTOOLS_PYTHON` with pwntools 4.15.0/pyelftools 0.33/Unicorn 2.1.2 and
 absolute `REA_VERIFY_STRACE_COMMAND`. It compiles ephemeral source-owned ELF
 fixtures and checks public CLI/MCP, lossless addresses/names, file ranges,
 mitigation inferences, malformed/unsupported input, original file hashes and
-released process ownership. Exec syscall tracing must identify only the declared
+released process ownership. Cross-compiled ELF32 executables and relocatable
+objects check the reported class, machine and byte order, and every section
+name, address, offset and size against GNU `readelf`. Exec syscall tracing must identify only the declared
 Node/Python launchers; no target binary is executed. Core/debugger claims need
 separate verification lanes. Pass an installed package entrypoint as the script's
 first argument to verify packaging independently of the checkout.
@@ -2076,6 +2124,13 @@ Codex CLI. The lane runs sequentially; select scenarios with
 `REA_CODEX_CLI` and `REA_AGENT_EVAL_MODEL`. The detailed
 [agent evaluation reference](client-verification.md#agent-evaluation-and-conformance-records)
 contains isolation, authentication cleanup, grading, and conformance boundaries.
+
+The Notes evaluation packages `website/public/examples/notes-electron/`. When
+changing those example bytes, run `tests/boundary/mcp/agentKnownAnswerMcp.test.ts`
+and check its rubric in `tests/evaluation/model-evals/AgentEvaluationFixtures.ts`.
+Preserve exact source facts and the coverage reported by the analysis. If a
+source change crosses an unresolved static-analysis boundary, keep that
+uncertainty and a negative control rejecting claims of complete coverage.
 
 ## Frida instrumentation
 

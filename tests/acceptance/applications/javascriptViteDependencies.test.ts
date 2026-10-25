@@ -1928,6 +1928,22 @@ const allScenarios: readonly ViteScenario[] = [
         '__vite__mapDeps([0]); const copy = {...__vite__mapDeps}; const retained = copy.f; copy.f = []; retained[0] = "./last.js";',
     },
     {
+      file: "object-create-cache-prototype-escape.js",
+      mutation:
+        "__vite__mapDeps([0]); const child = Object.create(__vite__mapDeps.f); opaque(child);",
+    },
+    {
+      file: "nested-object-create-cache-prototype-escape.js",
+      mutation:
+        "__vite__mapDeps([0]); const child = Object.create(Object.create(__vite__mapDeps.f)); opaque(child);",
+    },
+    {
+      file: "spread-cache-copy-escape.js",
+      mutation:
+        "__vite__mapDeps([0]); const copy = [...__vite__mapDeps.f]; opaque(copy);",
+      kept: true,
+    },
+    {
       file: "object-create-child.js",
       mutation:
         '__vite__mapDeps([0]); const copy = Object.create(__vite__mapDeps); copy.f[0] = "./last.js";',

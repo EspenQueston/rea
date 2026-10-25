@@ -1002,6 +1002,9 @@ export class ViteCacheIdentities {
     };
     vertex.seed = { allocation, owner: undefined };
     this.allocationVertices.set(allocation, vertex);
+    const shallowCopy =
+      t.isCallExpression(expression) &&
+      viteCacheObjectOperation(expression, this.invocation) === "assign";
     const children = t.isObjectExpression(expression)
       ? expression.properties
       : t.isArrayExpression(expression)
@@ -1020,9 +1023,7 @@ export class ViteCacheIdentities {
           : child;
       this.connect(vertex, {
         kind:
-          t.isSpreadElement(child) || t.isCallExpression(expression)
-            ? "copy-family"
-            : "family",
+          t.isSpreadElement(child) || shallowCopy ? "copy-family" : "family",
         source: this.normalize(value),
       });
     }

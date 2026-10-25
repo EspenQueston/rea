@@ -746,7 +746,16 @@ integer of 10 or more digits that no entity of the type holds (where every one
 holds a distinct integer of the same length, as time-based ids do), a
 `nested-clock` object whose clocks the request stamped, a `template` around
 a generated value, a `reference` to an entity, or a `composed` string; other
-fields keep the observed value. A `reference` is an object holding fields of the
+fields keep the observed value. When the first read of a created entity before
+the next write shows fields the create's answer lacks, or its clocks to another
+precision, the observed entity takes them (`observation.read`). An item read
+that agrees with the answer otherwise lends its fields and clock spellings and
+no longer confirms the create; one that disagrees or omits an answer field its
+item view renders still checks it. Clock agreement uses the coarser recorded
+precision, including microseconds. A list read
+only adds fields the answer lacks and still checks it. Serving answers a create
+in its answer's shape and clock precision and stores the fields of both with
+the item read-back's clock precision. A `reference` is an object holding fields of the
 entity a sent member names, as the state holds it (a parent beside `parentId`):
 the member is accepted with any value, serving looks the entity up and refuses a
 call naming one the environment does not hold or holds in more than one
@@ -778,7 +787,14 @@ with them. Other clocks the plan stamps take that spelling too unless their own
 value shows a fixed width. A body that wraps one
 object in a one-element array is that object, wrapped so on every call
 (`body.envelope`). An update's members
-echo when stored as sent; a member stored differently is accepted only with its
+echo when stored as sent. A clock sent back as the entity held it and stored as
+a fresh clock near the call is a `clock`, and a member stored as the slug of
+another member stored as sent is a `slug`, both accepted with any value, as a
+whole-object write that sends what it read shows. A save that echoes an
+already-derived slug or holds a clock in its own second remains compatible
+with that derivation in either call order; earlier saves must also reproduce
+a newly learned slug. Any other member stored
+differently is accepted only with its
 recorded value (`body.fixed`) and stores the value the call that showed it
 recorded (the `value` of its `constant` rule), and a field it changed without
 sending must be a clock, a nested clock, an increment, a slug, a fresh `unique`
@@ -876,9 +892,11 @@ HAR, SAZ and qlog run in an owned Node old-generation heap with one V8 worker.
 `REA_CAPTURE_DECODER_OLD_GENERATION_MIB` is a decimal integer of mebibytes from
 8 to 16384. Unset uses 192, the previous constant. Invalid values fail
 configuration and name the setting; they do not fall back to 192. The setting
-is read from the environment that starts REA, so a change needs a restart.
-A memory failure names the effective mebibytes, whether they came from the
-default or the setting, the default, the floor, and the maximum. The decoder
+seeds the launch value. In MCP, set `capture.decoder_old_generation_mib`
+through `update_analysis_settings` for decoders belonging to newly accepted
+operations, without restarting REA. Changing the launch environment still
+requires a new process. A memory failure names the effective mebibytes, known
+source, default, floor, and maximum. The decoder
 passes that value as `--max-old-space-size` and removes inherited
 `NODE_OPTIONS`, so additional host memory and `NODE_OPTIONS` do not raise the
 heap. The 8 MiB semi-space stays fixed; a smaller old generation aborts Node
@@ -900,8 +918,11 @@ hosts enforce no decoder heap limit, so raising the setting does not bound them.
 
 Observed decoder memory exhaustion returns `resource_constraint`, with the
 selected capture, applicable limits and retained process diagnostics. Raising
-host memory or `NODE_OPTIONS` does not raise the old-generation heap. Set
-`REA_CAPTURE_DECODER_OLD_GENERATION_MIB` and restart REA.
+host memory or `NODE_OPTIONS` does not raise the old-generation heap. Update
+`capture.decoder_old_generation_mib` through MCP, or set
+`REA_CAPTURE_DECODER_OLD_GENERATION_MIB` before starting a new REA process.
+Retry after owned cleanup completes; the update does not release resources.
+See the [settings design](design/limits-and-recovery.md#failure-and-retry).
 Record selection happens after complete decoding and does not reduce that
 workload. Use a smaller capture exported by its producer or another decoder
 with sufficient capacity, retaining the original for provenance. Subsets do
