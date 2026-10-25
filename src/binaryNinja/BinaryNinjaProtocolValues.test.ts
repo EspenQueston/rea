@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { AnalysisProtocolError } from "../domain/analysisErrorCore.js";
 import {
   binaryNinjaPageSchema,
+  binaryNinjaMemoryReadSchema,
   parseBinaryNinjaCodeBlock,
   parseBinaryNinjaDocument,
   parseBinaryNinjaFunctionReferences,
@@ -157,4 +158,24 @@ describe("Binary Ninja rendered replies", () => {
       AnalysisProtocolError,
     );
   });
+});
+
+it.each([
+  { bytesRead: 2, hex: "41" },
+  { bytesRead: 1, hex: "4142" },
+  { bytesRead: 1, hex: "" },
+])("rejects memory replies with inconsistent hex length: %j", (read) => {
+  expect(
+    binaryNinjaMemoryReadSchema.safeParse({ address: "0x500000", ...read })
+      .success,
+  ).toBe(false);
+});
+it.each([
+  { bytesRead: 0, hex: "" },
+  { bytesRead: 2, hex: "41FF" },
+])("accepts memory replies with exact byte counts: %j", (read) => {
+  expect(
+    binaryNinjaMemoryReadSchema.safeParse({ address: "0x500000", ...read })
+      .success,
+  ).toBe(true);
 });

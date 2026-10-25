@@ -244,7 +244,11 @@ export const binaryNinjaMemoryReadSchema = z
     bytesRead: z.number().int().nonnegative(),
     hex: z.string().regex(/^(?:[0-9a-f]{2})*$/iu),
   })
-  .passthrough();
+  .passthrough()
+  .refine((read) => read.hex.length === read.bytesRead * 2, {
+    path: ["hex"],
+    message: "Binary Ninja memory hex must contain exactly bytesRead bytes.",
+  });
 
 export const binaryNinjaAnalysisStatusSchema = z
   .object({

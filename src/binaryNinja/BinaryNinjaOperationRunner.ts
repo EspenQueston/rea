@@ -669,13 +669,20 @@ const decodeString = (
     case "Utf32String": {
       if (!littleEndian || bytes.length % 4 !== 0) return undefined;
       const points: number[] = [];
+      const parts: string[] = [];
       for (let index = 0; index < bytes.length; index += 4) {
         const point = bytes.readUInt32LE(index);
         if (point > 0x10ffff || (point >= 0xd800 && point <= 0xdfff))
           return undefined;
         points.push(point);
+        // Bound the argument count independently of the total string length.
+        if (points.length === 1024) {
+          parts.push(String.fromCodePoint(...points));
+          points.length = 0;
+        }
       }
-      return String.fromCodePoint(...points);
+      parts.push(String.fromCodePoint(...points));
+      return parts.join("");
     }
     default:
       return undefined;

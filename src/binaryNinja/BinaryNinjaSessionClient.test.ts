@@ -504,3 +504,51 @@ describe("Binary Ninja long strings", () => {
     },
   );
 });
+
+it("lists and searches a 200,000-character UTF-32 string", async () => {
+  const { client, producer } = await fixture();
+  const text = "a".repeat(199998) + "😀Z";
+  const points = Array.from(text, (character) => character.codePointAt(0)!);
+  const bytes = Buffer.alloc(points.length * 4);
+  points.forEach((point, index) => bytes.writeUInt32LE(point, index * 4));
+  producer.strings = [{ address: "0x500000", type: "Utf32String", bytes }];
+  try {
+    const listed = await value(client, "list_strings");
+    expect(listed.result).toEqual([{ address: "0x500000", value: text }]);
+    expect(
+      (await value(client, "search_strings", { pattern: "😀Z" })).result,
+    ).toEqual(listed.result);
+  } finally {
+    expect((await client.close()).ok).toBe(true);
+  }
+});
+
+it("rejects missing chunk bytes instead of returning zero-filled string content", async () => {
+  const { client, producer } = await fixture();
+  producer.strings = [
+    {
+      address: "0x500000",
+      type: "AsciiString",
+      bytes: Buffer.from("a".repeat(65536) + "tail"),
+    },
+  ];
+  const originalCall = producer.call.bind(producer);
+  producer.call = async (name, args) => {
+    const reply = await originalCall(name, args);
+    if (name === "bn_memory_read" && args.address === "0x510000")
+      return {
+        text: null,
+        structured: { address: args.address, bytesRead: 4, hex: "74" },
+      };
+    return reply;
+  };
+  try {
+    const result = await client.execute("list_strings", {});
+    expect(result).toMatchObject({
+      ok: false,
+      error: { _tag: "AnalysisOutputError" },
+    });
+  } finally {
+    expect((await client.close()).ok).toBe(true);
+  }
+});
