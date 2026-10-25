@@ -13,7 +13,7 @@ import { parseBinaryTarget } from "../dist/application/BinaryTargetResolver.js";
 import { parseEvidence } from "../dist/domain/evidence.js";
 import { parseAnalysisSnapshot } from "../dist/domain/analysisSnapshot.js";
 import { functionDossierSchema } from "../dist/domain/hopperValues.js";
-import { inspectGhidraInstallation } from "../dist/ghidra/GhidraInstallation.js";
+import { inspectVerifierGhidraInstallation } from "./lib/ghidra-installation-inspection.mjs";
 import { buildMipsSharedFixture } from "../tests/conformance/ghidra/mips-fixture.mjs";
 import {
   assertMipsSharedLoad,
@@ -33,7 +33,7 @@ if (!["linux", "darwin"].includes(process.platform))
   );
 if (process.env.GHIDRA_INSTALL_DIR === undefined)
   throw new Error("Missing prerequisite: caller-supplied GHIDRA_INSTALL_DIR");
-const installation = inspectGhidraInstallation({
+const installation = await inspectVerifierGhidraInstallation({
   environment: process.env,
   installDir: process.env.GHIDRA_INSTALL_DIR,
   ...(process.env.JAVA_HOME === undefined
@@ -205,7 +205,7 @@ async function verifyFixture(byteOrder, softFloat) {
     };
     const entry = named("rea_mips_so_entry");
     const dossier = functionDossierSchema.parse(
-      await call("analyze_function", { procedure: entry }),
+      await call("analyze_function", { procedure: entry, detail: "complete" }),
     );
     // Calls through global GOT entries and the REL32 import pointer are named;
     // TLS goes through __tls_get_addr with the unapplied DTPMOD32 slot.
