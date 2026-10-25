@@ -10,6 +10,9 @@ export const HOPPER_DOWNLOAD_STALL_MS = 30_000;
  */
 export const HOPPER_DOWNLOAD_TIMEOUT_MS = 15 * 60_000;
 
+/** Small release feed and key requests must not use the package bounds. */
+export const HOPPER_METADATA_TIMEOUT_MS = 10_000;
+
 /** A Hopper download that stalled or outlived its overall bound. */
 export class HopperDownloadTimeoutError extends Error {
   readonly _tag = "HopperDownloadTimeoutError";
