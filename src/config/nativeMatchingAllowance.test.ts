@@ -93,3 +93,16 @@ it("advertises current-session repair for an invalid native matching launch seed
     NATIVE_MATCHING_ALLOWANCE_SETTING,
   );
 });
+
+it("uses the native setting owner for the complete launch-snapshot error", () => {
+  const environment = { [NATIVE_MATCHING_ALLOWANCE_SETTING]: "0" };
+  const owned = parseNativeMatchingAllowance(environment);
+  const snapshot = launchAnalysisSetting(
+    "native.matching_representation_bytes",
+    environment,
+  );
+  if (owned.ok || snapshot.ok) throw new Error("Invalid seed was accepted");
+  expect(projectAnalysisError(snapshot.error)).toEqual(
+    projectAnalysisError(owned.error),
+  );
+});

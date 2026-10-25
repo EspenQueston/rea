@@ -260,6 +260,23 @@ it("lowers, restores and seeds the native matching allowance over MCP", async ()
   });
   try {
     expect((await invalid.call("binary_session", {})).isError).not.toBe(true);
+    const inspected = analysisSettingsResultSchema.parse(
+      (
+        await invalid.call("inspect_analysis_settings", {
+          settings: ["native.matching_representation_bytes"],
+        })
+      ).structuredContent,
+    );
+    expect(inspected.settings[0]).toMatchObject({
+      source: "invalid",
+      configuration_error: {
+        code: "configuration_invalid",
+        remediation: {
+          action: expect.stringContaining("update_analysis_settings"),
+        },
+      },
+    });
+    expect(inspected.settings[0]).not.toHaveProperty("value");
     const refused = await invalid.call("match_native_functions", request);
     expect(refused.isError).toBe(true);
     const text = refused.content.find((item) => item.type === "text");
@@ -273,12 +290,21 @@ it("lowers, restores and seeds the native matching allowance over MCP", async ()
         settings: [{ setting: "REA_NATIVE_MATCHING_REPRESENTATION_BYTES" }],
       },
     });
-    await invalid.call("update_analysis_settings", {
+    const repaired = await invalid.call("update_analysis_settings", {
       changes: [
         {
           setting: "native.matching_representation_bytes",
           action: "set",
           value: 100663296,
+        },
+      ],
+    });
+    expect(repaired.structuredContent).toMatchObject({
+      settings: [
+        {
+          source: "runtime",
+          value: 100663296,
+          configuration_error: inspected.settings[0]!.configuration_error,
         },
       ],
     });

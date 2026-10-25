@@ -24,7 +24,7 @@ export const DEFAULT_NATIVE_MATCHING_ALLOWANCE: NativeMatchingAllowance = {
 export const nativeMatchingRepresentationBytesConstraint = `${NATIVE_MATCHING_ALLOWANCE_SETTING} must be a positive decimal integer of at most ${String(MAXIMUM_NATIVE_MATCHING_REPRESENTATION_BYTES)} bytes (1 GiB); the default is ${String(DEFAULT_NATIVE_MATCHING_REPRESENTATION_BYTES)} bytes (96 MiB).`;
 
 /** Optional decimal byte count for the native function-matching allowance. */
-export const nativeMatchingRepresentationBytesSchema = z
+const nativeMatchingRepresentationBytesSchema = z
   .string()
   .regex(/^[1-9]\d*$/u, {
     error: nativeMatchingRepresentationBytesConstraint,
