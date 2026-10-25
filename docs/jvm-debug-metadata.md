@@ -87,8 +87,8 @@ The normalized result binds every fact to exact identity:
   `com/example/Foo`; not decompiler output), `major_version`, `minor_version`.
 - `source_file` — `presence` (`present` | `absent` | `malformed`) and the
   declared `name` when present.
-- `source_debug_extension` — `presence` and opaque `byte_length`. The bytes are
-  preserved but never interpreted; no source-map dialect is parsed.
+- `source_debug_extension` — `presence` and `byte_length` only. The bytes are
+  neither returned nor interpreted; no source-map dialect is parsed.
 - `methods[]` — each with `name`, `descriptor`, debugging `state`, `max_locals`
   (from the `Code` attribute; `null` without a readable `Code` header), and the
   three decoded tables:

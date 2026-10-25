@@ -169,7 +169,7 @@ export type JavaDebugMetadataResult = z.infer<
 export const JVM_DEBUG_METADATA_LIMITATIONS: readonly string[] = [
   "Static class-file inspection only. No Java executes; bytecode offsets, local slots and line numbers are read from compiler-emitted attributes, not decompiler output.",
   "Debug metadata may be absent, stripped, partial or malformed. A reused local slot can denote different variables across scope ranges; entries are preserved, not merged.",
-  "SourceDebugExtension bytes are preserved opaquely; no source-map dialect is interpreted and supplied source is never claimed to match a SourceFile name.",
+  "SourceDebugExtension is reported by presence and byte length only; its bytes are neither returned nor interpreted (no source-map dialect is parsed), and supplied source is never claimed to match a SourceFile name.",
   "SHA-256 identifies the exact selected bytes; it does not establish authenticity or that a specific compiler produced the artifact.",
 ];
 

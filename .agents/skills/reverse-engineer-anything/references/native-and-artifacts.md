@@ -290,7 +290,7 @@ compiler-emitted `SourceFile`, `LineNumberTable`, `LocalVariableTable` and
 `LocalVariableTypeTable` and classifies each method's debugging readiness
 (`present | partial | stripped | malformed | not-applicable`), binding bytecode
 offsets, local slots and scope ranges to the method's name and descriptor. No
-Java executes; `SourceDebugExtension` stays opaque; decompiler line numbers are
+Java executes; `SourceDebugExtension` is reported by presence and length only; decompiler line numbers are
 never substituted for compiler positions.
 
 ## Native targets

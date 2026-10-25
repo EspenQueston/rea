@@ -23,9 +23,9 @@ a `LocalVariableTable` is not applicable when the method's `max_locals` is 0, so
 line numbers alone make such a method `present`.
 Absent tables, malformed records, partial examination and ambiguous mappings are
 distinguished; a reused local slot may denote different variables across scope
-ranges and is never collapsed. `SourceDebugExtension` bytes are preserved opaquely with bounded
-access; an admitted source-map dialect is interpreted only when established, and
-unknown extensions remain opaque rather than guessed.
+ranges and is never collapsed. `SourceDebugExtension` is reported by presence
+and byte length only; its bytes are neither returned nor interpreted, and no
+source-map dialect is guessed.
 
 In a multi-release JAR the requested effective class version is selected
 explicitly or its alternatives are reported; metadata from different entries is
