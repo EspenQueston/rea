@@ -1,5 +1,21 @@
 # Changelog
 
+## [6.7.0](https://github.com/morluto/rea/compare/rea-agents-6.6.0...rea-agents-6.7.0) (2026-10-18)
+
+### Highlights
+
+- Client configuration edits follow the duplicate-member semantics used by MCP clients.
+
+### Changes
+
+- Includes the [6.6.0 changes and migration notes](https://github.com/morluto/rea/releases/tag/rea-agents-6.6.0). That version was tagged but was not published to npm.
+
+### Fixes
+
+- **Client configuration:** Setup edits the last repeated JSON/JSONC member, matching the value clients actually read. Setup and uninstall refuse a removal that would reactivate a shadowed duplicate, preserving the original configuration. ([#4957](https://github.com/morluto/rea/pull/4957), [morluto/rea#4952](https://github.com/morluto/rea/issues/4952)). Thanks @kaoru0822-kitauji, @xu91102.
+
+Full contribution record: [4 commits and 1 merged PR](https://github.com/morluto/rea/blob/rea-agents-6.7.0/docs/releases/6.7.0.contributions.json).
+
 ## [6.6.0](https://github.com/morluto/rea/compare/rea-agents-6.5.0...rea-agents-6.6.0) (2026-10-18)
 
 ### Highlights
@@ -62,7 +78,7 @@
 
 ### ⚠ BREAKING CHANGES
 
-- **Saved Evidence:** Evidence and analysis snapshots now require explicit nullable `relationship_coverage` in their identity commitments. Artifact inventories require scoped coverage and explicit `integrity_contradictions`; obsolete `coverage_status` and prose-based coverage inference are removed. Regenerate old Evidence/snapshots and inventory observations with this release: saved files are not migrated and omitted facts are not filled with guessed defaults. ([db8128d](https://github.com/morluto/rea/commit/db8128dc0d1c4f731f3d19877fa00d25cf17f657), [0405c9d](https://github.com/morluto/rea/commit/0405c9d361de6d904dfa16cc0b6d8350407f2c9b), [a9588be](https://github.com/morluto/rea/commit/a9588be4ebdd20eeda975cb63ffcdb1cd868b340)).
+- **Saved Evidence:** Evidence and analysis snapshots now require explicit nullable `relationship_coverage` in their identity commitments. Earlier records whose digest omitted null coverage are incompatible even when the serialized field is explicitly null. Artifact inventories require scoped coverage and explicit `integrity_contradictions`; obsolete `coverage_status` and prose-based coverage inference are removed. Regenerate old Evidence/snapshots and inventory observations with this release: saved files are not migrated and omitted facts are not filled with guessed defaults. ([db8128d](https://github.com/morluto/rea/commit/db8128dc0d1c4f731f3d19877fa00d25cf17f657), [0405c9d](https://github.com/morluto/rea/commit/0405c9d361de6d904dfa16cc0b6d8350407f2c9b), [a9588be](https://github.com/morluto/rea/commit/a9588be4ebdd20eeda975cb63ffcdb1cd868b340)).
 - **Browser capture results:** Consumers must retain resolved capture limits, event families and omission facts. Set desired budgets through the supported capture options; omitted caller inputs still select defaults, but stored observations must report the resolved values. Admitted content reads queue behind bounded concurrency. ([57a23f0](https://github.com/morluto/rea/commit/57a23f0a2da0fdc3835e203718ded8acea5a34e6)).
 - **Android version codes:** `inspect_adb_package.version_code` is a decimal string rather than a JSON number. Read it as a string, or use `BigInt` for numeric comparison. ([#3485](https://github.com/morluto/rea/pull/3485), [morluto/rea#3368](https://github.com/morluto/rea/issues/3368), [7666a48](https://github.com/morluto/rea/commit/7666a482b69dc7cabdbac3bbaf89a43e32300192)). Thanks @coygeek, @kaoru0822-kitauji.
 - **Native UI failures:** Failed or cancelled native UI scenarios now return typed errors with the collected report in `partial_observation`. Handle the error path and read that report instead of expecting a successful result containing failed steps. ([d909919](https://github.com/morluto/rea/commit/d9099190ab3a819bd3a9fd62a8714cef398016d5)).

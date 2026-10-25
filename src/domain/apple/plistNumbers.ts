@@ -1,17 +1,5 @@
+import { plistUidValue } from "./plistUid.js";
 import type { JsonValue } from "../jsonValue.js";
-
-/** XML numeric decoding could not establish a representable value identity. */
-export class UnknownPlistReal {}
-
-/** Exact decimal or signed hexadecimal XML integer text. */
-export const parsePlistIntegerLiteral = (text: string): bigint | undefined => {
-  const match = /^([+-]?)(?:0[xX]([\da-fA-F]+)|(\d+))$/u.exec(text.trim());
-  if (match === null) return undefined;
-  const magnitude = BigInt(
-    match[2] === undefined ? match[3]! : `0x${match[2]}`,
-  );
-  return match[1] === "-" ? -magnitude : magnitude;
-};
 
 /** Source element types needed to distinguish large integers from integral reals. */
 export interface PlistNumberLiterals {
@@ -31,7 +19,6 @@ export const createPlistNumberCollector = () => {
   const integers = new Map<number, Set<string>>();
   const reals = new Set<number>();
   let unsafeIntegerLiterals = 0;
-  let incompleteMetadata = false;
   return {
     integer: (exact: bigint) => {
       if (
@@ -49,14 +36,11 @@ export const createPlistNumberCollector = () => {
     real: (value: number) => {
       reals.add(value);
     },
-    markIncomplete: () => {
-      incompleteMetadata = true;
-    },
     result: (incomplete = false): PlistNumberLiterals => ({
       integers,
       reals,
       unsafeIntegerLiterals,
-      incomplete: incomplete || incompleteMetadata,
+      incomplete,
     }),
   };
 };
@@ -92,12 +76,8 @@ export const createPlistNumberProjection = (literals: PlistNumberLiterals) => {
     if (typeof item === "number") return mapNumber(item);
     if (Array.isArray(item)) return item.map(map);
     if (item !== null && typeof item === "object") {
-      const keys = Object.keys(item);
-      const marker = item[keys[0] ?? ""];
-      const reference =
-        keys.length === 1 &&
-        (keys[0] === "UID" || keys[0] === "CF$UID") &&
-        typeof marker === "number";
+      const marker = plistUidValue(item);
+      const reference = marker !== undefined;
       if (reference) {
         // Keep malformed numeric reference markers recognizable by the graph reader.
         if (
@@ -135,31 +115,4 @@ export const createPlistNumberProjection = (literals: PlistNumberLiterals) => {
           ]),
     ],
   };
-};
-
-/**
- * Read a whole `<real>` text as one of CFPropertyList's non-finite spellings.
- * Its parser compares the complete text case-insensitively and also accepts
- * `infinity`, `inf`, `+inf` and `-inf`; its writer emits `nan`, `+infinity`
- * and `-infinity`. Any other text, including surrounding whitespace, is not
- * a spelled non-finite real.
- */
-export const parsePlistNonFiniteRealLiteral = (
-  text: string,
-): number | undefined => {
-  if (text.length < 3 || text.length > 9) return undefined;
-  switch (text.toLowerCase()) {
-    case "nan":
-      return Number.NaN;
-    case "+infinity":
-    case "infinity":
-    case "+inf":
-    case "inf":
-      return Number.POSITIVE_INFINITY;
-    case "-infinity":
-    case "-inf":
-      return Number.NEGATIVE_INFINITY;
-    default:
-      return undefined;
-  }
 };
