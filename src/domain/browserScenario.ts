@@ -13,9 +13,10 @@ import {
   HEADER_FIELD_VALUE,
   type BrowserScenarioAction,
   type BrowserScenarioUrl,
-  type BrowserScenarioRequestValue,
   type BrowserScenarioValue,
+  savedPlaceholderNames,
 } from "./browserScenarioValues.js";
+import type { JsonValue } from "./jsonValue.js";
 
 export const browserScenarioInputSchema = z.strictObject({
   browser: browserScenarioBrowserSchema.describe(
@@ -59,26 +60,49 @@ const assertUnique = (
 };
 
 const secretReferencesInValue = (
-  value: BrowserScenarioValue | BrowserScenarioRequestValue | undefined,
+  value: BrowserScenarioValue | undefined,
 ): readonly string[] => (value?.source === "secret" ? [value.secret_id] : []);
 
-/** The values a request step sends: query, path and body values, headers, and both parts of Basic credentials. */
-const requestValues = (
+/** A request step's header values, with Basic credentials as their two parts. */
+const headerValues = (
   action: Extract<BrowserScenarioAction, { action: "request" }>,
-): readonly BrowserScenarioRequestValue[] => [
-  ...action.query.map(({ value }) => value),
-  ...action.path_params.map(({ value }) => value),
-  ...action.json_values.map(({ value }) => value),
-  ...action.headers.flatMap(({ value }) =>
-    value.source === "basic_credentials"
-      ? [value.username, value.password]
-      : value.source === "literal" ||
-          value.source === "secret" ||
-          value.source === "saved"
-        ? [value]
-        : [],
-  ),
-];
+) =>
+  action.headers.flatMap(({ value }) =>
+    value.source === "basic_credentials" ? value.parts : [value],
+  );
+
+/** Every string in a JSON value, at any depth. */
+const jsonStrings = (value: JsonValue | undefined): readonly string[] => {
+  if (typeof value === "string") return [value];
+  if (Array.isArray(value)) return value.flatMap(jsonStrings);
+  if (value !== null && typeof value === "object")
+    return Object.values(value).flatMap(jsonStrings);
+  return [];
+};
+
+/** The saved values a step sends: `{saved:name}` in a request path, JSON string or goto URL, and saved header values and credential parts. */
+const sentSavedNames = (action: BrowserScenarioAction): readonly string[] => {
+  if (action.action === "goto")
+    return savedPlaceholderNames(action.destination.url);
+  if (action.action !== "request") return [];
+  return [
+    ...[action.path, ...jsonStrings(action.json)].flatMap(
+      savedPlaceholderNames,
+    ),
+    ...headerValues(action).flatMap((value) =>
+      value.source === "saved" ? [value.name] : [],
+    ),
+  ];
+};
+
+/** The names a step saves: a request's `save`, or a UI step's `save_response`. */
+const savedNames = (action: BrowserScenarioAction): readonly string[] =>
+  action.action === "request"
+    ? action.save.map(({ name }) => name)
+    : (action.action === "click" || action.action === "press") &&
+        action.save_response !== undefined
+      ? action.save_response.save.map(({ name }) => name)
+      : [];
 
 const destinationSecretReferences = (
   destination: BrowserScenarioUrl,
@@ -93,36 +117,30 @@ const actionSecretReferences = (
   if (action.action === "goto")
     return destinationSecretReferences(action.destination);
   if (action.action === "request")
-    return requestValues(action).flatMap(secretReferencesInValue);
+    return [
+      ...action.query.flatMap(({ value }) => secretReferencesInValue(value)),
+      ...headerValues(action).flatMap((value) =>
+        value.source === "secret" ? [value.secret_id] : [],
+      ),
+    ];
   return [];
 };
 
-/** Each saved value a request step sends was saved by an earlier step, and each path placeholder has a value. */
+/** Each saved value a step sends was saved by an earlier step. */
 const validateSavedValues = (
   scenario: ScenarioShape,
   context: z.RefinementCtx,
 ): void => {
   const saved = new Set<string>();
   scenario.actions.forEach((action, index) => {
-    if (action.action !== "request") return;
-    for (const value of requestValues(action))
-      if (value.source === "saved" && !saved.has(value.name))
+    for (const name of new Set(sentSavedNames(action)))
+      if (!saved.has(name))
         addIssue(
           context,
           ["actions", index],
-          `Request step ${action.step_id} sends saved value ${value.name}, which no earlier request step saves`,
+          `Step ${action.step_id} sends saved value ${name}, which no earlier step saves`,
         );
-    const params = new Set(action.path_params.map(({ name }) => name));
-    for (const [, name] of action.path.matchAll(
-      /\{([A-Za-z][A-Za-z0-9._-]*)\}/gu,
-    ))
-      if (!params.has(name!))
-        addIssue(
-          context,
-          ["actions", index, "path"],
-          `The path placeholder {${name!}} has no path_params value`,
-        );
-    for (const { name } of action.save) saved.add(name);
+    for (const name of savedNames(action)) saved.add(name);
   });
 };
 

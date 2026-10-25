@@ -319,10 +319,10 @@ export class BrowserScenarioSecrets {
     return ok(new BrowserScenarioSecrets(values));
   }
 
-  /** Values request steps saved from their responses, by name, as JSON strings or numbers. */
+  /** Values steps saved from JSON responses, by name, as strings or numbers. */
   private readonly saved = new Map<string, string | number>();
 
-  /** Keep a value a request step saved from its response; a secret one is redacted from everything recorded after it. */
+  /** Keep a value a step saved from a JSON response; a secret one is redacted from everything recorded after it. */
   save(
     label: string,
     name: string,
@@ -336,8 +336,7 @@ export class BrowserScenarioSecrets {
   /** A saved value with the JSON type it was saved with. */
   savedValue(name: string): string | number {
     const value = this.saved.get(name);
-    if (value === undefined)
-      throw new Error(`No earlier request step saved ${name}`);
+    if (value === undefined) throw new Error(`No earlier step saved ${name}`);
     return value;
   }
 

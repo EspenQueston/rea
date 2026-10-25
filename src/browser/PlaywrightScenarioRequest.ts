@@ -2,8 +2,12 @@ import type { Page, Route } from "playwright-core";
 
 import {
   HEADER_FIELD_VALUE,
+  SAVED_PLACEHOLDER,
   type BrowserScenarioAction,
+  type BrowserScenarioCredentialPart,
   type BrowserScenarioRequestHeader,
+  type BrowserScenarioSaveEntry,
+  type BrowserScenarioSaveResponse,
 } from "../domain/browserScenarioValues.js";
 import type { BrowserScenarioSecrets } from "./BrowserScenarioSecrets.js";
 
@@ -59,31 +63,23 @@ const pointerValue = (
     : undefined;
 };
 
-/** Resolve one header value; values read from the page are redacted from later records. */
-const headerValue = async (
-  step: {
-    readonly page: Page;
-    readonly url: URL;
-    readonly stepId: string;
-    readonly secrets: BrowserScenarioSecrets;
-  },
-  header: BrowserScenarioRequestHeader,
+interface PageValueStep {
+  readonly page: Page;
+  readonly url: URL;
+  readonly stepId: string;
+  readonly secrets: BrowserScenarioSecrets;
+}
+
+/** Read a value from the page, a cookie or a local storage entry, and redact it from later records under a label. */
+const readPageValue = async (
+  step: PageValueStep,
+  value: Extract<
+    BrowserScenarioCredentialPart,
+    { source: "cookie" | "local_storage" }
+  >,
+  label: string,
 ): Promise<string> => {
   const { page, url, stepId, secrets } = step;
-  const { value } = header;
-  if (
-    value.source === "literal" ||
-    value.source === "secret" ||
-    value.source === "saved"
-  )
-    return secrets.value(value);
-  if (value.source === "basic_credentials") {
-    const encoded = Buffer.from(
-      `${secrets.value(value.username)}:${secrets.value(value.password)}`,
-    ).toString("base64");
-    secrets.admitPageValue(`${stepId}.${header.name}`, encoded);
-    return encoded;
-  }
   let read: string | undefined;
   if (value.source === "cookie") {
     const cookies = await page.context().cookies(url.href);
@@ -133,8 +129,43 @@ const headerValue = async (
         );
     }
   }
-  secrets.admitPageValue(`${stepId}.${header.name}`, read);
+  secrets.admitPageValue(label, read);
   return read;
+};
+
+/** One part of Basic credentials: a literal, secret or saved value, or a value read from the page. */
+const credentialPart = (
+  step: PageValueStep,
+  part: BrowserScenarioCredentialPart,
+  label: string,
+): Promise<string> | string =>
+  part.source === "cookie" || part.source === "local_storage"
+    ? readPageValue(step, part, label)
+    : step.secrets.value(part);
+
+/** Resolve one header value; values read from the page, and credentials built from them, are redacted from later records. */
+const headerValue = async (
+  step: PageValueStep,
+  header: BrowserScenarioRequestHeader,
+): Promise<string> => {
+  const { stepId, secrets } = step;
+  const { value } = header;
+  const label = `${stepId}.${header.name}`;
+  if (
+    value.source === "literal" ||
+    value.source === "secret" ||
+    value.source === "saved"
+  )
+    return secrets.value(value);
+  if (value.source === "basic_credentials") {
+    const [username, password] = value.parts;
+    const user = await credentialPart(step, username!, `${label}.username`);
+    const pass = await credentialPart(step, password!, `${label}.password`);
+    const encoded = Buffer.from(`${user}:${pass}`).toString("base64");
+    secrets.admitPageValue(label, encoded);
+    return encoded;
+  }
+  return readPageValue(step, value, label);
 };
 
 /** Append declared query entries after any literal query the path carries, leaving that query as written. */
@@ -168,8 +199,8 @@ interface PageRequest {
   readonly headers: [string, string][];
   readonly body: string | undefined;
   readonly deadline: number | undefined;
-  /** Return the response text, for a step that saves values from it. */
-  readonly read: boolean;
+  /** Return the response text up to this many characters, for a step that saves values from it. */
+  readonly readLimit: number | undefined;
 }
 
 /** The largest response text a request step saves values from. */
@@ -217,9 +248,11 @@ const sendFromPage = (
         ...(request.body === undefined ? {} : { body: request.body }),
       });
       if (answer.type === "opaqueredirect") return { redirected: true };
-      if (request.read) {
+      if (request.readLimit !== undefined) {
         const text = await answer.text();
-        return { status: answer.status, body: text };
+        return text.length > request.readLimit
+          ? { status: answer.status }
+          : { status: answer.status, body: text };
       }
       const reader = answer.body?.getReader();
       if (reader !== undefined)
@@ -262,16 +295,7 @@ export const performScenarioRequest = async (input: {
     throw new ScenarioRequestError(
       `Request step ${action.step_id} runs from a page on the start origin ${startOrigin}; navigate back to it with a goto step first.`,
     );
-  const path = action.path.replace(
-    /\{([A-Za-z][A-Za-z0-9._-]*)\}/gu,
-    (placeholder, name: string) => {
-      const param = action.path_params.find((entry) => entry.name === name);
-      return param === undefined
-        ? placeholder
-        : encodeURIComponent(secrets.value(param.value));
-    },
-  );
-  const url = new URL(path, startOrigin);
+  const url = new URL(withSavedPlaceholders(action.path, secrets), startOrigin);
   if (url.origin !== startOrigin)
     throw new ScenarioRequestError(
       `Request step ${action.step_id} must stay on the start origin ${startOrigin}.`,
@@ -301,7 +325,8 @@ export const performScenarioRequest = async (input: {
     throw new ScenarioRequestError(
       `Request step ${action.step_id} ran out of time before its request was sent.`,
     );
-  const json = withJsonValues(action, secrets);
+  const json =
+    action.json === undefined ? undefined : withSavedJson(action.json, secrets);
   const request = {
     url: target,
     origin: startOrigin,
@@ -309,7 +334,8 @@ export const performScenarioRequest = async (input: {
     headers,
     body: json === undefined ? undefined : JSON.stringify(json),
     deadline,
-    read: action.save.length > 0,
+    readLimit:
+      action.save.length > 0 ? MAX_SAVED_RESPONSE_CHARACTERS : undefined,
   };
   // The browser can queue evaluate behind a busy page. Keep a host-side gate
   // until that evaluation settles, including after the step boundary stops
@@ -359,64 +385,135 @@ export const performScenarioRequest = async (input: {
     throw new ScenarioRequestError(
       `Request step ${action.step_id} answered ${String(response.status)}; expected ${action.expected_status.join(" or ")}.`,
     );
-  if (action.save.length > 0) saveValues(action, response.body, secrets);
+  if (action.save.length > 0)
+    saveValues(action.step_id, response.body, action.save, secrets);
 };
 
-/** The step's JSON body with its `json_values` set at their pointers; a saved value keeps its JSON type. */
-const withJsonValues = (
-  action: RequestAction,
+/** A path or URL with its `{saved:name}` placeholders filled, each value percent-encoded. */
+export const withSavedPlaceholders = (
+  text: string,
+  secrets: BrowserScenarioSecrets,
+): string =>
+  text.replace(SAVED_PLACEHOLDER, (_placeholder, name: string) =>
+    encodeURIComponent(String(secrets.savedValue(name))),
+  );
+
+/** Whether a request a UI step triggered is the one its `save_response` names: method, start origin, and path with `{*}` matching one segment. */
+const namesResponse = (
+  spec: BrowserScenarioSaveResponse,
+  startOrigin: string,
+  method: string,
+  address: string,
+): boolean => {
+  if (method !== spec.method) return false;
+  const url = URL.parse(address);
+  if (url === null || url.origin !== startOrigin) return false;
+  const pattern = spec.path.split("?")[0]!.split("/");
+  const segments = url.pathname.split("/");
+  return (
+    segments.length === pattern.length &&
+    pattern.every((part, index) => part === "{*}" || part === segments[index])
+  );
+};
+
+/**
+ * Start waiting, before a UI step acts, for the response its `save_response` names; the returned call waits for that
+ * response and saves its values. The step fails unless a 2xx JSON response arrives before its timeout, or the page's
+ * default timeout when it sets none.
+ */
+export const awaitSavedResponse = (
+  page: Page,
+  step: {
+    readonly stepId: string;
+    readonly spec: BrowserScenarioSaveResponse;
+    readonly startOrigin: string;
+    readonly timeout: number | undefined;
+    readonly secrets: BrowserScenarioSecrets;
+  },
+): (() => Promise<void>) => {
+  const { stepId, spec, startOrigin, timeout, secrets } = step;
+  const waiting = page.waitForResponse(
+    (response) =>
+      namesResponse(
+        spec,
+        startOrigin,
+        response.request().method(),
+        response.url(),
+      ),
+    timeout === undefined ? {} : { timeout },
+  );
+  // The step may fail before it waits; the rejection is reported by the wait, or not at all.
+  waiting.catch(() => undefined);
+  return async () => {
+    let response: Awaited<typeof waiting>;
+    try {
+      response = await waiting;
+    } catch {
+      throw new ScenarioRequestError(
+        `Step ${stepId}: no ${spec.method} ${spec.path} response arrived before the step's timeout, so nothing was saved.`,
+      );
+    }
+    if (response.status() < 200 || response.status() > 299)
+      throw new ScenarioRequestError(
+        `Step ${stepId}: the ${spec.method} ${spec.path} response answered ${String(response.status())}; values are saved only from a 2xx response.`,
+      );
+    saveValues(stepId, await response.text(), spec.save, secrets);
+  };
+};
+
+/**
+ * The step's JSON body with its `{saved:name}` placeholders filled: a string that is only a placeholder becomes the
+ * saved value, keeping its JSON type, and a placeholder inside a longer string is filled as text.
+ */
+const withSavedJson = (
+  value: unknown,
   secrets: BrowserScenarioSecrets,
 ): unknown => {
-  if (action.json_values.length === 0) return action.json;
-  const body: unknown = structuredClone(action.json ?? {});
-  for (const { json_pointer, value } of action.json_values) {
-    const tokens = json_pointer
-      .slice(1)
-      .split("/")
-      .map((token) => token.replaceAll("~1", "/").replaceAll("~0", "~"));
-    const last = tokens.pop()!;
-    let parent: unknown = body;
-    for (const token of tokens)
-      parent =
-        parent !== null && typeof parent === "object"
-          ? (parent as Record<string, unknown>)[token]
-          : undefined;
-    if (parent === null || typeof parent !== "object")
-      throw new ScenarioRequestError(
-        `Request step ${action.step_id}: the JSON body has no object or array at ${json_pointer}'s parent.`,
-      );
-    (parent as Record<string, unknown>)[last] =
-      value.source === "saved"
-        ? secrets.savedValue(value.name)
-        : secrets.value(value);
+  if (typeof value === "string") {
+    const [whole] = [...value.matchAll(SAVED_PLACEHOLDER)];
+    if (whole !== undefined && whole[0] === value)
+      return secrets.savedValue(whole[1]!);
+    return value.replace(SAVED_PLACEHOLDER, (_placeholder, name: string) =>
+      String(secrets.savedValue(name)),
+    );
   }
-  return body;
+  if (Array.isArray(value))
+    return value.map((item) => withSavedJson(item, secrets));
+  if (value !== null && typeof value === "object")
+    return Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [
+        key,
+        withSavedJson(item, secrets),
+      ]),
+    );
+  return value;
 };
 
-/** Save the values the step names from its JSON response, for later request steps. */
+/** Save the values a step names from a JSON response, for later steps. */
 const saveValues = (
-  action: RequestAction,
+  stepId: string,
   body: string | undefined,
+  entries: readonly BrowserScenarioSaveEntry[],
   secrets: BrowserScenarioSecrets,
 ): void => {
   if (body === undefined || body.length > MAX_SAVED_RESPONSE_CHARACTERS)
     throw new ScenarioRequestError(
-      `Request step ${action.step_id}: the response is too large to save values from.`,
+      `Step ${stepId}: the response is too large to save values from.`,
     );
   let parsed: unknown;
   try {
     parsed = JSON.parse(body);
   } catch {
     throw new ScenarioRequestError(
-      `Request step ${action.step_id}: the response is not JSON, so no value can be saved from it.`,
+      `Step ${stepId}: the response is not JSON, so no value can be saved from it.`,
     );
   }
-  for (const { name, json_pointer, secret } of action.save) {
+  for (const { name, json_pointer, secret } of entries) {
     const value = pointerValue(parsed, json_pointer);
     if (value === undefined)
       throw new ScenarioRequestError(
-        `Request step ${action.step_id}: the response has no string or number at ${json_pointer} to save as ${name}.`,
+        `Step ${stepId}: the response has no string or number at ${json_pointer} to save as ${name}.`,
       );
-    secrets.save(`${action.step_id}.${name}`, name, value, secret);
+    secrets.save(`${stepId}.${name}`, name, value, secret);
   }
 };

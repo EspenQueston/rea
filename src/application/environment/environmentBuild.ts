@@ -24,6 +24,7 @@ import {
 import {
   anonymousOrigin,
   credentialScanWarnings,
+  savedCredentialWarnings,
   nameFromCaptureFile,
   type EnvironmentBuildWarning,
 } from "./environmentBuildReport.js";
@@ -319,7 +320,10 @@ export const buildEnvironment = async (
     name,
     operation: ENVIRONMENT_EXPORT_OPERATION,
   });
-  warnings.push(...credentialScanWarnings(recorded.value));
+  warnings.push(
+    ...credentialScanWarnings(recorded.value),
+    ...savedCredentialWarnings(capture.parameters),
+  );
 
   const packageSource: EnvironmentPackageSource =
     input.packageTarball === undefined

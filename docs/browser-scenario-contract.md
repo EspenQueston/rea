@@ -207,7 +207,8 @@ HTTP(S) URLs may include ordinary query values and fragments directly. Use
 ordered structured query entries when a value needs to reference a declared
 environment-backed secret. Form, storage, and cookie values are either literal
 strings or declared secret references; request step headers can also read a
-cookie or local storage value from the page. Raw URL userinfo credentials are rejected.
+cookie or local storage value from the page, and request steps and `goto`
+destinations can send [saved values](#saved-values). Raw URL userinfo credentials are rejected.
 Captured credential-header
 values are not retained, and declared secret values are redacted automatically.
 A secret may be declared solely to
@@ -400,6 +401,14 @@ data you may change. This scenario creates one item:
   by default) get smaller: after a 32-character `X-CSRFToken` value, a body over
   about 47 KiB is kept as `unavailable`. Raise `capture.limits` when the
   application's responses are larger.
+- A header can send Basic credentials, `{"source": "basic_credentials",
+  "parts": [username, password]}`: the base64 of `username:password`, after a
+  `prefix` such as `"Basic "` or with none, as some APIs take encoded
+  credentials in their own header. Each part is a literal, a declared secret, a
+  saved value, a cookie or a local storage entry, so a header a frontend builds
+  from a login token can be sent too. The encoded value is redacted like a page value, as
+  `[REDACTED:page:<step_id>.<header>]`, and parts read from the page are
+  redacted as page values are.
 - Validation refuses a header name given twice in a step, header names a
   page's `fetch` cannot set, such as `Cookie`, `Origin`, `Host` or `Sec-*`, and
   `User-Agent`, which Chrome drops; it refuses line breaks and other ASCII
@@ -424,6 +433,77 @@ page requests: select network content (bodies or header values) to record it.
 Captures with request steps state in `limitations` that the steps sent their
 declared requests through the page's fetch. A scenario without request steps
 is unchanged.
+
+## Saved values
+
+A step can keep a string or number from a JSON response, by name, and a later
+step can send it, so a scenario can read back, edit and delete an object whose
+id the application assigns:
+
+```json
+[
+  {
+    "step_id": "save-item-1",
+    "action": "click",
+    "timeout_ms": 10000,
+    "locator": { "kind": "role", "role": "button", "name": "Save" },
+    "save_response": {
+      "method": "POST",
+      "path": "/api/items",
+      "save": [{ "name": "item_1", "json_pointer": "/id" }]
+    }
+  },
+  {
+    "step_id": "open-item-1",
+    "action": "goto",
+    "timeout_ms": 10000,
+    "destination": { "url": "http://127.0.0.1:3000/items/{saved:item_1}" },
+    "wait_until": "load"
+  },
+  {
+    "step_id": "copy-item-1",
+    "action": "request",
+    "timeout_ms": 10000,
+    "method": "POST",
+    "path": "/api/items/{saved:item_1}/copies",
+    "json": {
+      "source_id": "{saved:item_1}",
+      "title": "Copy of {saved:item_1}"
+    },
+    "expected_status": [201]
+  }
+]
+```
+
+- A `request` step saves with `save: [{name, json_pointer, secret}]`, from its
+  own response. A `click` or `press` step saves with `save_response: {method,
+  path, save}`, from the response to the request it triggers, such as the
+  create a form's Save button sends: the recorder starts waiting before the
+  step acts, matches the method and a path on the start origin (`{*}` matches
+  one segment, and the query is ignored), and fails the step unless a 2xx JSON
+  response arrives before its `timeout_ms`. A pointer that names no string or
+  number fails the step, so later steps never send a missing value.
+- `{saved:name}` sends a saved value in a request step's `path`, including its
+  query, and in a `goto` destination's URL, percent-encoded. In a request
+  step's `json` body, a string that is only `{saved:name}` becomes the saved
+  value with the JSON type it was saved with, so a saved number id is sent as a
+  number, and `{saved:name}` inside a longer string is filled as text. A header
+  value or Basic credentials part sends one as `{"source": "saved", "name"}`.
+  Other braces, such as `{id}`, are sent as written.
+- Validation refuses a saved value that no earlier step saves. A later save of
+  the same name replaces the value.
+- A value saved with `secret: true` is redacted like a page value, as
+  `[REDACTED:page:<step_id>.<name>]`, from records made after it is saved. The
+  recorder reads response bodies on their own schedule, so the response it was
+  saved from may keep it, as a login response may keep a token a later step
+  reads from the page. Other saved values, such as ids, stay visible, since
+  environments model them. The environment build warns about saved values
+  named like credentials that are not marked secret
+  (`credential-named-saved-values`).
+- Evidence records a request step's empty `save` list as absent, so a scenario
+  that saves nothing records the same parameters and `scenario_sha256` as
+  before saved values existed, and REA versions without saved values read its
+  captures.
 
 ## Network evidence
 
