@@ -14,5 +14,9 @@
    them; bump the skill version.
 7. Tests: schema, runtime with a fake page, Evidence parameters, the build
    warning, the catalog budget, and a real-Chrome recording.
-8. End to end: agents build environments from prompts with main and with this
-   branch on the same applications.
+8. Write model: compose strings from generated ids and other fields, learn the
+   `&` spelling of slugs, tell apart addresses whose parts are the same text,
+   and check templates on later creates; census every recorded capture.
+9. End to end: agents build environments from prompts with main and with this
+   branch on the same applications, and the branch's recordings are rebuilt
+   before and after the write-model changes.

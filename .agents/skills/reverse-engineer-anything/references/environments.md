@@ -223,8 +223,10 @@ withheld with its hint:
 | `contradicted`        | Stop: a later read disagrees with the modelled effect.                                        |
 | `body-unusable`       | Stop: the body is not a JSON object.                                                          |
 
-Use new scratch names on each attempt; the first attempt's objects may still
-exist.
+Use new scratch names on each attempt, and delete what an earlier attempt
+created before recording again (through the UI, or a `request` step with the
+id that capture shows): the environment starts from what the recording first
+reads, so a leftover object becomes seeded data that write tasks then find.
 New browser scenario captures include request times, so a fully timed capture
 can learn a write clock and serve updates that stamp modification times. Older
 captures or ones missing a request start keep record order and learn no clock.

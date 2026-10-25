@@ -48,6 +48,14 @@ values.
 - The skill records writes the way the application's UI does and falls back to
   request steps when the UI cannot reach an operation or coverage withholds the
   UI-shaped write.
+- A UI-made create must be served as faithfully as one made through the API:
+  - a string composed from a generated id and another field, such as Grafana's
+    folder address, is learned as composed, not as a template around the id;
+  - a slug learns how the application spells `&` from the call that shows it;
+  - an id that equals the title's slug is told apart by the entities the type
+    holds, or by a later create;
+  - a template a later create answers otherwise is withheld, as a composed
+    string is.
 
 ## Non-goals
 

@@ -11,3 +11,5 @@
 - [x] Run the gates.
 - [x] Build prompt-recorded environments with main and with this branch.
 - [x] Make the skill's recording example write through the UI.
+- [x] Learn the addresses a UI-made create spells, and check templates on later creates.
+- [x] Rebuild the branch's recordings with the write-model changes and record every application again.

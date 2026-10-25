@@ -26,8 +26,10 @@ VMs with snap Chromium for the agent recordings.
 - Main reads a capture that uses saved values: `environment-build --dry-run` of the real-Chrome capture below gives the
   same manifest, state, coverage and file plan on main and on this branch. This branch adds the
   `credential-named-saved-values` warning.
-- Write plans for 102 captures (the 50 published captures, 29 earlier agent recordings and the 23 recorded in the
-  comparison below), built by main and by this branch: byte-identical, 473 plans and 218 served.
+- Write plans for 109 captures (the 50 published captures, 29 earlier agent recordings and the 30 recorded in the
+  comparison below), built by main and by this branch: 524 plans and 247 served on each. Three plans differ, all
+  Grafana folder creates recorded below, whose `url` the branch composes from the uid and the title's slug where main
+  learned a template or nothing.
 
 ## Real Chrome
 
@@ -54,52 +56,74 @@ ff6d96bc (skill 49) and with this branch (skill 50), on freshly seeded instances
 was recorded with, and its write tasks run with `fireworks_ai/gpt-oss-120b` and `fireworks_ai/glm-5p3-flash`. Each task
 checks its result from the environment's state, including that nothing else changed.
 
-Two branch runs are reported. The first used this branch's skill as first written. In that run, EspoCRM's agent wrote
-through request steps with Basic credentials instead of the UI, and EspoCRM's API answers in a shape the write model
-withholds. The skill's recording example created its object with a request step, which agents copy. It now creates
-through the UI with `save_response`. The final run uses that skill.
+The branch was recorded three times as it changed:
 
-| Application | Write tasks | Main: served, tasks    | Branch first run: served, tasks | Branch final: served, tasks |
-| ----------- | ----------- | ---------------------- | ------------------------------- | --------------------------- |
-| Miniflux    | 3           | no bundle              | 3, 3/3 3/3                      | 4, 3/3 3/3                  |
-| Paperless   | 3           | 3, 1/3 1/3; 6, 2/3 2/3 | 6, 2/3 2/3; 3, 1/3 1/3          | 6, 1/3 2/3                  |
-| Vikunja     | 3 + 2       | 1, 0/3 0/3 + 0/2 0/2   | 4, 0/3 0/3 + 2/2 2/2            | 2, 1/3 1/3 + 0/2 0/2        |
-| Linkding    | 2           | 0, 0/2 0/2             | 5, 0/2 0/2                      | 5, 0/2 0/2                  |
-| Homebox     | 2           | 1, 0/2 0/2             | 3, 0/2 0/2                      | 5, 0/2 0/2                  |
-| Grafana     | 2           | 2, 2/2 2/2; 3, 2/2 2/2 | 0, 0/2 0/2                      | 2, 0/2 0/2                  |
-| EspoCRM     | 3           | 2, 1/3 1/3             | 0, 0/3 0/3                      | 2, 1/3 1/3                  |
-| Total       | 20          | 9, 4/20 4/20           | 21, 7/20 7/20                   | 26, 6/20 7/20               |
+1. With the skill as first written, EspoCRM's agent wrote through request steps with Basic credentials instead of the
+   UI, and EspoCRM's API answers in a shape the write model withholds (0/3). The skill's recording example created its
+   object with a request step, which agents copy; it now creates through the UI with `save_response`.
+2. With that example, Grafana's agent created folders through the UI, where Grafana generates the uid. REA then learned
+   the folder's `url` as a template around the uid that kept the first folder's slug, and coverage did not check the
+   template against the second folder, so served creates answered with wrong addresses (0/2). The write-model fixes
+   in this PR compose the address from the uid and the title's slug, learn Grafana's `&` spelling, and check templates
+   on later creates.
+3. With both, every application was recorded again.
+
+**The same recordings, before and after the write-model fixes.** Run 2's captures, rebuilt by this branch before and
+after the fixes (gpt-oss, GLM):
+
+| Application | Before        | After         |
+| ----------- | ------------- | ------------- |
+| Miniflux    | 3/3 3/3       | 3/3 3/3       |
+| Paperless   | 1/3 2/3       | 1/3 1/3       |
+| Vikunja     | 1/3 1/3 + 0/2 | 1/3 1/3 + 0/2 |
+| Linkding    | 0/2 0/2       | 0/2 0/2       |
+| Homebox     | 0/2 0/2       | 0/2 0/2       |
+| Grafana     | 0/2 0/2       | 2/2 2/2       |
+| EspoCRM     | 1/3 1/3       | 1/3 1/3       |
+
+Only Grafana's plans change, and its tasks pass. Paperless's plans are identical in both builds; its GLM difference is
+the eval model's.
+
+**Fresh recordings, main and the final branch:**
+
+| Application | Write tasks | Main: served, tasks    | Branch: served, tasks |
+| ----------- | ----------- | ---------------------- | --------------------- |
+| Miniflux    | 3           | no bundle              | 4, 3/3 3/3            |
+| Paperless   | 3           | 3, 1/3 1/3; 6, 2/3 2/3 | 6, 1/3 2/3            |
+| Vikunja     | 3 + 2       | 1, 0/3 0/3 + 0/2 0/2   | 3, 1/3 1/3 + 2/2 2/2  |
+| Linkding    | 2           | 0, 0/2 0/2             | 3, 0/2 0/2            |
+| Homebox     | 2           | 1, 0/2 0/2             | 5, 0/2 0/2            |
+| Grafana     | 2           | 2, 2/2 2/2; 3, 2/2 2/2 | 1, 1/2 1/2            |
+| EspoCRM     | 3           | 2, 1/3 1/3             | 2, 0/3 0/3            |
+| Total       | 20          | 9, 4/20 4/20           | 24, 8/20 9/20         |
 
 "Served" counts the write tools the final capture serves; tasks are gpt-oss then GLM, and Miniflux's count as failed
-without a bundle. Paperless and Grafana on main, and Paperless on the first branch run, were recorded twice; totals use
-the first run.
+without a bundle. Paperless and Grafana were recorded twice on main; totals use the first run.
 
 - **Miniflux:** main's agent stopped and asked for an API key, since the API takes Basic auth. With Basic credentials
-  the branch built an environment serving category create, rename and delete in both runs, and every category task
-  passed with both models.
-- **Saved ids:** in the final run every agent saved ids, with `save_response` on UI writes in Paperless, Homebox,
-  Grafana and EspoCRM, and read objects back by them. On main no step can carry a value to a later one, so agents chose
-  their own ids or read lists back instead.
-- **EspoCRM:** the final run wrote through the UI (10 clicks) and served create and update, as main did.
-- **Paperless:** run-to-run differences are as large as the difference between versions: main served 3 and 6 writes in
-  two runs.
+  the branch served category create, rename and delete in all three runs, and every category task passed with both
+  models.
+- **Vikunja:** label edits and deletes are served and pass in two of the three branch runs, and task deletes in the
+  last two.
+- **Saved ids:** every branch agent saved ids, with `save_response` on UI writes, and read objects back by them. On main
+  no step can carry a value to a later one, so agents chose their own ids or read lists back instead.
+- **Paperless:** the two main runs differ as much as main and the branch do.
 - **Linkding and Homebox** serve more writes, but their create tasks still fail. Linkding's served create requires every
   member its recorded calls sent (`description`, `notes`, `unread`, `shared`, `tag_names`), so a task that sends a URL
   and a title is refused.
-- **Grafana** passed both tasks in both main runs and neither branch run. Each capture builds the same coverage with
-  main and with this branch, so the difference is in what was recorded:
-  - Main's agents created folders through the API with a uid they chose, and REA composes the folder's `url` from that
-    uid and the title's slug.
-  - The final run created them through the UI, where Grafana generates the uid. REA then learns `url` as a template
-    around the generated uid that keeps the recorded folder's slug, so a served folder's address does not follow its
-    title.
-  - Preferring the composed rule fixes the spelling, but this capture's second folder title holds `&`, which Grafana
-    slugs as `and` and REA drops, so that create would be withheld instead.
-  - Both are write-model changes left for a follow-up.
-- Agents spent about the same: main $7.45 and 2,235 seconds in total, the final run $8.70 and 2,880 seconds, a third of
-  it Homebox's.
+- **Grafana:** the folder create is served with the right address and its task passes. The rename is withheld:
+  Grafana lists folders sorted by title, the recording renamed a folder to a title that sorts first, and REA keeps an
+  updated entity where it was in a list. Main's REA reads this recording the same way, and serves its create with the
+  template that keeps the first folder's slug, so the create task would fail too. Main's two recordings passed because
+  their titles kept their order.
+- **EspoCRM:** the recording started with a contact an earlier attempt in the same session created and left, so the
+  environment holds it as seeded data and every task's "nothing else changed" check fails. The skill now asks agents to
+  delete what an earlier attempt created before recording again; that change was not measured.
+- Agents spent $9.98 and 3,149 seconds in total on the fresh branch run, against $7.45 and 2,235 on main, a third of it
+  Homebox's.
 
 ## Not verified
 
-- One recording per application and version, two for Paperless and Grafana on main; agent runs vary.
+- One fresh recording per application and version, two for Paperless and Grafana on main; agent runs vary.
+- Lists sorted by a field that an update changes, and the skill's cleanup of earlier attempts.
 - Multi-factor sign-in, and saved values in `fill` or `select_option` steps, which this change does not add.
