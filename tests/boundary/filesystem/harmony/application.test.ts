@@ -19,7 +19,6 @@ import { createDirectAnalysis } from "../../../../src/composition/directAnalysis
 import { harmonyApplicationProjectionResultSchema } from "../../../../src/domain/harmony/harmonyApplication.js";
 import { artifactInventoryResultSchema } from "../../../../src/domain/artifactGraph.js";
 import { createEvidence } from "../../../../src/domain/evidence.js";
-import { jsonValueSchema } from "../../../../src/domain/jsonValue.js";
 import { parseBinaryTarget } from "../../../../src/application/BinaryTargetResolver.js";
 import {
   ZIP_PACKAGE_FORMATS,
@@ -400,12 +399,12 @@ describe("HarmonyOS partial inventory classification", () => {
       {
         operation: inventory.operation,
         parameters: inventory.parameters,
-        result: jsonValueSchema.parse({
+        result: {
           ...result,
           occurrences: result.occurrences.filter(
             ({ logical_path }) => logical_path !== ".pages.info",
           ),
-        }),
+        },
         confidence: "derived",
         authority: inventory.authority,
       },
