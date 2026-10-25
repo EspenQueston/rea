@@ -208,6 +208,13 @@ const isAutoLoaded = (stored: string, listing: ArchiveListing): boolean => {
 };
 
 /**
+ * Whether an unnamed member is stored only once was not retained, so advice
+ * to select one carries this caveat.
+ */
+export const UNNAMED_SELECTION_CAVEAT =
+  "Whether an unnamed member is stored only once was not retained, so selecting one may still be refused.";
+
+/**
  * Name the canonical members Android does not auto-load, if any: those after
  * a gap in the sequence and those not stored under their exact name.
  */
@@ -244,15 +251,14 @@ const skippedMembersNote = (
   const pick = (): string => {
     if (selectable === skipped.length + more)
       return selectable === 1 ? "it" : "one";
+    // Only unnamed members are selectable, and they are not listed by name.
+    if (named === 0)
+      return unnamed === 1 ? "the one not named here" : "one not named here";
     return selectable === 1 && unnamed === 0
       ? "the unmarked one"
       : "an unmarked one";
   };
-  // Whether an unnamed member is stored only once was not retained.
-  const caveat =
-    unnamed === 0
-      ? ""
-      : " Whether an unnamed member is stored only once was not retained, so selecting one may still be refused.";
+  const caveat = unnamed === 0 ? "" : ` ${UNNAMED_SELECTION_CAVEAT}`;
   const advice =
     selectable === 0 ? "" : ` Select ${pick()} with entry.${caveat}`;
   return `${path} also holds ${names}, which Android does not auto-load: it loads classes.dex, classes2.dex, ... only while each is present under its exact stored name.${advice}`;

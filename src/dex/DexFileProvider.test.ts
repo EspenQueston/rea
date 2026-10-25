@@ -7,6 +7,7 @@ import { Uint8ArrayReader, Uint8ArrayWriter, ZipWriter } from "@zip.js/zip.js";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { DexFileProvider } from "./DexFileProvider.js";
+import { UNNAMED_SELECTION_CAVEAT } from "./dexMemberSelection.js";
 import { debuggableDex, zipArchive } from "../../tests/fixtures/dexFile.js";
 
 let dir: string;
@@ -481,11 +482,33 @@ describe("DexFileProvider skipped-member advice", () => {
     expect(note).not.toContain("with entry");
   });
 
+  it("does not point at unmarked names when only unnamed members are selectable", async () => {
+    // 128 named members (the display cap) are encrypted; the 2 unnamed ones
+    // after them are plain, so only members not listed by name are selectable.
+    const path = await write(
+      "gap-unnamed-only.apk",
+      await zipArchive([
+        { name: "classes.dex", bytes: debuggableDex() },
+        ...Array.from({ length: 130 }, (_, i) => ({
+          name: `classes${String(i + 3)}.dex`,
+          bytes: debuggableDex(),
+          ...(i < 128 ? { password: "secret" } : {}),
+        })),
+      ]),
+    );
+    const result = await provider.inspect({ path });
+    if (!result.ok) throw result.error;
+    const note = (
+      result.value.result as { limitations: string[] }
+    ).limitations.join(" ");
+    expect(note).toContain("with entry.");
+    expect(note).not.toContain("unmarked");
+    expect(note).toContain(UNNAMED_SELECTION_CAVEAT);
+  });
+
   it("advises entry for unnamed plain members, saying it may still be refused", async () => {
     const note = await noteOf("gap-plain.apk");
     expect(note).toContain("with entry.");
-    expect(note).toContain(
-      "Whether an unnamed member is stored only once was not retained",
-    );
+    expect(note).toContain(UNNAMED_SELECTION_CAVEAT);
   });
 });
