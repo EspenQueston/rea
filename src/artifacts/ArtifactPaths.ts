@@ -72,26 +72,58 @@ export const normalizeArtifactPath = (input: string): string => {
   return normalized;
 };
 
-/** Reject exact and same-spelling prefix collisions. Case-distinct names stay distinct. */
+/**
+ * Reject exact and same-spelling prefix collisions. Case-distinct names stay
+ * distinct unless destination case-folding rules are enabled.
+ */
 export class ArtifactPathRegistry {
-  readonly #root: PathTrieNode = { kind: undefined, children: new Map() };
+  readonly #root: PathTrieNode = {
+    kind: undefined,
+    children: new Map(),
+    spellingsByFold: new Map(),
+  };
+  readonly #caseInsensitive: boolean;
+
+  constructor(options: { readonly caseInsensitive?: boolean } = {}) {
+    this.#caseInsensitive = options.caseInsensitive === true;
+  }
 
   add(path: string, kind: ArtifactEntry["kind"]): void {
     if (!hasDestinationPath(kind)) return;
     const parts = path.split("/");
     let node = this.#root;
+    let prefix = "";
     for (const [index, part] of parts.entries()) {
+      const currentPath = prefix.length === 0 ? part : `${prefix}/${part}`;
       if (node.kind !== undefined && node.kind !== "directory")
         throw new ArtifactReaderFailure(
           "path",
           `Artifact prefix conflict: ${pathDiagnostic(path)}`,
         );
+      if (this.#caseInsensitive) {
+        const collision = destinationCaseCollision(
+          currentPath,
+          node.spellingsByFold.get(englishCaseFold(part)) ?? [],
+        );
+        if (collision !== undefined) throw collision;
+      }
       let child = node.children.get(part);
       if (child === undefined) {
-        child = { kind: undefined, children: new Map() };
+        child = {
+          kind: undefined,
+          children: new Map(),
+          spellingsByFold: new Map(),
+        };
         node.children.set(part, child);
+        if (this.#caseInsensitive) {
+          const folded = englishCaseFold(part);
+          const spellings = node.spellingsByFold.get(folded);
+          if (spellings === undefined) node.spellingsByFold.set(folded, [part]);
+          else spellings.push(part);
+        }
       }
       node = child;
+      prefix = currentPath;
       if (index === parts.length - 1) {
         if (node.kind !== undefined && node.kind !== kind)
           throw new ArtifactReaderFailure(
@@ -112,6 +144,7 @@ export class ArtifactPathRegistry {
 interface PathTrieNode {
   kind: DestinationEntryKind | undefined;
   readonly children: Map<string, PathTrieNode>;
+  readonly spellingsByFold: Map<string, string[]>;
 }
 
 interface CaseNode {

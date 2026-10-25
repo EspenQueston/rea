@@ -13,6 +13,8 @@ import { createHash } from "node:crypto";
 import { TextReader, Uint8ArrayWriter, ZipWriter } from "@zip.js/zip.js";
 import { expect, it, vi } from "vitest";
 
+import { asarHeaderBytes } from "../../../tests/fixtures/asarHeader.js";
+import { DestinationCaseCollisionFailure } from "../ArtifactPaths.js";
 import { ArtifactReaderFailure } from "../ArtifactReader.js";
 import { ArtifactResourceScope } from "../ArtifactResourceScope.js";
 import { OwnedFileHandle } from "../../filesystem/OwnedFileHandle.js";
@@ -597,6 +599,199 @@ it("matches real extraction refusal on NFC path collisions and Windows invalid n
     );
     await expect(stat(dryWinOut)).rejects.toMatchObject({ code: "ENOENT" });
     await expect(stat(realWinOut)).rejects.toMatchObject({ code: "ENOENT" });
+
+    for (const invalidName of [
+      "bad?.txt",
+      "wild*.txt",
+      "angle<left.txt",
+      "angle>right.txt",
+      'quote"name.txt',
+      "pipe|name.txt",
+      "trailing-dot./file.txt",
+      "trailing-space /file.txt",
+      "CON.txt",
+      "sub/lpt9",
+    ]) {
+      const zipPath = join(
+        directory,
+        `win-${Buffer.from(invalidName).toString("hex")}.zip`,
+      );
+      const invalidWriter = new ZipWriter(new Uint8ArrayWriter());
+      await invalidWriter.add(invalidName, new TextReader("bad"));
+      await writeFile(zipPath, Buffer.from(await invalidWriter.close()));
+      const invalidDryOut = join(
+        directory,
+        `out-${Buffer.from(invalidName).toString("hex")}`,
+      );
+      const err = await extractArtifact({
+        ...zipInput(zipPath, invalidDryOut, resourceScope),
+        dryRun: true,
+        platform: "win32",
+      }).catch((cause: unknown) => cause);
+      expect(err).toBeInstanceOf(ArtifactReaderFailure);
+      expect((err as ArtifactReaderFailure).reason).toBe("path");
+      await expect(stat(invalidDryOut)).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+    }
+  } finally {
+    await resourceScope.close();
+  }
+});
+
+it("refuses case-folding file and parent directory collisions in dry-run mode when the destination is case-insensitive", async () => {
+  const directory = await createTestTempDirectory(
+    "rea-extraction-dry-run-case-collision-",
+  );
+  const fileCaseZip = join(directory, "file-case.zip");
+  const fileWriter = new ZipWriter(new Uint8ArrayWriter());
+  await fileWriter.add("Foo.txt", new TextReader("upper"));
+  await fileWriter.add("foo.txt", new TextReader("lower"));
+  await writeFile(fileCaseZip, Buffer.from(await fileWriter.close()));
+
+  const parentCaseZip = join(directory, "parent-case.zip");
+  const parentWriter = new ZipWriter(new Uint8ArrayWriter());
+  await parentWriter.add("Dir/a.txt", new TextReader("upper-dir"));
+  await parentWriter.add("dir/b.txt", new TextReader("lower-dir"));
+  await writeFile(parentCaseZip, Buffer.from(await parentWriter.close()));
+
+  const resourceScope = new ArtifactResourceScope();
+  try {
+    const fileOut = join(directory, "file-case-out");
+    const fileError = await extractArtifact({
+      ...zipInput(fileCaseZip, fileOut, resourceScope),
+      dryRun: true,
+      platform: "win32",
+    }).catch((cause: unknown) => cause);
+    expect(fileError).toBeInstanceOf(DestinationCaseCollisionFailure);
+    expect((fileError as DestinationCaseCollisionFailure).reason).toBe("path");
+    expect((fileError as DestinationCaseCollisionFailure).message).toBe(
+      "Destination filesystem cannot store both foo.txt and Foo.txt; inventory retains both logical names.",
+    );
+    await expect(stat(fileOut)).rejects.toMatchObject({ code: "ENOENT" });
+
+    const parentOut = join(directory, "parent-case-out");
+    const parentError = await extractArtifact({
+      ...zipInput(parentCaseZip, parentOut, resourceScope),
+      dryRun: true,
+      platform: "win32",
+    }).catch((cause: unknown) => cause);
+    expect(parentError).toBeInstanceOf(DestinationCaseCollisionFailure);
+    expect((parentError as DestinationCaseCollisionFailure).reason).toBe(
+      "path",
+    );
+    expect((parentError as DestinationCaseCollisionFailure).message).toBe(
+      "Destination filesystem cannot store both dir and Dir; inventory retains both logical names.",
+    );
+    await expect(stat(parentOut)).rejects.toMatchObject({ code: "ENOENT" });
+  } finally {
+    await resourceScope.close();
+  }
+});
+
+it("observes cancellation that arrives while closing a non-ZIP reader in dry-run mode", async () => {
+  const directory = await createTestTempDirectory(
+    "rea-extraction-dry-run-cancel-close-",
+  );
+  const source = join(directory, "source");
+  await mkdir(source, { recursive: true });
+  await writeFile(join(source, "alpha.txt"), "alpha");
+  const controller = new AbortController();
+  const reason = new Error("cancel during directory reader close");
+  const originalClose = DirectoryArtifactReader.prototype.close;
+  let extractionCleanupCall = false;
+  const closeSpy = vi
+    .spyOn(DirectoryArtifactReader.prototype, "close")
+    .mockImplementation(async function (this: DirectoryArtifactReader) {
+      if (extractionCleanupCall) controller.abort(reason);
+      extractionCleanupCall = true;
+      await originalClose.call(this);
+    });
+  const resourceScope = new ArtifactResourceScope();
+  try {
+    await expect(
+      extractArtifact(
+        {
+          inputPath: source,
+          inputFormat: "asar",
+          outputRoot: join(directory, "dry-out"),
+          dryRun: true,
+          environment: {},
+          integrityPolicy: "fail",
+          resourceScope,
+        },
+        controller.signal,
+      ),
+    ).rejects.toMatchObject({
+      reason: "cancelled",
+      cause: reason,
+    });
+  } finally {
+    closeSpy.mockRestore();
+    await resourceScope.close();
+  }
+});
+
+it("retains observed_bytes on unsupported nested ASAR members without adding them to planned byte totals", async () => {
+  const directory = await createTestTempDirectory(
+    "rea-extraction-dry-run-nested-asar-",
+  );
+  const source = join(directory, "application");
+  await mkdir(join(source, "resources"), { recursive: true });
+  const nestedPayload = Buffer.from("nested-main-payload");
+  const nestedAsar = Buffer.concat([
+    asarHeaderBytes(
+      JSON.stringify({
+        files: {
+          "main.js": {
+            size: nestedPayload.byteLength,
+            offset: "0",
+          },
+        },
+      }),
+    ),
+    nestedPayload,
+  ]);
+  await writeFile(join(source, "resources", "app.asar"), nestedAsar);
+  const resourceScope = new ArtifactResourceScope();
+  try {
+    const planned = await extractArtifact({
+      inputPath: source,
+      inputFormat: "asar",
+      outputRoot: join(directory, "dry-out"),
+      dryRun: true,
+      environment: {},
+      integrityPolicy: "fail",
+      resourceScope,
+    });
+    expect(planned.plan).toBeDefined();
+    const containerEntry = planned.plan?.entries.find(
+      ({ logical_path }) => logical_path === "resources/app.asar",
+    );
+    const nestedMemberEntry = planned.plan?.entries.find(
+      ({ logical_path }) => logical_path === "resources/app.asar/main.js",
+    );
+    expect(containerEntry).toMatchObject({
+      logical_path: "resources/app.asar",
+      entry_kind: "file",
+      status: "planned",
+      observed_bytes: nestedAsar.byteLength,
+      declared_bytes: nestedAsar.byteLength,
+    });
+    expect(nestedMemberEntry).toMatchObject({
+      logical_path: "resources/app.asar/main.js",
+      entry_kind: "file",
+      status: "unsupported",
+      observed_bytes: nestedPayload.byteLength,
+      declared_bytes: nestedPayload.byteLength,
+    });
+    expect(planned.plan?.totals).toMatchObject({
+      planned_files: 1,
+      unsupported_entries: 2,
+      unresolved_entries: 0,
+      observed_bytes_estimate: nestedAsar.byteLength,
+      declared_bytes_estimate: nestedAsar.byteLength,
+    });
   } finally {
     await resourceScope.close();
   }

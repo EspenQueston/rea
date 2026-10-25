@@ -145,7 +145,10 @@ export class SafeOutputTree {
   }
 
   /** Read-only early admission; create() still rechecks and acquires exclusively. */
-  static async checkDestination(outputRoot: string): Promise<void> {
+  static async checkDestination(
+    outputRoot: string,
+    platform: NodeJS.Platform = process.platform,
+  ): Promise<{ readonly caseInsensitive: boolean }> {
     const { canonicalOutput } = await this.#resolveDestination(outputRoot);
     const existing = await lstat(canonicalOutput).catch((cause: unknown) => {
       if (cause instanceof Error && "code" in cause && cause.code === "ENOENT")
@@ -165,21 +168,25 @@ export class SafeOutputTree {
       throw new SafeOutputTreeDestinationRefusal(
         "Extraction output root already exists",
       );
-    await access(
-      dirname(canonicalOutput),
-      constants.W_OK | constants.X_OK,
-    ).catch((cause: unknown) => {
-      if (
-        cause instanceof Error &&
-        "code" in cause &&
-        ["EACCES", "EPERM", "ENOENT", "ENOTDIR"].includes(String(cause.code))
-      )
-        throw new SafeOutputTreeDestinationRefusal(
-          "Extraction output parent is not writable",
-          { cause },
-        );
-      throw cause;
-    });
+    const parent = dirname(canonicalOutput);
+    await access(parent, constants.W_OK | constants.X_OK).catch(
+      (cause: unknown) => {
+        if (
+          cause instanceof Error &&
+          "code" in cause &&
+          ["EACCES", "EPERM", "ENOENT", "ENOTDIR"].includes(String(cause.code))
+        )
+          throw new SafeOutputTreeDestinationRefusal(
+            "Extraction output parent is not writable",
+            { cause },
+          );
+        throw cause;
+      },
+    );
+    return {
+      caseInsensitive:
+        platform === "win32" || (await isCaseInsensitiveDirectory(parent)),
+    };
   }
 
   static async #resolveDestination(outputRoot: string) {
@@ -711,6 +718,9 @@ const writeAll = async (
   }
 };
 
+const WINDOWS_RESERVED_SEGMENT =
+  /^(?:con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])(?:\.|$)/iu;
+
 /**
  * Validate and normalize a logical extraction path using the destination
  * filesystem's path-safety rules before or during extraction.
@@ -735,7 +745,87 @@ export const normalizeDestinationPath = (
       "path",
       `Windows destination cannot materialize artifact path: ${JSON.stringify(path)}; Windows names cannot contain U+0001-U+001F.`,
     );
+  if (platform === "win32" && /["<>|?*]/u.test(path))
+    throw new ArtifactReaderFailure(
+      "path",
+      `Windows destination cannot materialize artifact path: ${JSON.stringify(path)}; Windows names cannot contain '"', '<', '>', '|', '?', or '*'.`,
+    );
+  if (platform === "win32") {
+    for (const segment of path.split("/")) {
+      if (/[. ]$/u.test(segment))
+        throw new ArtifactReaderFailure(
+          "path",
+          `Windows destination cannot materialize artifact path: ${JSON.stringify(path)}; Windows path segments cannot end with '.' or ' '.`,
+        );
+      if (WINDOWS_RESERVED_SEGMENT.test(segment))
+        throw new ArtifactReaderFailure(
+          "path",
+          `Windows destination cannot materialize artifact path: ${JSON.stringify(path)}; ${JSON.stringify(segment)} is a Windows reserved device name.`,
+        );
+    }
+  }
   return path;
+};
+
+const toggleFirstCasedCodePoint = (value: string): string | undefined => {
+  for (let index = 0; index < value.length; index += 1) {
+    const char = value[index]!;
+    const upper = char.toLocaleUpperCase("en-US");
+    const lower = char.toLocaleLowerCase("en-US");
+    if (upper === lower) continue;
+    const toggled = char === lower ? upper : lower;
+    return `${value.slice(0, index)}${toggled}${value.slice(index + 1)}`;
+  }
+  return undefined;
+};
+
+/**
+ * Observe whether an existing directory resolves case-folded entry lookups to
+ * the same inode without creating or modifying any filesystem entries.
+ */
+const isCaseInsensitiveDirectory = async (
+  directory: string,
+): Promise<boolean> => {
+  const entries = await readdir(directory).catch((): readonly string[] => []);
+  for (const entry of entries) {
+    const toggled = toggleFirstCasedCodePoint(entry);
+    if (toggled === undefined || entries.includes(toggled)) continue;
+    const [original, candidate] = await Promise.all([
+      lstat(join(directory, entry), { bigint: true }).catch(() => undefined),
+      lstat(join(directory, toggled), { bigint: true }).catch(() => undefined),
+    ]);
+    if (original === undefined) continue;
+    return (
+      candidate !== undefined &&
+      candidate.dev === original.dev &&
+      candidate.ino === original.ino
+    );
+  }
+  let current = directory;
+  for (;;) {
+    const parent = dirname(current);
+    if (parent === current) return false;
+    const segment = basename(current);
+    const toggled = toggleFirstCasedCodePoint(segment);
+    if (toggled !== undefined && toggled !== segment) {
+      const siblingEntries = await readdir(parent).catch(
+        (): readonly string[] => [],
+      );
+      if (!siblingEntries.includes(toggled)) {
+        const [original, candidate] = await Promise.all([
+          lstat(current, { bigint: true }).catch(() => undefined),
+          lstat(join(parent, toggled), { bigint: true }).catch(() => undefined),
+        ]);
+        if (original !== undefined)
+          return (
+            candidate !== undefined &&
+            candidate.dev === original.dev &&
+            candidate.ino === original.ino
+          );
+      }
+    }
+    current = parent;
+  }
 };
 
 const abortIfNeeded = (signal?: AbortSignal): void => {
