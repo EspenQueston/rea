@@ -2,7 +2,8 @@ import { chmod, copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
 
-import { parse as parseJsonc } from "jsonc-parser";
+import { parseClientConfiguration } from "../../dist/application/ClientConfigurationDocument.js";
+import { SUPPORTED_CLIENT_DEFINITIONS } from "../../dist/application/SupportedClients.js";
 import { TOOL_CONTRACTS } from "../../dist/contracts/toolContracts.js";
 
 /**
@@ -270,20 +271,23 @@ const geminiSettings = (selectedType) => ({
  * the credential itself outside its settings directory, such as an API key in
  * the OS keychain.
  */
+const GEMINI_SETTINGS_FORMAT = SUPPORTED_CLIENT_DEFINITIONS.find(
+  ({ name }) => name === "gemini_cli",
+)?.format;
+
 const callerGeminiAuthType = async (geminiDirectory) => {
   try {
     const contents = await readFile(
       join(geminiDirectory, "settings.json"),
       "utf8",
     );
-    const errors = [];
-    const jsonText = contents.startsWith("\uFEFF")
-      ? ` ${contents.slice(1)}`
-      : contents;
-    const settings = parseJsonc(jsonText, errors, { allowTrailingComma: true });
-    if (errors.length > 0)
-      throw new SyntaxError("Gemini settings contains invalid JSONC");
-    const selected = settings?.security?.auth?.selectedType;
+    // The owning parser reads the file as REA's setup does: BOM-tolerant
+    // JSONC, with an empty placeholder file holding no settings.
+    const { document } = parseClientConfiguration(
+      contents,
+      GEMINI_SETTINGS_FORMAT,
+    );
+    const selected = document.security?.auth?.selectedType;
     return typeof selected === "string" ? selected : undefined;
   } catch (cause) {
     if (cause?.code === "ENOENT") return undefined;

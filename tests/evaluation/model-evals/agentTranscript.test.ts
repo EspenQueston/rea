@@ -130,6 +130,40 @@ describe("Claude Code transcripts", () => {
       expect.objectContaining({ error: true, errorCode: "invalid_request" }),
     ]);
     expect(metrics.evidenceIds).toEqual([]);
+    // REA answered with its own envelope: an ordinary failure, not the client's.
+    expect(transcript.clientFailures).toEqual([]);
+  });
+
+  it("records an error result without REA's envelope as a client failure", () => {
+    const transcript = parseClaudeCodeEvents([
+      claudeToolUse("toolu_1", "mcp__rea__list_browser_targets"),
+      claudeToolResult(
+        "toolu_1",
+        { content: "MCP server rea is not available", isError: true },
+        true,
+      ),
+      {
+        ...claudeResult,
+        result:
+          "The REA browser inspection tool was unavailable, so no debugging endpoint could be observed.",
+      },
+    ]);
+    expect(transcript.clientFailures).toEqual([
+      "tool_error:list_browser_targets",
+    ]);
+    const metrics = evaluateAgentTranscript(
+      transcript,
+      "list_browser_targets",
+      {
+        requiredAnswerTermGroups: [["unavailable"]],
+      },
+    );
+    expect(metrics).toMatchObject({
+      naturalUse: true,
+      correctFirstTool: true,
+      reaCalls: [expect.objectContaining({ error: true, errorCode: null })],
+      answerHeuristicsMet: false,
+    });
   });
 
   it("does not count a call without a reported result as a workflow step", () => {
@@ -551,6 +585,70 @@ it.each(["codex", "claude-code"] as const)(
     );
     expect(metrics.evidenceIds).toEqual([]);
     expect(metrics.requiredToolSubsequenceMet).toBe(false);
+  },
+);
+
+it.each(["codex", "claude-code", "gemini-cli"] as const)(
+  "%s withholds the error code when simultaneously present error records disagree",
+  (client) => {
+    const disagreeing = {
+      structuredContent: { error: { code: "provider_unavailable" } },
+      error: { code: "invalid_request" },
+      isError: true,
+    };
+    const transcript =
+      client === "codex"
+        ? parseCodexEvents([
+            {
+              type: "item.completed",
+              item: {
+                id: "call",
+                type: "mcp_tool_call",
+                server: "rea",
+                tool: "open_binary",
+                arguments: { path: "/bin/true" },
+                status: "completed",
+                result: disagreeing,
+              },
+            },
+          ])
+        : client === "claude-code"
+          ? parseClaudeCodeEvents([
+              claudeToolUse("call", "mcp__rea__open_binary", {
+                path: "/bin/true",
+              }),
+              claudeToolResult("call", disagreeing, true),
+            ])
+          : parseGeminiCliEvents([
+              {
+                type: "tool_use",
+                tool_id: "call",
+                tool_name: "mcp_rea_open_binary",
+                parameters: { path: "/bin/true" },
+              },
+              {
+                type: "tool_result",
+                tool_id: "call",
+                status: "error",
+                output: JSON.stringify({
+                  error: { code: "provider_unavailable" },
+                }),
+                error: { type: "MCP_TOOL_ERROR", code: "invalid_request" },
+              },
+            ]);
+    expect(transcript.calls).toEqual([
+      expect.objectContaining({ error: true, errorCode: null }),
+    ]);
+    const scenario = nativeProviderScenario("/bin/true");
+    expect(
+      scenario.assess(
+        evaluateAgentTranscript(
+          transcript,
+          scenario.expectedFirstTool,
+          scenario,
+        ),
+      ),
+    ).toBe("failed");
   },
 );
 

@@ -373,3 +373,32 @@ it("gives the version preflight the client's containment controls without authen
     ])
       expect(preflight(id)).not.toHaveProperty(key);
 });
+
+it("accepts an empty Gemini settings placeholder like REA's own setup does", async () => {
+  const root = await createTestTempDirectory(
+    "rea-agent-gemini-empty-settings-",
+  );
+  const caller = join(root, "caller");
+  await mkdir(join(caller, ".gemini"), { recursive: true });
+  await writeFile(join(caller, ".gemini", "settings.json"), "");
+  await writeFile(join(caller, ".gemini", "oauth_creds.json"), "fixture-oauth");
+  vi.stubEnv("GEMINI_CLI_HOME", caller);
+  vi.stubEnv("GEMINI_API_KEY", undefined);
+  const authPaths: string[] = [];
+  await prepareAgentEvalClient(selectAgentEvalClient("gemini-cli"), {
+    evaluationRoot: root,
+    account: join(root, "account"),
+    authPaths,
+  });
+  const copy = join(root, "gemini-cli", ".gemini", "oauth_creds.json");
+  expect(authPaths).toEqual([copy]);
+  expect(await readFile(copy, "utf8")).toBe("fixture-oauth");
+  expect(
+    JSON.parse(
+      await readFile(
+        join(root, "gemini-cli", ".gemini", "settings.json"),
+        "utf8",
+      ),
+    ),
+  ).toMatchObject({ security: { auth: { selectedType: "oauth-personal" } } });
+});

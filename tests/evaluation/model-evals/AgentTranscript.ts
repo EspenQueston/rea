@@ -157,12 +157,19 @@ const parsedTextBlock = (content: unknown): TranscriptJson | undefined => {
 };
 
 interface McpResultFacts {
-  /** The client retained a result record at all. */
+  /** The client retained one consistent result record. */
   readonly retained: boolean;
   readonly failed: boolean;
+  /** The result itself carried an error record (REA's own envelope). */
+  readonly ownError: boolean;
   readonly errorCode: string | null;
   readonly content: unknown;
 }
+
+const errorCodeOf = (value: Record<string, unknown> | undefined): string[] => {
+  const code = textValue(value?.code);
+  return code === undefined ? [] : [code];
+};
 
 /**
  * Read one raw MCP `CallToolResult` as the client retained it. Failure,
@@ -181,34 +188,39 @@ const mcpResultFacts = (
   const structured = record(
     result?.structured_content ?? result?.structuredContent,
   );
-  const own = record(structured?.error ?? result?.error);
+  const structuredError = record(structured?.error);
+  const resultError = record(result?.error);
   // Only a complete single JSON block can supply a missing structured result.
   const text =
-    own === undefined && structured === undefined
+    structured === undefined && absent(result?.error)
       ? parsedTextBlock(result?.content)
       : undefined;
   const textError = record(record(text?.value)?.error);
-  // REA's own record is preferred over the client's generic wrapper around it.
-  const error = own ?? textError ?? record(clientError);
   // Any non-null error representation is a failure, even a bare string that
   // carries no record to read a code from.
+  const ownError =
+    !absent(structured?.error) ||
+    !absent(result?.error) ||
+    textError !== undefined;
   const failed =
     clientFailed ||
     !absent(clientError) ||
     result?.isError === true ||
-    !absent(result?.error) ||
-    !absent(structured?.error) ||
-    error !== undefined;
-  // A code is certain only from one unambiguous record: not from a text block
-  // with folded duplicate members, and not from either of two contradictory
-  // structured representations.
+    ownError;
+  // A code is certain only when every simultaneously present error record
+  // agrees on one, the structured representations do not contradict each
+  // other, and no text block folded duplicate members.
+  const codes = new Set([
+    ...errorCodeOf(structuredError),
+    ...errorCodeOf(resultError),
+    ...errorCodeOf(textError),
+    ...errorCodeOf(record(clientError)),
+  ]);
   const certain =
     structuredConsistent &&
-    (error !== textError || text?.hasDuplicateMembers === false);
-  const errorCode =
-    certain && typeof error?.code === "string" && error.code.length > 0
-      ? error.code
-      : null;
+    (textError === undefined || text?.hasDuplicateMembers === false) &&
+    codes.size === 1;
+  const errorCode = certain ? ([...codes][0] ?? null) : null;
   const content =
     !failed && structuredConsistent && result !== undefined
       ? (result.structuredContent ??
@@ -219,6 +231,7 @@ const mcpResultFacts = (
   return {
     retained: result !== undefined && structuredConsistent,
     failed,
+    ownError,
     errorCode,
     content,
   };
@@ -589,6 +602,10 @@ export const parseClaudeCodeEvents = (
       reported?.isError === true,
       undefined,
     );
+    // An error result without REA's own envelope means the client, not REA,
+    // failed the request (an unavailable or unregistered server).
+    if (reported?.isError === true && !facts.ownError)
+      state.clientFailures.push(`tool_error:${request.tool}`);
     const delivered =
       reported !== undefined && !reported.isError && facts.retained;
     const call = {
