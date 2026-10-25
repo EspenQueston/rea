@@ -10,6 +10,7 @@ import {
   type JavaScriptSemanticAnalysisState,
   type JavaScriptSemanticBindingState,
 } from "./javascriptSemanticState.js";
+import { semanticLoopValueSource } from "./javascriptSemanticIterationSources.js";
 import type { JavaScriptIntrinsicInvocation } from "./javascriptElectronMemberWrites.js";
 import {
   hasJavaScriptViteInheritedProperty,
@@ -879,6 +880,24 @@ export class ViteCacheIdentities {
       const helper = this.helperValues.get(expression);
       if (helper !== undefined) {
         this.connect(vertex, { kind: "alias", source: helper });
+        continue;
+      }
+      if (t.isForOfStatement(expression)) {
+        const source = semanticLoopValueSource(
+          expression,
+          this.state.parentsByNode.get(expression) ?? null,
+        );
+        if (source === undefined) vertex.seed = UNKNOWN;
+        else
+          this.connect(vertex, {
+            kind: "alias",
+            source: this.project(
+              this.normalize(source.node),
+              source.projection,
+              expression,
+            ),
+          });
+        this.enqueue(vertex);
         continue;
       }
       const invocation =

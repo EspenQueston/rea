@@ -1928,6 +1928,33 @@ const allScenarios: readonly ViteScenario[] = [
         '__vite__mapDeps([0]); const copy = {...__vite__mapDeps}; const retained = copy.f; copy.f = []; retained[0] = "./last.js";',
     },
     {
+      file: "for-of-cache-binding-write.js",
+      mutation:
+        '__vite__mapDeps([0]); for (const cache of [__vite__mapDeps.f]) { cache[0] = "./last.js"; }',
+    },
+    {
+      file: "for-of-cache-assignment-write.js",
+      mutation:
+        '__vite__mapDeps([0]); let cache; for (cache of [__vite__mapDeps.f]) { cache[0] = "./last.js"; }',
+    },
+    {
+      file: "for-of-destructured-cache-write.js",
+      mutation:
+        '__vite__mapDeps([0]); for (const {cache} of [{cache: __vite__mapDeps.f}]) { cache[0] = "./last.js"; }',
+    },
+    {
+      file: "for-of-independent-binding-write.js",
+      mutation:
+        "__vite__mapDeps([0]); for (const item of [{}]) { item.value = 1; }",
+      kept: true,
+    },
+    {
+      file: "for-in-cache-key-write.js",
+      mutation:
+        '__vite__mapDeps([0]); for (const key in [__vite__mapDeps.f]) { key[0] = "./last.js"; }',
+      kept: true,
+    },
+    {
       file: "object-create-cache-prototype-escape.js",
       mutation:
         "__vite__mapDeps([0]); const child = Object.create(__vite__mapDeps.f); opaque(child);",
