@@ -280,7 +280,46 @@ describe("Gemini CLI transcripts", () => {
     ]);
     expect(metrics.evidenceIds).toEqual([]);
     expect(metrics.inputTokens).toBe(0);
+    // REA's own error is an expected provider outcome, not a client failure.
+    expect(transcript.clientFailures).toEqual([]);
   });
+
+  it.each([
+    { error: { type: "PERMISSION_DENIED", message: "denied by policy" } },
+    { error: { type: "TOOL_NOT_REGISTERED", message: "unknown tool" } },
+    {},
+  ])(
+    "records a failed result the client never ran as a client failure: %j",
+    (report) => {
+      const transcript = parseGeminiCliEvents([
+        toolUse("call-1", "mcp_rea_list_browser_targets"),
+        { type: "tool_result", tool_id: "call-1", status: "error", ...report },
+        {
+          type: "message",
+          role: "assistant",
+          content:
+            "The browser inspection tool was unavailable, so no endpoint could be observed and nothing was navigated.",
+        },
+        { type: "result", status: "success", stats: { input_tokens: 5 } },
+      ]);
+      const type = (report as { error?: { type: string } }).error?.type;
+      expect(transcript.clientFailures).toEqual([
+        `tool_error:${type ?? "unknown"}:list_browser_targets`,
+      ]);
+      const metrics = evaluateAgentTranscript(
+        transcript,
+        "list_browser_targets",
+        {
+          requiredAnswerTermGroups: [["unavailable"]],
+        },
+      );
+      expect(metrics).toMatchObject({
+        naturalUse: true,
+        correctFirstTool: true,
+        answerHeuristicsMet: false,
+      });
+    },
+  );
 
   it("does not count a result without retained output as delivered", () => {
     const transcript = parseGeminiCliEvents([
@@ -396,6 +435,49 @@ describe("Codex transcripts", () => {
     expect(transcript.calls).toHaveLength(2);
   });
 });
+
+it.each(["codex", "claude-code"] as const)(
+  "%s does not deliver a result whose structured representations contradict each other",
+  (client) => {
+    const contradictory = {
+      structuredContent: evidence,
+      structured_content: {
+        ...evidence,
+        normalized_result: { observed: false },
+      },
+    };
+    const transcript =
+      client === "codex"
+        ? parseCodexEvents([
+            {
+              type: "item.completed",
+              item: {
+                id: "call",
+                type: "mcp_tool_call",
+                server: "rea",
+                tool: "analyze_javascript_application",
+                arguments: {},
+                status: "completed",
+                result: contradictory,
+              },
+            },
+          ])
+        : parseClaudeCodeEvents([
+            claudeToolUse("call", "mcp__rea__analyze_javascript_application"),
+            claudeToolResult("call", contradictory),
+          ]);
+    expect(transcript.calls).toEqual([
+      expect.objectContaining({ delivered: false, error: false }),
+    ]);
+    const metrics = evaluateAgentTranscript(
+      transcript,
+      "analyze_javascript_application",
+      { requiredToolSubsequence: ["analyze_javascript_application"] },
+    );
+    expect(metrics.requiredToolSubsequenceMet).toBe(false);
+    expect(metrics.evidenceIds).toEqual([]);
+  },
+);
 
 it.each(["claude-code", "gemini-cli"])(
   "%s preserves a text failure without choosing between duplicate error codes",

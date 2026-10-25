@@ -613,9 +613,11 @@ pass. Their answer-text heuristics are diagnostic and do not affect the gate.
 Validation counts include complete text-only REA `invalid_request` envelopes
 and failed SDK calls whose arguments violate the named current REA contract.
 A call whose result the client never reported, or reported inconsistently,
-is not counted as a completed workflow step. A refused permission request or
-a terminal client error is recorded in the scenario's `clientFailures` and fails
-the gate even when the client still returned an answer.
+is not counted as a completed workflow step. A refused permission request
+(Claude Code's `permission_denials`, or a Gemini CLI tool result that failed
+without REA's own MCP tool error), or a terminal client error, is recorded in
+the scenario's `clientFailures` and fails the gate even when the client still
+returned an answer; REA's own error results remain ordinary call failures.
 Client approval rejections and provider unavailability remain distinct failures;
 truncated JSON previews are not parsed into invented error codes.
 Repeated `binary_session` observations separated by a successful `open_binary`

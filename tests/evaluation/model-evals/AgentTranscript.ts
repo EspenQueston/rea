@@ -208,7 +208,13 @@ const mcpResultFacts = (
         result.structured_content ??
         (text?.hasDuplicateMembers === false ? text.value : undefined))
       : undefined;
-  return { retained: result !== undefined, failed, errorCode, content };
+  // Contradictory structured representations retain no result to deliver.
+  return {
+    retained: result !== undefined && structuredConsistent,
+    failed,
+    errorCode,
+    content,
+  };
 };
 
 const sameRequestIdentity = (
@@ -584,6 +590,23 @@ interface GeminiReport {
   readonly error: unknown;
 }
 
+/**
+ * Gemini reports an error REA itself returned with the MCP tool error type.
+ * Any other failed result (a policy refusal, an unregistered tool, a client
+ * exception) means the client never ran REA: a client failure, not an
+ * expected REA error.
+ */
+const geminiClientFailure = (
+  request: McpRequest,
+  reported: GeminiReport | undefined,
+): string | undefined => {
+  if (reported === undefined || reported.status === "success") return undefined;
+  const type = textValue(record(reported.error)?.type);
+  return type !== undefined && /^mcp_tool_error$/iu.test(type)
+    ? undefined
+    : `tool_error:${type ?? "unknown"}:${request.tool}`;
+};
+
 const geminiCall = (
   request: McpRequest,
   reported: GeminiReport | undefined,
@@ -659,6 +682,10 @@ export const parseGeminiCliEvents = (
       if (event.status !== undefined && event.status !== "success")
         clientFailures.push(`result_status:${String(event.status)}`);
     }
+  }
+  for (const request of requests) {
+    const failure = geminiClientFailure(request, results.get(request.id));
+    if (failure !== undefined) clientFailures.push(failure);
   }
   return {
     calls: uniqueCalls(
