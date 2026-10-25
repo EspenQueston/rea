@@ -179,7 +179,7 @@ Collections are `source_files`, `mappings`, `relocations`, `entry_points`,
 `entry_context`, `checks` and DOL `sections`. Optional
 `indices` select original row indices before paging; empty indices select none.
 Fields are collection-specific. Relocation defaults omit byte payloads; check defaults omit potentially large `expected`/`observed` inventories. Request those fields explicitly when needed. Other collections default to all fields. Metadata recovery remains counted and retained in complete parent Evidence.
-Parent Evidence plus `source_index` identifies a row, including same-address
+Parent Evidence, collection and `source_index` identify a row, including same-address
 relocation alternatives. Null counts or rows mean unrecorded or inapplicable;
 they never establish an empty observation. Exhausting a page does not upgrade
 unsupported verification or runtime coverage. Pages query immutable retained
