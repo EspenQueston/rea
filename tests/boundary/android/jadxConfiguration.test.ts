@@ -5,7 +5,7 @@ import { createInspectionResources } from "../../fixtures/inspectionResources.js
 import { chmod, mkdir, readFile, realpath, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
-import { expect, it as test, onTestFinished } from "vitest";
+import { expect, it as test, onTestFinished, vi } from "vitest";
 
 import {
   inspectJadxAvailability as inspectAvailability,
@@ -13,6 +13,10 @@ import {
   validateJadxConfiguration,
 } from "../../../src/android/JadxConfiguration.js";
 import { AnalysisCapabilityUnavailableError } from "../../../src/domain/analysisErrorCore.js";
+import {
+  linuxOwnedProcessPrerequisiteRefusal,
+  systemProcessOwnershipHost,
+} from "../../../src/process/ProcessOwnershipObservation.js";
 import { createTestTempDirectory } from "../../fixtures/temporaryDirectory.js";
 import { writeOrderedZip } from "../../fixtures/artifactEntryOrder.js";
 import { writeJadxJarInventory } from "../../fixtures/android/jadxJar.js";
@@ -598,4 +602,39 @@ it("reports the runtime JADX repair and restores invalid launch availability on 
   } finally {
     await provider.close();
   }
+});
+
+it("reports the owned-process prerequisite as JADX unavailability, not a probe failure", async () => {
+  const root = await createTestTempDirectory("rea-jadx-ps-prerequisite-");
+  const jar = join(root, "jadx-headless-mcp.jar");
+  const javaHome = await createFakeJdk(root);
+  await writeJadxJarInventory(jar);
+  const environment = { REA_JADX_MCP_JAR: jar, JAVA_HOME: javaHome };
+  await expect(inspectJadxAvailability(environment)).resolves.toMatchObject({
+    status: "available",
+  });
+
+  vi.spyOn(systemProcessOwnershipHost, "prepare").mockImplementation(
+    async () => {
+      throw linuxOwnedProcessPrerequisiteRefusal(new Error("spawn ps ENOENT"));
+    },
+  );
+  onTestFinished(() => {
+    vi.restoreAllMocks();
+  });
+
+  await expect(inspectJadxAvailability(environment)).resolves.toMatchObject({
+    status: "unavailable",
+    code: "runtime_unavailable",
+    reason: expect.stringContaining("procps-compatible ps") as unknown,
+    diagnostics: { stage: "ownership_preparation" },
+  });
+  // Execution keeps the host refusal; only discovery projects it as availability.
+  await expect(
+    resolveConfiguration(environment, "inspect_android_package"),
+  ).rejects.toMatchObject({
+    _tag: "AnalysisCapabilityUnavailableError",
+    providerId: "process-ownership",
+    reason: expect.stringContaining("spawn ps ENOENT") as unknown,
+  });
 });

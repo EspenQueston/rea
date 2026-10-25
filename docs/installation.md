@@ -412,6 +412,11 @@ The public error code varies by caller: `capability_unavailable`,
 only a generic startup error. Check this prerequisite before following
 provider-specific recovery advice.
 
+`binary_session` still returns status on such a host. The JADX and Apktool
+tool groups report `available: false` with reason `provider_unavailable` and a
+remediation naming the missing `ps`; the other providers keep their own
+status.
+
 ## Diagnose, update, and remove
 
 `rea doctor --json` is strictly read-only. `rea update` updates only the npm or Bun global installation that owns the running CLI. Source checkouts and package-runner copies must be updated through the mechanism that owns them; a fresh package-runner invocation can use `npx rea-agents@latest` or `bunx rea-agents@latest`. `rea uninstall` removes only REA-owned agent registrations and skill files; `--purge-data` additionally removes REA cache and state paths.

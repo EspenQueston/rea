@@ -1254,13 +1254,7 @@ export const createSystemProcessOwnershipHost = (
             throw new Error("ps did not report REA's current process");
         } catch (cause: unknown) {
           if (isExpectedAbort(cause, signal)) throw cause;
-          const reason = `Linux process ownership inspection requires a procps-compatible ps on REA's PATH before launching a child: ${errorMessage(cause)}`;
-          throw new AnalysisCapabilityUnavailableError(
-            "process-ownership",
-            "prepare_owned_process",
-            reason,
-            { cause, userMessage: reason },
-          );
+          throw linuxOwnedProcessPrerequisiteRefusal(cause);
         }
       }
     },
@@ -1439,6 +1433,48 @@ export const signalProcessWithStartIdentity = async (
     return "unverified";
   }
 };
+
+const OWNED_PROCESS_PREREQUISITE_PROVIDER_ID = "process-ownership";
+const OWNED_PROCESS_PREREQUISITE_OPERATION = "prepare_owned_process";
+
+/** Recovery for a Linux host whose `ps` cannot establish process ownership. */
+const LINUX_OWNED_PROCESS_PREREQUISITE_REMEDIATION =
+  "Install your distribution's procps or procps-ng package, or put a procps-compatible ps on REA's PATH, then retry.";
+
+/**
+ * The refusal raised before any owned child starts when Linux `ps` is missing
+ * or incompatible. Every owned launch shares this one prerequisite, so the
+ * refusal is produced here and recognized by {@link ownedProcessPrerequisiteFailure}.
+ */
+export const linuxOwnedProcessPrerequisiteRefusal = (
+  cause: unknown,
+): AnalysisCapabilityUnavailableError => {
+  const reason = `Linux process ownership inspection requires a procps-compatible ps on REA's PATH before launching a child: ${errorMessage(cause)}`;
+  return new AnalysisCapabilityUnavailableError(
+    OWNED_PROCESS_PREREQUISITE_PROVIDER_ID,
+    OWNED_PROCESS_PREREQUISITE_OPERATION,
+    reason,
+    {
+      cause,
+      userMessage: reason,
+      remediationAction: LINUX_OWNED_PROCESS_PREREQUISITE_REMEDIATION,
+    },
+  );
+};
+
+/**
+ * Recognize the shared owned-process prerequisite refusal. Availability probes
+ * report it as the probed provider's unavailability; execution paths keep it as
+ * a capability refusal.
+ */
+export const ownedProcessPrerequisiteFailure = (
+  cause: unknown,
+): AnalysisCapabilityUnavailableError | undefined =>
+  cause instanceof AnalysisCapabilityUnavailableError &&
+  cause.providerId === OWNED_PROCESS_PREREQUISITE_PROVIDER_ID &&
+  cause.operation === OWNED_PROCESS_PREREQUISITE_OPERATION
+    ? cause
+    : undefined;
 
 /** Prepare native token inspection before REA launches a captured child. */
 export const prepareProcessOwnershipInspection = async (
