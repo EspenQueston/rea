@@ -1,4 +1,6 @@
+import { nativeSymbolMetadataSchema } from "./native/nativeSymbol.js";
 import { z } from "zod";
+import { fixedTupleSchema } from "./fixedTupleSchema.js";
 import { addressCoordinate } from "./native/addressCoordinate.js";
 
 import type { JsonValue } from "./jsonValue.js";
@@ -6,12 +8,13 @@ import type { JsonValue } from "./jsonValue.js";
 import { err, ok, type Result } from "./result.js";
 import { nativeApiBoundarySchema } from "./native/nativeApiBoundary.js";
 import { nativeValueFlowSchema } from "./native/nativeValueFlow.js";
+import { nativeCallClassificationSchema } from "./native/nativeCallReference.js";
 import { AnalysisOutputError } from "./analysisErrorCore.js";
-import { HopperProtocolError } from "./hopperErrors.js";
 
 export interface AddressedName {
   readonly address: string;
   readonly name: string;
+  readonly objc_class_label?: "hopper_legacy_class_object";
 }
 
 export interface SegmentSummary {
@@ -26,24 +29,16 @@ export interface SegmentSummary {
 }
 
 /** Return a bounded byte distance between canonical addresses in one space. */
-export const addressDistance = (start: string, end: string): number => {
+export const addressDistance = (start: string, end: string): number | null => {
   const left = addressCoordinate(start);
   const right = addressCoordinate(end);
-  if (left === null || right === null || left.space !== right.space) return 0;
+  if (left === null || right === null || left.space !== right.space)
+    return null;
   const distance = right.offset - left.offset;
-  if (distance <= 0n) return 0;
-  return Number(
-    distance > BigInt(Number.MAX_SAFE_INTEGER)
-      ? BigInt(Number.MAX_SAFE_INTEGER)
-      : distance,
-  );
+  if (distance < 0n || distance > BigInt(Number.MAX_SAFE_INTEGER)) return null;
+  return Number(distance);
 };
 
-const procedureMapSchema = z.record(z.string(), z.string());
-const addressedNamesSchema = z.array(
-  z.object({ address: z.string(), name: z.string() }),
-);
-const addressedNameMapSchema = z.record(z.string(), z.string());
 const segmentSchema = z.object({
   name: z.string(),
   start: z.string(),
@@ -82,7 +77,7 @@ export const analysisStringSchema = z.object({
           "Whether the provider declares the encoding or REA infers it from the typed bytes and native display. This does not establish the original source's intended encoding.",
         ),
       termination: z.enum(["missing", "present_or_not_required"]),
-      byte_length: z.number().int().min(0),
+      byte_length: z.int().min(0),
     })
     .exactOptional(),
 });
@@ -107,13 +102,8 @@ export const functionBodySchema = z.discriminatedUnion("available", [
             .describe("Inclusive last address of this observed body range."),
         }),
       ),
-      total_bytes: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
-      span_bytes: z
-        .number()
-        .int()
-        .min(0)
-        .max(Number.MAX_SAFE_INTEGER)
-        .nullable(),
+      total_bytes: z.int().min(0).max(Number.MAX_SAFE_INTEGER),
+      span_bytes: z.int().min(0).max(Number.MAX_SAFE_INTEGER).nullable(),
       non_contiguous: z.boolean(),
       contains_entry: z.boolean(),
     })
@@ -215,6 +205,7 @@ export const procedureIdentitySchema = z
   .object({
     address: z.string(),
     name: z.string(),
+    symbol: nativeSymbolMetadataSchema.nullable().exactOptional(),
     classification: procedureClassificationSchema.nullable(),
     body: functionBodySchema,
   })
@@ -227,6 +218,43 @@ export const procedureIdentitySchema = z
           "Function body entry membership disagrees with procedure identity",
       });
   });
+/** Exact containing-procedure outcome; valid absence is distinct from unreadable output. */
+export const containingProcedureResolutionSchema = z.discriminatedUnion(
+  "found",
+  [
+    z.object({
+      query_address: z.string(),
+      found: z.literal(true),
+      procedure: procedureIdentitySchema,
+    }),
+    z.object({
+      query_address: z.string(),
+      found: z.literal(false),
+      procedure: z.null(),
+      reason: z.enum(["outside_segments", "not_in_procedure"]),
+    }),
+  ],
+);
+export type ContainingProcedureResolution = z.infer<
+  typeof containingProcedureResolutionSchema
+>;
+
+/** Validate provider procedure facts before a workflow interprets absence. */
+export const parseContainingProcedureResolution = (
+  value: JsonValue,
+): Result<ContainingProcedureResolution, AnalysisOutputError> => {
+  const parsed = containingProcedureResolutionSchema.safeParse(value);
+  return parsed.success
+    ? ok(parsed.data)
+    : err(
+        new AnalysisOutputError(
+          "resolve_containing_procedure",
+          "expected a containing-procedure resolution",
+          { cause: parsed.error },
+        ),
+      );
+};
+
 export const localVariableSchema = z
   .object({
     description: z.string(),
@@ -251,7 +279,7 @@ export const functionInstructionWindowSchema = z
   })
   .strict();
 
-const availableReferenceKindSchema = z
+export const availableReferenceKindSchema = z
   .object({
     available: z.literal(true),
     provenance: z.string().min(1),
@@ -267,7 +295,7 @@ const availableReferenceKindSchema = z
     conditional: z.boolean(),
     terminal: z.boolean(),
     primary: z.boolean(),
-    operand_index: z.number().int(),
+    operand_index: z.int(),
     external: z.boolean(),
   })
   .strict();
@@ -290,10 +318,10 @@ const swiftStringLiteralFields = {
   value: z
     .string()
     .describe("Decoded UTF-8 text, including the canonical empty string."),
-  registers: z.tuple([z.string(), z.string()]),
-  words: z
-    .tuple([z.string(), z.string()])
-    .describe("Observed constant register values, in register order."),
+  registers: fixedTupleSchema([z.string(), z.string()]),
+  words: fixedTupleSchema([z.string(), z.string()]).describe(
+    "Observed constant register values, in register order.",
+  ),
 };
 
 /** A Swift String literal decoded from the two words of its ABI value, not a data reference. */
@@ -318,17 +346,17 @@ export const swiftStringLiteralSchema = z.discriminatedUnion("representation", [
 
 const swiftStringLiteralOmissionFields = {
   source_address: swiftStringLiteralFields.source_address,
-  byte_length: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+  byte_length: z.int().min(0).max(Number.MAX_SAFE_INTEGER),
   reason: z
-    .literal("capacity")
+    .enum(["capacity", "unresolved_jump"])
     .describe(
-      "The record did not fit the provider's memory budget for this dossier; decoding stopped here, so later use sites were not examined.",
+      "Why this candidate is omitted: capacity stopped decoding, or an unresolved jump left its use unknown.",
     ),
   registers: swiftStringLiteralFields.registers,
   words: swiftStringLiteralFields.words,
 };
 
-/** A Swift literal whose layout matched but whose record did not fit; decoding stopped there. */
+/** A Swift literal candidate omitted because decoding capacity or control flow left it unknown. */
 export const swiftStringLiteralOmissionSchema = z.discriminatedUnion(
   "representation",
   [
@@ -353,19 +381,27 @@ export const referenceEdgeSchema = z
     source_procedure: procedureIdentitySchema.nullable(),
     target_procedure: procedureIdentitySchema.nullable(),
     kind: referenceKindSchema,
-    call: z
-      .strictObject({
-        classification: z.enum(["none", "unknown", "direct", "objective_c"]),
-        provider_type: z.number().int(),
-        provenance: z.string().min(1),
-      })
-      .exactOptional(),
+    call: nativeCallClassificationSchema.exactOptional(),
   })
   .strict();
 const facetAvailabilitySchema = z.discriminatedUnion("available", [
   z.object({ available: z.literal(true) }).strict(),
   z.object({ available: z.literal(false), reason: z.string().min(1) }).strict(),
 ]);
+
+/** Provider-declared availability per dossier facet; an omitted facet declares nothing. */
+export const functionFacetAvailabilitySchema = z
+  .object({
+    pseudocode: facetAvailabilitySchema.exactOptional(),
+    assembly: facetAvailabilitySchema.exactOptional(),
+    comments: facetAvailabilitySchema.exactOptional(),
+    callers: facetAvailabilitySchema.exactOptional(),
+    callees: facetAvailabilitySchema.exactOptional(),
+    references: facetAvailabilitySchema.exactOptional(),
+    strings_names: facetAvailabilitySchema.exactOptional(),
+    cfg: facetAvailabilitySchema.exactOptional(),
+  })
+  .strict();
 
 export const functionDossierSchema = z
   .object({
@@ -411,7 +447,7 @@ export const functionDossierSchema = z
       .array(swiftStringLiteralOmissionSchema)
       .exactOptional()
       .describe(
-        "The literal at which decoding stopped for capacity. Present exactly when swift_string_literals is present; empty when decoding examined every use site.",
+        "Literal candidates omitted for capacity or unresolved control flow. Present exactly when swift_string_literals is present; empty when all examined use sites were classified.",
       ),
     basic_blocks: z.array(
       z
@@ -424,19 +460,7 @@ export const functionDossierSchema = z
     ),
     native_api: nativeApiBoundarySchema.nullable(),
     native_value_flow: nativeValueFlowSchema.nullable(),
-    facet_availability: z
-      .object({
-        pseudocode: facetAvailabilitySchema.exactOptional(),
-        assembly: facetAvailabilitySchema.exactOptional(),
-        comments: facetAvailabilitySchema.exactOptional(),
-        callers: facetAvailabilitySchema.exactOptional(),
-        callees: facetAvailabilitySchema.exactOptional(),
-        references: facetAvailabilitySchema.exactOptional(),
-        strings_names: facetAvailabilitySchema.exactOptional(),
-        cfg: facetAvailabilitySchema.exactOptional(),
-      })
-      .strict()
-      .exactOptional(),
+    facet_availability: functionFacetAvailabilitySchema.exactOptional(),
     limitations: z.array(z.string()),
   })
   .strict();
@@ -447,7 +471,7 @@ export type FunctionDossier = z.infer<typeof functionDossierSchema>;
 /** Strictly parse a complete provider-neutral function dossier. */
 export const parseFunctionDossier = (
   value: JsonValue,
-): Result<JsonValue, AnalysisOutputError> => {
+): Result<FunctionDossier, AnalysisOutputError> => {
   const parsed = functionDossierSchema.safeParse(value);
   return parsed.success
     ? ok(parsed.data)
@@ -460,57 +484,31 @@ export const parseFunctionDossier = (
       );
 };
 
-/** Parse Hopper's direct or wrapped procedure map into stable entries. */
-export const parseProcedures = (
-  value: JsonValue,
-): Result<readonly AddressedName[], HopperProtocolError> => {
-  const parsed = procedureMapSchema.safeParse(
-    unwrapProperty(value, "procedures"),
-  );
-  return parsed.success
-    ? ok(
-        Object.entries(parsed.data).map(([address, name]) => ({
-          address,
-          name,
-        })),
-      )
-    : invalid("procedure map", parsed.error);
-};
-
-/** Parse Hopper's direct or wrapped list of address/name records. */
-export const parseNames = (
-  value: JsonValue,
-): Result<readonly AddressedName[], HopperProtocolError> => {
-  const unwrapped = unwrapProperty(value, "names");
-  const records = addressedNamesSchema.safeParse(unwrapped);
-  if (records.success) return ok(records.data);
-  const map = addressedNameMapSchema.safeParse(unwrapped);
-  return map.success
-    ? ok(Object.entries(map.data).map(([address, name]) => ({ address, name })))
-    : invalid("name list", map.error);
-};
-
-/** Parse callee/caller strings from direct or wrapped Hopper results. */
+/** Parse callee/caller strings from direct or wrapped provider results. */
 export const parseRelatedAddresses = (
   value: JsonValue,
   relation: "callees" | "callers",
-): Result<readonly string[], HopperProtocolError> => {
+  operation = relation === "callees"
+    ? "procedure_callees"
+    : "procedure_callers",
+): Result<readonly string[], AnalysisOutputError> => {
   const parsed = z.array(z.string()).safeParse(unwrapProperty(value, relation));
   return parsed.success
     ? ok(parsed.data)
-    : invalid(`${relation} list`, parsed.error);
+    : invalid(operation, `${relation} list`, parsed.error);
 };
 
 /** Preserve reported address context in direct or wrapped provider segments. */
 export const parseSegments = (
   value: JsonValue,
-): Result<readonly SegmentSummary[], HopperProtocolError> => {
+  operation = "list_segments",
+): Result<readonly SegmentSummary[], AnalysisOutputError> => {
   const parsed = z
     .array(segmentSchema)
     .safeParse(unwrapProperty(value, "segments"));
   return parsed.success
     ? ok(parsed.data)
-    : invalid("segment list", parsed.error);
+    : invalid(operation, "segment list", parsed.error);
 };
 
 /** Return a reported overview base only when every parsed segment agrees. */
@@ -524,30 +522,65 @@ export const parseSegmentImageBase = (
     : undefined;
 };
 
-/** Parse direct or wrapped Hopper document names. */
+/** Project the same overview from complete lists or provider-owned aggregates. */
+export const projectBinaryOverview = (input: {
+  readonly document: string;
+  readonly procedure_count: number;
+  readonly string_count: number;
+  readonly segments?: readonly SegmentSummary[];
+}): JsonValue => {
+  const { document, procedure_count, string_count, segments } = input;
+  const imageBase =
+    segments === undefined ? undefined : parseSegmentImageBase(segments);
+  return {
+    document,
+    ...(imageBase === undefined ? {} : { image_base: imageBase }),
+    ...(segments === undefined
+      ? {}
+      : {
+          segments: segments.map(
+            ({ name, start, end, image_base, address_space }) => ({
+              name,
+              start,
+              end,
+              length: addressDistance(start, end),
+              ...(image_base === undefined ? {} : { image_base }),
+              ...(address_space === undefined ? {} : { address_space }),
+            }),
+          ),
+          segment_count: segments.length,
+        }),
+    procedure_count,
+    string_count,
+  };
+};
+
+/** Parse direct or wrapped provider document names. */
 export const parseDocuments = (
   value: JsonValue,
-): Result<readonly string[], HopperProtocolError> => {
+  operation = "list_documents",
+): Result<readonly string[], AnalysisOutputError> => {
   const parsed = z
     .array(z.string())
     .safeParse(unwrapProperty(value, "documents"));
   return parsed.success
     ? ok(parsed.data)
-    : invalid("document list", parsed.error);
+    : invalid(operation, "document list", parsed.error);
 };
 
 /** Parse a direct or wrapped list when only its cardinality is required. */
 export const parseListCount = (
   value: JsonValue,
   property: string,
-): Result<number, HopperProtocolError> => {
+  operation = property === "procedures" ? "list_procedures" : "list_strings",
+): Result<number, AnalysisOutputError> => {
   const unwrapped = unwrapProperty(value, property);
   const list = z.array(z.unknown()).safeParse(unwrapped);
   if (list.success) return ok(list.data.length);
   const map = z.record(z.string(), z.unknown()).safeParse(unwrapped);
   return map.success
     ? ok(Object.keys(map.data).length)
-    : invalid(`${property} list`, map.error);
+    : invalid(operation, `${property} list`, map.error);
 };
 
 const unwrapProperty = (value: JsonValue, property: string): JsonValue => {
@@ -563,11 +596,16 @@ const unwrapProperty = (value: JsonValue, property: string): JsonValue => {
 };
 
 const invalid = <T>(
+  operation: string,
   expected: string,
   cause: z.ZodError,
-): Result<T, HopperProtocolError> =>
+): Result<T, AnalysisOutputError> =>
   err(
-    new HopperProtocolError(`Hopper returned an invalid ${expected}`, {
-      cause,
-    }),
+    new AnalysisOutputError(
+      operation,
+      `Provider returned an invalid ${expected}`,
+      {
+        cause,
+      },
+    ),
   );

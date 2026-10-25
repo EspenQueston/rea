@@ -1,25 +1,26 @@
+import { analysisViewInputError } from "./analysisViewErrors.js";
 import { z } from "zod";
-import { pcapResultSchemas } from "../pcap/pcapAnalysis.js";
-import { analysisInputErrorFromIssues } from "../inputIssueProjection.js";
+import { pcapEvidenceSchemas } from "../pcap/pcapAnalysis.js";
+import { parseAnalysisViewResult } from "./analysisViewParent.js";
 import type { AnalysisError } from "../analysisErrorBase.js";
 import { err, ok, type Result } from "../result.js";
-import {
-  analysisViewInputError,
-  type AnalysisViewParent,
-  type AnalysisViewRequest,
-  type UnsignedAnalysisView,
+import type {
+  AnalysisViewParent,
+  AnalysisViewRequest,
+  UnsignedAnalysisView,
 } from "./analysisView.js";
 import {
   completeWithinViewCoverage,
   pageViewCoverage,
 } from "./analysisViewCoverage.js";
+import { analysisTextPage } from "./analysisViewText.js";
 
-const captureSchema = pcapResultSchemas.inspect_pcap_capture;
+const captureSchema = pcapEvidenceSchemas.inspect_pcap_capture;
 const fields = captureSchema.shape;
 const pageShape = {
   kind: z.literal("pcap"),
-  offset: z.number().int().nonnegative().default(0),
-  limit: z.number().int().positive().default(64),
+  offset: z.int().nonnegative().default(0),
+  limit: z.int().positive().default(64),
 };
 export const pcapViewRequestSchema = z.discriminatedUnion("facet", [
   z.strictObject({
@@ -50,7 +51,7 @@ export const pcapViewPageSchema = z.discriminatedUnion("facet", [
     facet: z.literal("dns-queries"),
     items: z.array(
       fields.dns_queries.element.omit({ response_addresses: true }).extend({
-        retained_response_address_count: z.number().int().nonnegative(),
+        retained_response_address_count: z.int().nonnegative(),
       }),
     ),
   }),
@@ -89,17 +90,17 @@ export const pcapSummarySchema = captureSchema
   })
   .extend({
     retained_counts: z.strictObject({
-      endpoints: z.number().int().nonnegative(),
-      dns_queries: z.number().int().nonnegative(),
-      tls_sni_values: z.number().int().nonnegative(),
-      protocol_distribution: z.number().int().nonnegative(),
-      http_request_uris: z.number().int().nonnegative(),
-      unattributed_dns_addresses: z.number().int().nonnegative(),
+      endpoints: z.int().nonnegative(),
+      dns_queries: z.int().nonnegative(),
+      tls_sni_values: z.int().nonnegative(),
+      protocol_distribution: z.int().nonnegative(),
+      http_request_uris: z.int().nonnegative(),
+      unattributed_dns_addresses: z.int().nonnegative(),
     }),
     diagnostics_code_units: z
       .strictObject({
-        tshark: z.number().int().nonnegative(),
-        capinfos: z.number().int().nonnegative(),
+        tshark: z.int().nonnegative(),
+        capinfos: z.int().nonnegative(),
       })
       .nullable(),
   });
@@ -110,19 +111,11 @@ type Page = z.output<typeof pcapViewPageSchema>;
 const parseParent = (
   parent: AnalysisViewParent,
 ): Result<Capture, AnalysisError> => {
-  const parsed = captureSchema.safeParse(parent.normalizedResult);
-  if (!parsed.success)
-    return err(
-      analysisInputErrorFromIssues(
-        "inspect_analysis_view",
-        parsed.error.issues,
-        parent.normalizedResult,
-        { cause: parsed.error },
-      ),
-    );
+  const parsed = parseAnalysisViewResult(captureSchema, parent);
+  if (!parsed.ok) return parsed;
   if (
-    parent.subject?.local_path !== parsed.data.target.path ||
-    parent.subject.digest.sha256 !== parsed.data.target.sha256
+    parent.subject?.local_path !== parsed.value.target.path ||
+    parent.subject.digest.sha256 !== parsed.value.target.sha256
   )
     return err(
       analysisViewInputError([
@@ -134,7 +127,7 @@ const parseParent = (
         },
       ]),
     );
-  return ok(parsed.data);
+  return ok(parsed.value);
 };
 const summarize = ({
   endpoints,
@@ -288,7 +281,13 @@ export const projectPcapCaptureView = (
       view.stream === "tshark"
         ? capture.diagnostics?.tshark_stderr
         : capture.diagnostics?.capinfos_stderr;
-    const text = value?.slice(view.offset, view.offset + view.limit) ?? "";
+    const text = analysisTextPage(
+      value ?? "",
+      view.offset,
+      view.limit,
+      "Diagnostics",
+    );
+    if (!text.ok) return text;
     return ok({
       kind: "pcap",
       view,
@@ -296,10 +295,10 @@ export const projectPcapCaptureView = (
       source_coverage: capture.coverage,
       page: {
         facet: "diagnostics",
-        text,
+        text: text.value.item.text,
         status: value === undefined ? "unknown" : "retained",
       },
-      coverage: pageViewCoverage(view.offset, text.length, value?.length ?? 0),
+      coverage: text.value.coverage,
       unknowns:
         value === undefined
           ? [

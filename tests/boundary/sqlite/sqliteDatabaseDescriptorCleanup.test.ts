@@ -1,14 +1,17 @@
 import { Cli } from "incur";
 import { access, writeFile } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, it, onTestFinished, vi } from "vitest";
 
 import { SqliteDatabaseService } from "../../../src/application/sqlite/SqliteDatabaseService.js";
+import { ArtifactFileCleanupFailure } from "../../../src/artifacts/ArtifactFileOperation.js";
+import { ArtifactResourceScope } from "../../../src/artifacts/ArtifactResourceScope.js";
 import { registerSqliteCommands } from "../../../src/cli/sqliteCommands.js";
 import { createSqliteDatabaseService } from "../../../src/composition/sqlite.js";
 import { projectAnalysisError } from "../../../src/domain/analysisErrorProjection.js";
+import { AnalysisOutputError } from "../../../src/domain/analysisErrorCore.js";
 import { silentLogger } from "../../../src/logger.js";
 import { SqliteDatabaseProvider } from "../../../src/sqlite/SqliteDatabaseProvider.js";
 import { PrivateRuntimeRoot } from "../../../src/process/PrivateRuntimeRoot.js";
@@ -267,14 +270,16 @@ it("retains cancellation diagnostics and the interrupt exit code through CLI shu
 it("retains reply-read cancellation and retries the failed reply descriptor close", async () => {
   const selected = await fixture("reply");
   const controller = new AbortController();
-  descriptorCleanup.onOpen = () =>
-    controller.abort(new Error("requested cancellation during reply read"));
+  const reason = { requested: "cancel during reply read" };
+  descriptorCleanup.onOpen = () => controller.abort(reason);
   const result = await selected.provider.inspect(
     { path: selected.database.path },
     { signal: controller.signal },
   );
   if (result.ok) throw new Error("Expected cancelled reply read");
-  expect(projectAnalysisError(result.error)).toMatchObject({
+  expect(result.error).toMatchObject({ _tag: "AnalysisCancelledError" });
+  expect(result.error.cause).toBe(reason);
+  const cancelled = {
     code: "cleanup_incomplete",
     details: {
       execution_failure: "cancelled",
@@ -285,7 +290,29 @@ it("retains reply-read cancellation and retries the failed reply descriptor clos
         truncated: false,
       },
     },
-  });
+  };
+  // Windows cannot remove a private root while the reply descriptor is open;
+  // the retained cancellation is then reported as the root cleanup's cause.
+  expect(projectAnalysisError(result.error)).toMatchObject(
+    process.platform === "win32"
+      ? {
+          code: "cleanup_incomplete",
+          details: {
+            resources: [dirname(descriptorCleanup.path)],
+            captured_output: cancelled.details.captured_output,
+            diagnostics: {
+              previous_error: {
+                code: cancelled.code,
+                details: {
+                  execution_failure: "cancelled",
+                  resources: cancelled.details.resources,
+                },
+              },
+            },
+          },
+        }
+      : cancelled,
+  );
   const handle = descriptorCleanup.handles[0];
   if (handle === undefined) throw new Error("Expected owned reply descriptor");
   expect(handle.fd).toBeGreaterThanOrEqual(0);
@@ -295,8 +322,74 @@ it("retains reply-read cancellation and retries the failed reply descriptor clos
   descriptorCleanup.denied = false;
   await selected.provider.close();
   expect(handle.fd).toBe(-1);
+  expect(result.error.cleanupIncomplete).toBe(false);
+  expect(projectAnalysisError(result.error)).toMatchObject({
+    code: "cancelled",
+  });
   for (const root of selected.roots)
     await expect(access(root.path)).rejects.toMatchObject({ code: "ENOENT" });
+});
+
+it("keeps a completed reply close failure primary when abort follows lease retention", async () => {
+  const selected = await fixture("reply");
+  const controller = new AbortController();
+  const reason = { requested: "abort after reply close failure capture" };
+  let retainedReplyLease: string | undefined;
+  const retain = ArtifactResourceScope.prototype.retain;
+  const retainSpy = vi
+    .spyOn(ArtifactResourceScope.prototype, "retain")
+    .mockImplementation(function (this: ArtifactResourceScope, owner) {
+      retain.call(this, owner);
+      if (owner.kind === "lease" && owner.resource === descriptorCleanup.path) {
+        retainedReplyLease = owner.resource;
+        controller.abort(reason);
+      }
+    });
+
+  try {
+    const result = await selected.provider.inspect(
+      { path: selected.database.path },
+      { signal: controller.signal },
+    );
+    expect(controller.signal.aborted).toBe(true);
+    expect(controller.signal.reason).toBe(reason);
+    expect(retainedReplyLease).toBe(descriptorCleanup.path);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+
+    const primary =
+      result.error instanceof AnalysisOutputError
+        ? result.error
+        : result.error.cleanupPrimary;
+    expect(primary).toBeInstanceOf(AnalysisOutputError);
+    if (!(primary instanceof AnalysisOutputError)) return;
+    expect(primary).not.toMatchObject({ _tag: "AnalysisCancelledError" });
+    expect(primary.cause).toBeInstanceOf(ArtifactFileCleanupFailure);
+    expect(primary.cause).toMatchObject({
+      fileCleanupFailure: {
+        path: descriptorCleanup.path,
+        outcome: { kind: "completed" },
+        completionCancellation: undefined,
+      },
+    });
+    expect(primary.cleanupIncomplete).toBe(true);
+    expect(primary.cleanupResources).toContain(descriptorCleanup.path);
+
+    const handle = descriptorCleanup.handles[0];
+    if (handle === undefined)
+      throw new Error("Expected owned reply descriptor");
+    expect(handle.fd).toBeGreaterThanOrEqual(0);
+    expect(descriptorCleanup.attempts).toBe(1);
+
+    descriptorCleanup.denied = false;
+    await selected.provider.close();
+    expect(descriptorCleanup.attempts).toBe(2);
+    expect(handle.fd).toBe(-1);
+    expect(primary.cleanupIncomplete).toBe(false);
+    expect(primary).toBeInstanceOf(AnalysisOutputError);
+  } finally {
+    retainSpy.mockRestore();
+  }
 });
 
 it("retries source cleanup before admitting another snapshot", async () => {
@@ -361,12 +454,13 @@ it.each(["database", "WAL", "journal"] as const)(
   async (member) => {
     const selected = await fixture(member);
     const controller = new AbortController();
-    descriptorCleanup.onOpen = () =>
-      controller.abort(new Error("requested caller cancellation"));
+    const reason = { requested: `cancel while reading ${member}` };
+    descriptorCleanup.onOpen = () => controller.abort(reason);
     const result = await selected.provider.inspect(
       { path: selected.database.path },
       { signal: controller.signal },
     );
+    if (result.ok) throw new Error("Expected caller cancellation");
     expect(result).toMatchObject({
       ok: false,
       error: {
@@ -374,5 +468,17 @@ it.each(["database", "WAL", "journal"] as const)(
         diagnostics: { previous_error: { code: "cancelled" } },
       },
     });
+    descriptorCleanup.denied = false;
+    await selected.provider.close();
+    expect(result.error.cleanupIncomplete).toBe(false);
+    expect(projectAnalysisError(result.error)).toMatchObject({
+      code: "cancelled",
+    });
+    expect(result.error.cleanupPrimary).toMatchObject({
+      _tag: "AnalysisCancelledError",
+    });
+    expect(result.error.cleanupPrimary?.cause).toBe(reason);
+    for (const root of selected.roots)
+      await expect(access(root.path)).rejects.toMatchObject({ code: "ENOENT" });
   },
 );

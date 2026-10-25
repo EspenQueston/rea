@@ -4,21 +4,32 @@ import { describe, expect, it } from "vitest";
 import { toolContract } from "../../../src/contracts/toolContracts.js";
 import { createEvidence, type Evidence } from "../../../src/domain/evidence.js";
 import type { JsonValue } from "../../../src/domain/jsonValue.js";
-import { evaluateCodexEvents } from "../../../src/evaluation/CodexAgentEval.js";
+import { evaluateAgentTranscript } from "./AgentEval.js";
+import { parseCodexEvents } from "./AgentTranscript.js";
 import {
   agentFixtureAnswerInstructions,
   agentFixtureClaims,
-} from "../../../src/evaluation/AgentEvaluationFixtures.js";
+} from "./AgentEvaluationFixtures.js";
 import { inspectManagedArtifactBytes } from "../../../src/dotnet/ManagedArtifactInspector.js";
 import { inspectManagedMembersBytes } from "../../../src/dotnet/ManagedMemberInspector.js";
 import {
   buildManagedPeFixture,
   managedPeFixtureTarget,
 } from "../../../src/dotnet/ManagedPe.fixture.js";
-import type { FixtureClaimExpectation } from "../../../src/evaluation/KnownAnswerEvaluation.js";
-import { ToolResultDelivery } from "../../../src/server/toolResult.js";
+import type { FixtureClaimExpectation } from "./KnownAnswerEvaluation.js";
+import { createToolResultDelivery } from "../../../src/server/toolResult.js";
 
-const delivery = new ToolResultDelivery(STDIO_DEFAULT_MAX_BUFFER_SIZE);
+const evaluateCodexEvents = (
+  events: readonly unknown[],
+  ...options: Parameters<typeof evaluateAgentTranscript> extends [
+    unknown,
+    ...infer Rest,
+  ]
+    ? Rest
+    : never
+) => evaluateAgentTranscript(parseCodexEvents(events), ...options);
+
+const delivery = createToolResultDelivery(STDIO_DEFAULT_MAX_BUFFER_SIZE);
 
 const provider = { id: "fixture", name: "Fixture analysis", version: "1" };
 const subject = {
@@ -140,6 +151,8 @@ const managedTranscript = () => {
     javascriptSha256: "",
     javascriptShapeLeft: "",
     javascriptShapeRight: "",
+    notesElectron: "",
+    notesElectronSha256: "",
     managed: target.path,
     managedSha256: target.sha256,
   });

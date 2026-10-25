@@ -1,33 +1,28 @@
 import { z } from "zod";
-import { isAbsolute } from "node:path";
 
 import type { ToolContract } from "../toolContractTypes.js";
 import { managedOutputSchemas } from "../toolOutputSchemaGroups.js";
 import { toolContractMetadata } from "../toolEffects.js";
 import { requireOutputSchema } from "../toolOutputSchemaPrimitives.js";
-import { localPathStringSchema } from "../../domain/localPath.js";
+import { absoluteLocalPathStringSchema } from "../../domain/localPath.js";
 import { analysisDetailSchema } from "../analysisDetail.js";
 
 /** Exact caller boundary for execution-free PE/CLI triage and identity. */
 export const managedTargetInputSchema = z.strictObject({
-  path: localPathStringSchema
-    .refine(isAbsolute, {
-      message:
-        "path must be an absolute local filesystem path (for example /tmp/Example.dll or C:\\Example.dll)",
-    })
+  path: absoluteLocalPathStringSchema
     .describe(
       "Explicit absolute managed PE/CLI path; omit to reuse the previously selected managed target",
     )
     .optional(),
 });
 
-/** Delivery selection belongs only to artifact inspection, not member/native queries. */
+/** Delivery selection belongs to artifact and member inspection, not native queries. */
 export const managedArtifactInputSchema = managedTargetInputSchema.extend({
-  detail: analysisDetailSchema.unwrap().optional(),
+  detail: analysisDetailSchema,
 });
 
 /** Member inspection may select declaring types before members are decoded. */
-export const managedMembersInputSchema = managedTargetInputSchema.extend({
+export const managedMembersInputSchema = managedArtifactInputSchema.extend({
   type_names: z
     .array(
       z
@@ -87,7 +82,7 @@ export const MANAGED_TOOL_CONTRACTS = [
     name: "inspect_managed_members",
     ...toolContractMetadata("inspect_managed_members"),
     description:
-      "Inspect PE/CLI metadata members, signatures, raw CIL hashes, decoded-instruction-tuple hashes, separately reported exception regions, call edges, field-access anchors, and the #US string literals that ldstr loads, without loading or executing target code. Select type_names to decode only the members of those exact declaring types and the literals their bodies load, which keeps large assemblies such as a base class library within the representation budget. Metadata tokens are reported as build-local coordinates bound to the artifact SHA-256 and MVID; the tuple hash does not resolve them or fully commit control flow.",
+      'Inspect PE/CLI metadata members, signatures, raw CIL hashes, decoded-instruction-tuple hashes, separately reported exception regions, call edges, field-access anchors, and the #US string literals that ldstr loads, without loading or executing target code. Select type_names to decode only the members of those exact declaring types and the literals their bodies load, which keeps large assemblies such as a base class library within the representation budget. Metadata tokens are reported as build-local coordinates bound to the artifact SHA-256 and MVID; the tuple hash does not resolve them or fully commit control flow. Omitted or complete detail returns every collection, including the assembly-wide member_refs and exported_types, which type_names does not narrow. Select detail: "summary" for identity, metadata status, selection with unmatched names, coverage/issues, limitations and per-collection counts; it retains complete Evidence and returns a linked inspect_analysis_view summary. Page original rows with view kind managed-members, normalized_result.parent_evidence_id and collection types/exported_types/fields/methods/member_refs/call_edges/field_accesses/user_strings.',
     kind: "managed-provider",
     inputSchema: managedMembersInputSchema,
     outputSchema: memberOutputSchema,
@@ -101,6 +96,14 @@ export const MANAGED_TOOL_CONTRACTS = [
         input: {
           path: "/tmp/mscorlib.dll",
           type_names: ["System.Threading.Monitor"],
+        },
+      },
+      {
+        title: "Summarize selected managed types and retain their members",
+        input: {
+          path: "/tmp/mscorlib.dll",
+          type_names: ["System.Threading.Monitor"],
+          detail: "summary",
         },
       },
     ],

@@ -1,10 +1,37 @@
 # Client and agent verification
 
+FreeBuff MCP loading and personal skill discovery are currently unverified with
+an installed native client/version. Its temporary-filesystem coverage verifies
+REA's configuration and applicability boundaries only; it does not establish
+that FreeBuff consumes the written registration or skill.
+
 Use these optional lanes to verify an installed client or evaluate an agent's
 REA workflow. [Testing REA](testing.md) provides the normal development commands
 and provider lanes. Each record below states its host, client version, model
 fixture, and remaining coverage; a native-client run with a loopback model does
 not establish live model-service acceptance.
+
+## Published Pi code-mode renderer limit
+
+A separate probe of the published `@earendil-works/pi-codemode` 1.1.0 and 1.2.0
+declaration renderers rendered the full `compare_web_captures` input as
+`args: unknown`: its generated TypeScript type exceeds Pi's 16,000-character
+default. REA keeps the full advertisement's fields by inlining references when
+the shared form would exceed Pi's 32-reference expansion limit; retaining that
+shared form would leave later fields unknown instead. The existing
+`REA_MCP_INPUT_SCHEMA_PROFILE=compact` profile lets callers stay below
+its character limit by advertising reduced nested validation structure, while
+REA continues to validate calls against the complete canonical input schema.
+Compact is the default for the server's advertised inputs; an explicit `full`
+choice is preserved. See the [compact input schema profile](mcp-contracts.md#compact-input-schema-profile)
+for details of its reduced forms.
+
+Custom renderer hosts can raise `inputMaxChars` through `renderToolSignature` or
+`renderToolSample`; `renderDeclarations` does not expose that override. The
+probe exercised the published renderer code, not a native Pi host or model, and
+does not establish broader Pi compatibility. See the pinned upstream
+[`declarations.ts`](https://github.com/earendil-works/pi/blob/b45e0ebcc5ae2fc42a6f2f23104d10e656e6bedb/packages/codemode/src/declarations.ts)
+and [renderer usage notes](https://github.com/earendil-works/pi/blob/b45e0ebcc5ae2fc42a6f2f23104d10e656e6bedb/packages/codemode/README.md#declarations-for-the-model).
 
 ## End-to-end, integration and golden evidence
 
@@ -126,6 +153,12 @@ the complete catalog and full schemas. To verify the existing compact profile:
 REA_VERIFY_COPILOT_MODEL=gpt-4.1 REA_VERIFY_COPILOT_SCHEMA_PROFILE=compact npm run verify:copilot-client -- chat
 REA_VERIFY_COPILOT_MODEL=gpt-4.1 REA_VERIFY_COPILOT_SCHEMA_PROFILE=compact npm run verify:copilot-client -- call
 ```
+
+The verifier explicitly writes either selected profile into its disposable
+registration and compares the input schemas forwarded by Copilot with that
+profile's advertised schemas. A run must not infer `full` from an unset setting:
+REA's runtime default is now `compact`. The recorded client results above remain
+scoped to their executed revisions; this verifier correction is not a new client run.
 
 Both native workflows passed with the complete tool inventory. The verifier selects the
 profile only in its disposable Copilot registration and records it in the
@@ -377,6 +410,11 @@ Such a stall leaves the initial page unloaded with empty or placeholder CDP URLs
 it does not establish permission to capture that page. See
 [the keyring diagnosis](https://github.com/morluto/rea/issues/1384#issuecomment-6093781686).
 
+On Windows, browser verifier lanes that launch an owned fixture require a
+standard, non-elevated caller token. They inspect the verifier caller before
+allocating fixture resources and refuse elevated or unobservable tokens; they do
+not change caller authority or claim to inspect the browser process token.
+
 `verify:browser` also captures a source-owned noise canvas as a real PNG above
 8 MiB through the CLI and stdio MCP, with complete byte/digest parity and real PNG
 decoding. Its SDK client explicitly permits the larger inline JSON response;
@@ -425,12 +463,18 @@ real local agent client with:
 npm run verify:agent
 ```
 
+The verifier's scenarios, transcript scoring, fixture rubrics, and report gates
+are development verification code under `tests/evaluation/model-evals/`. The
+source-owned evaluator runs alongside the compiled REA tools; it is excluded
+from the shipped runtime package.
+
 Codex is the default client. Set `REA_AGENT_EVAL_CLIENT` to `claude-code` or
 `gemini-cli` to run the same scenarios, fixture claims and gates through Claude
 Code or Gemini CLI. Each client's transcript is parsed once into a
-client-neutral record of MCP calls, results, final answer and token usage, and
-the same grader evaluates every client. Reports record the selected `client`,
-so results from different clients can be compared.
+client-neutral record of MCP calls, results, final answer, token usage and the
+client's own terminal failures, and the same grader evaluates every client.
+Reports record the selected `client`, so results from different clients can be
+compared.
 
 The lane runs scenarios sequentially with a disposable HOME and client profile
 (CODEX_HOME, CLAUDE_CONFIG_DIR, or GEMINI_CLI_HOME) under
@@ -438,52 +482,70 @@ The lane runs scenarios sequentially with a disposable HOME and client profile
 `REA_AGENT_EVAL_ROOT` to choose another parent directory outside the OS temporary
 directory: current Codex refuses helper aliases under `/tmp`, preventing shell
 commands and skill reads even if MCP works. Each owned run directory is removed
-after verification unless fixture retention is requested. The lane
+after verification unless fixture retention is requested. Commands share the
+owned-process supervisor: native ownership preparation has its own bounded
+deadline before each short command budget, and timeouts join bounded process-tree
+and output cleanup before returning. If cleanup remains incomplete, the lane retries its retained
+owner and preserves the run directory (including disposable auth) rather than
+removing files still in use; the error retains ownership and recovery details.
+Command stderr is limited to 32 KiB and combined version output to 8 KiB;
+exceeding these diagnostic budgets fails explicitly. Scenario JSON events stream
+to the evaluator without retaining a second raw stdout copy. Cleanup attempts the
+remaining run tree even if auth removal fails, and reports unresolved cleanup
+together with the original verification failure. The lane
 installs the packaged skill and MCP registration through public `rea setup`,
 rather than copying a skill into a project that also inherits the caller's
 skills and configuration. Only authentication is copied, when present, and it
-is removed after verified process cleanup even with `REA_AGENT_EVAL_KEEP_FIXTURES=true`. No user configuration,
+is removed after confirmed process cleanup even with
+`REA_AGENT_EVAL_KEEP_FIXTURES=true`. No user configuration,
 rules, plugins or history is copied; shell snapshots and additional agents are
 disabled. Existing API-key environment authentication remains available.
 Authentication is the client's credential file (`auth.json`,
 `.credentials.json`, or `.gemini/oauth_creds.json`) or its API key
-(`OPENAI_API_KEY`/`CODEX_API_KEY`, `ANTHROPIC_API_KEY` or `GEMINI_API_KEY`).
-The client environment is built from an allowlist of host, locale,
-temporary-directory, proxy, certificate and session-keyring variables, plus the
-selected client's own API key and endpoint (`ANTHROPIC_BASE_URL` or
-`GOOGLE_GEMINI_BASE_URL`); other credentials and configuration are not
-inherited. Copied credential files are registered for removal before they are
-written. Each scenario runs as an owned process tree with its own run token;
-completion or timeout ends with token-verified cleanup of the client and the
-REA MCP server it started. Cleanup waits for token-owned descendants to disappear
-and retries retained ownership before releasing files. If cleanup remains
-unverified, the run fails and retains its private root, credential paths, and
-`process-ownership.json` receipt for token-verified recovery; the receipt does not
-store environment values. Claude Code also disables account-level
-claude.ai connectors. Gemini CLI reuses the caller's selected
-authentication type unless `GEMINI_API_KEY` is nonempty. Its OAuth file is copied
-only when OAuth is selected; an API key Gemini CLI keeps in the OS keychain is
-used in place rather than copied.
+(`OPENAI_API_KEY`/`CODEX_API_KEY`, `ANTHROPIC_API_KEY` or
+`ANTHROPIC_AUTH_TOKEN`, or `GEMINI_API_KEY`). The client environment is built
+from an allowlist of host, locale, temporary-directory, proxy, certificate and
+session-keyring variables, plus the selected client's own API key and endpoint
+(`ANTHROPIC_BASE_URL` or `GOOGLE_GEMINI_BASE_URL`); other credentials and
+configuration are not inherited. Copied credential files are registered for
+removal before they are written. Claude Code also disables account-level
+claude.ai connectors. Gemini CLI reuses the caller's selected authentication
+type unless `GEMINI_API_KEY` is nonempty. Its OAuth file is copied only when
+OAuth is selected; an API key Gemini CLI keeps in the OS keychain is used in
+place rather than copied. A selected JavaScript client entry point (an npm
+install's `cli.js` or `bundle/gemini.js`) runs under the verifier's Node for
+the version preflight and every scenario, because on Windows only a `.cmd`
+shim reaches `PATH`.
 
 Codex runs in its read-only sandbox with `approval_policy="never"`. Claude Code
-and Gemini CLI receive an explicit allow-list instead. It contains REA tools
-whose audited annotations are read-only, or neither destructive nor open-world,
-plus the scenario's approved tools. Claude Code is limited to its read-only
-built-ins (`Read`, `Grep`, `Glob`, `Skill`, `ToolSearch` and `WaitForMcpServers`) in `dontAsk` mode.
-Gemini CLI runs headless in its default approval mode, which refuses shell and
-edit tools, with an allow-list policy file. The policy also allows `activate_skill` so the installed
-REA skill can load. Other REA tools are refused by the
-client. Gemini CLI's stream output retains only MCP text content, so Evidence
-delivery there depends on REA's complete JSON text block. Its failed MCP results carry a generic client
-message instead of REA's error record, so validation failures there are counted
-from the arguments against the named REA contract.
-The browser scenario explicitly approves `list_browser_targets` for its selected
-local debugging endpoint. The client version preflight receives the same
-allowlisted base environment without authentication additions.
-The native missing-provider scenario preapproves only `open_binary` and
+and Gemini CLI receive an explicit allow-list instead. It is a permission
+policy taken from each tool's audited effects: a REA tool that may run foreign
+code, change a device, discard caller state, launch a process, or reach the
+network is refused unless the scenario approves it by name. The MCP hints
+advertised for a tool are display derivations of those same effects and do not
+decide permissions. Claude Code is limited to its read-only built-ins (`Read`,
+`Grep`, `Glob`, `Skill`, `ToolSearch` and `WaitForMcpServers`) in `dontAsk`
+mode. Gemini CLI runs headless in its default approval mode, which refuses
+shell and edit tools, with an allow-list policy file. The policy also allows
+`activate_skill` so the installed REA skill can load. Other REA tools are
+refused by the client. Gemini CLI's stream output retains only MCP text
+content, so Evidence delivery there depends on REA's complete JSON text block.
+Its failed MCP results carry a generic client message instead of REA's error
+record, so validation failures there are counted from the arguments against the
+named REA contract. The browser scenario explicitly approves
+`list_browser_targets` for its selected local debugging endpoint. The client
+version preflight receives the same allowlisted base environment without
+authentication additions.
+The native provider scenario preapproves only `open_binary` and
 `close_binary` in the disposable client so it reaches REA's actual provider
-boundary instead of stopping at Codex approval. This does not validate a real
-native engine or authorize arbitrary runtime execution.
+boundary instead of stopping at Codex approval. Its scenario contract accepts
+one `provider_unavailable` open refusal without a close, or one successful open
+followed by a successful close. Other errors, an unclosed session, and a close
+without acquisition fail. These outcomes and the prompt are owned together in
+`tests/evaluation/model-evals/AgentEvaluationScenarios.ts`; generic successful-tool sequences
+still apply to scenarios that require them. The provider scenario checks routing,
+reported limitations, and cleanup; free-form answer correctness remains
+unassessed. It does not validate a real native engine or authorize runtime execution.
 
 Select a smaller run with `REA_AGENT_EVAL_SCENARIOS`, a comma-separated list of
 scenario IDs. `asar-zh` exercises the packaged desktop rubric from a Chinese
@@ -497,8 +559,10 @@ limit for the whole process tree when testing on a constrained host; a Node
 heap limit alone does not bound client and child-process memory.
 
 `missing-target` leaves desktop fixtures visible without selecting one in the
-request. It requires zero REA calls and a structured request for an app name or
-artifact path. Its `expectedFirstTool` is `null`, and
+request. It requires zero REA calls and a JSON-only request for an app name or
+artifact path, with no preceding prose or Markdown fences. Its prompt and
+whole-answer validator are defined together in `AgentEvaluationScenarios.ts`.
+Its `expectedFirstTool` is `null`, and
 `targetClarificationPassed` grades that limited routing outcome independently
 of analysis prose heuristics. Analyzing a nearby example cannot pass this case.
 
@@ -546,7 +610,9 @@ pass. Their answer-text heuristics are diagnostic and do not affect the gate.
 Validation counts include complete text-only REA `invalid_request` envelopes
 and failed SDK calls whose arguments violate the named current REA contract.
 A call whose result the client never reported, or reported inconsistently,
-is not counted as a completed workflow step.
+is not counted as a completed workflow step. A refused permission request or
+a terminal client error is recorded in the scenario's `clientFailures` and fails
+the gate even when the client still returned an answer.
 Client approval rejections and provider unavailability remain distinct failures;
 truncated JSON previews are not parsed into invented error codes.
 Repeated `binary_session` observations separated by a successful `open_binary`
@@ -560,14 +626,18 @@ as factual assessments. Set `REA_AGENT_EVAL_TRANSCRIPT_DIR` to retain complete
 tool results and final answers for review.
 
 Report schema version 5 adds the selected `client`, `clientCommand` and
-`clientVersion`, and names the setup method `rea_setup_<client>`. Codex reports
-keep `codex`, `codexVersion` and `isolatedCodexHome`. Input token counts include
-cached input for every client; Claude Code's separate cache-creation and
+`clientVersion`, names the setup method `rea_setup_<client>`, and records each
+scenario's `clientFailures` with their total in `clientFailureCount`. Codex
+reports keep `codex`, `codexVersion` and `isolatedCodexHome`. Input token counts
+include cached input for every client; Claude Code's separate cache-creation and
 cache-read counts are added to its uncached input.
 Version 4 adds negative routing scenarios with nullable
 `expectedFirstTool` and a `targetClarificationPassed` outcome. Consumers must
 allow an expected absence of REA calls; this does not make an analysis scenario
-pass without its required tools. Version 3 changed the top-level
+pass without its required tools. Native provider records additionally report
+`scenarioOutcome` (`provider-unavailable`, `opened-and-closed`, or `failed`) and
+`scenarioOutcomePassed`; a failed outcome fails the gate independently of prose
+heuristics. Version 3 changed the top-level
 `factualCorrectness` from a constant
 string to an assessment summary with status, scope, and assessed/passed/failed/
 not-assessed scenario counts. Scenario records include the factual assessment and

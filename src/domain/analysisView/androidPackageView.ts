@@ -1,13 +1,13 @@
+import { analysisViewInputError } from "./analysisViewErrors.js";
 import { z } from "zod";
 import type { AnalysisError } from "../analysisErrorBase.js";
 import { androidResultSchemas } from "../android/androidAnalysis.js";
-import { analysisInputErrorFromIssues } from "../inputIssueProjection.js";
 import { err, ok, type Result } from "../result.js";
-import {
-  analysisViewInputError,
-  type AnalysisViewParent,
-  type AnalysisViewRequest,
-  type UnsignedAnalysisView,
+import { parseAnalysisViewResult } from "./analysisViewParent.js";
+import type {
+  AnalysisViewParent,
+  AnalysisViewRequest,
+  UnsignedAnalysisView,
 } from "./analysisView.js";
 import { completeWithinViewCoverage } from "./analysisViewCoverage.js";
 import { analysisTextPage } from "./analysisViewText.js";
@@ -17,7 +17,7 @@ const packageSchema = androidResultSchemas.inspect_android_package;
 /** All package declarations remain inline; decoded manifest text stays retained. */
 export const androidPackageSummarySchema = packageSchema.extend({
   manifest: packageSchema.shape.manifest.omit({ text: true }).extend({
-    text_code_units: z.number().int().nonnegative(),
+    text_code_units: z.int().nonnegative(),
     text_included: z.literal(false),
   }),
 });
@@ -26,8 +26,8 @@ export const androidPackageSummarySchema = packageSchema.extend({
 export const androidViewRequestSchema = z.strictObject({
   kind: z.literal("android"),
   facet: z.literal("manifest"),
-  offset: z.number().int().nonnegative().default(0),
-  limit: z.number().int().positive(),
+  offset: z.int().nonnegative().default(0),
+  limit: z.int().positive(),
 });
 
 export const androidManifestViewItemSchema = z.strictObject({
@@ -53,19 +53,8 @@ export const projectAndroidPackageView = (
         },
       ]),
     );
-  const parsed = packageSchema.safeParse(parent.normalizedResult);
-  if (!parsed.success)
-    return err(
-      analysisInputErrorFromIssues(
-        "inspect_analysis_view",
-        parsed.error.issues.map((issue) => ({
-          ...issue,
-          path: ["source", "normalized_result", ...issue.path],
-        })),
-        { source: { normalized_result: parent.normalizedResult } },
-        { cause: parsed.error },
-      ),
-    );
+  const parsed = parseAnalysisViewResult(packageSchema, parent);
+  if (!parsed.ok) return parsed;
   // Engine artifact_sha256 identifies the JAR, never the APK. A missing
   // authenticated APK subject cannot be repaired using the engine identity.
   if (parent.subject == null)
@@ -79,7 +68,7 @@ export const projectAndroidPackageView = (
         },
       ]),
     );
-  const report = parsed.data;
+  const report = parsed.value;
   const shared = {
     parent_evidence_id: parent.evidenceId,
     parent_operation: "inspect_android_package" as const,

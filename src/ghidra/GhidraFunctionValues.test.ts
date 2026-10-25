@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 
 import type { JsonValue } from "../domain/jsonValue.js";
@@ -27,6 +28,7 @@ const observationOperations: ReadonlySet<GhidraFunctionOperation> = new Set([
   "procedure_callers",
   "procedure_info",
   "procedure_pseudo_code",
+  "procedure_references",
   "read_function_instructions",
 ]);
 
@@ -43,11 +45,179 @@ const parseFunctionValueFixture = (
   return parsed.ok ? { ok: true as const, value: parsed.value.value } : parsed;
 };
 
+describe("Ghidra unresolved call locations", () => {
+  it("rejects a noncanonical unresolved call site rather than retaining unverifiable location evidence", () => {
+    expect(
+      parseGhidraFunctionResult("analyze_function", {
+        value: {
+          ...functionDossierSchema.parse(ghidraFunctionDossier()),
+          unresolved_calls: [
+            { address: "not-an-address", reason: "No call destination." },
+          ],
+        },
+        limitations: [],
+        relationship_coverage: {
+          status: "partial",
+          limitations: ["An unresolved call remains."],
+        },
+      }),
+    ).toMatchObject({ ok: false, error: { _tag: "AnalysisOutputError" } });
+  });
+});
+
 describe("Ghidra function-analysis result values", () => {
+  it.each(["snapshot", null, 1])(
+    "rejects invalid result-specific cache policy %j",
+    (cachePolicy) => {
+      expect(
+        parseGhidraFunctionResult("analyze_function", {
+          value: ghidraFunctionDossier(),
+          limitations: [],
+          cache_policy: cachePolicy,
+        }).ok,
+      ).toBe(false);
+    },
+  );
+
+  it("rejects result-specific cache policy outside the dossier operation", () => {
+    expect(
+      parseGhidraFunctionResult("procedure_pseudo_code", {
+        value: "void main() {}",
+        limitations: [],
+        cache_policy: "live",
+      }).ok,
+    ).toBe(false);
+  });
+
+  it("preserves unresolved Swift jump omissions", () => {
+    const dossier = {
+      ...functionDossierSchema.parse(ghidraFunctionDossier()),
+      swift_string_literals: [],
+      swift_string_literal_omissions: [
+        {
+          source_address: "0x401004",
+          representation: "small",
+          address: null,
+          byte_length: 5,
+          reason: "unresolved_jump",
+          registers: ["x0", "x1"],
+          words: ["0x5000000000000005", "0x0000000000000000"],
+        },
+      ],
+    };
+    expect(
+      parseGhidraFunctionResult("analyze_function", {
+        value: dossier,
+        limitations: [],
+      }),
+    ).toMatchObject({
+      ok: true,
+      value: {
+        value: {
+          swift_string_literal_omissions:
+            dossier.swift_string_literal_omissions,
+        },
+      },
+    });
+  });
+
+  it("retains unavailable pseudocode instead of treating its empty representation as observed source", () => {
+    const availability = {
+      pseudocode: {
+        available: false,
+        reason: "Ghidra does not decompile external functions.",
+      },
+      comments: { available: true },
+    };
+    const parsed = parseGhidraFunctionResult("analyze_function", {
+      value: {
+        ...functionDossierSchema.parse(ghidraFunctionDossier()),
+        pseudocode: "",
+        facet_availability: availability,
+      },
+      limitations: [],
+    });
+    expect(parsed).toMatchObject({
+      ok: true,
+      value: { value: { pseudocode: "", facet_availability: availability } },
+    });
+  });
+  it.each([
+    { status: "complete", diagnostics: ["Resolved static references only."] },
+    {
+      status: "partial",
+      limitations: ["Only the first instruction range was examined."],
+    },
+    { status: "unknown", reason: "Relationship inventory was unavailable." },
+    {
+      status: "partial",
+      limitations: ["Missing callers."],
+      limited_directions: ["callers"],
+    },
+    {
+      status: "unknown",
+      reason: "Missing callees.",
+      limited_directions: ["callees"],
+    },
+  ])("preserves observed $status relationship coverage", (coverage) => {
+    const parsed = parseGhidraFunctionResult("analyze_function", {
+      value: ghidraFunctionDossier(),
+      limitations: [],
+      relationship_coverage: coverage,
+    });
+    expect(parsed).toMatchObject({
+      ok: true,
+      value: { relationshipCoverage: coverage },
+    });
+  });
+
+  it("preserves omitted relationship coverage for legacy observations", () => {
+    const parsed = parseGhidraFunctionResult("analyze_function", {
+      value: ghidraFunctionDossier(),
+      limitations: [],
+    });
+    if (!parsed.ok) throw parsed.error;
+    expect(parsed.value).not.toHaveProperty("relationshipCoverage");
+  });
+});
+
+describe("Ghidra relationship metadata validation", () => {
+  it.each([
+    { status: "partial", limitations: [] },
+    { status: "unknown", reason: "" },
+    { status: "complete", limitations: ["Truncated."] },
+    { status: "partial", limitations: ["Truncated."], limited_directions: [] },
+    {
+      status: "partial",
+      limitations: ["Truncated."],
+      limited_directions: ["callers", "callers"],
+    },
+    { status: "unknown", reason: "Missing.", limited_directions: ["incoming"] },
+    { status: "complete", limited_directions: ["callers"] },
+  ])("rejects malformed relationship coverage %j", (coverage) => {
+    expect(
+      parseGhidraFunctionResult("analyze_function", {
+        value: ghidraFunctionDossier(),
+        limitations: [],
+        relationship_coverage: coverage,
+      }),
+    ).toMatchObject({ ok: false, error: { _tag: "AnalysisOutputError" } });
+  });
+
+  it("rejects relationship metadata on unrelated function operations", () => {
+    expect(
+      parseGhidraFunctionResult("procedure_assembly", {
+        value: "ret",
+        limitations: [],
+        relationship_coverage: { status: "complete" },
+      }),
+    ).toMatchObject({ ok: false, error: { _tag: "AnalysisOutputError" } });
+  });
+
   it("preserves file-offset resolution in Evidence locations and rejects inexact offsets", () => {
     const selection = {
       file_offset: 0x210,
-      mapped_address: "0x140001010",
+      mapped_address: "0x140001014",
       procedure_address: "0x140001010",
     };
     const wire = { value: "return 42;", limitations: [], selection };
@@ -58,9 +228,10 @@ describe("Ghidra function-analysis result values", () => {
     if (!parsed.ok) throw parsed.error;
     expect(parsed.value.locations).toEqual([
       { kind: "file-offset", offset: 0x210 },
-      { kind: "address", address: "0x140001010" },
+      { kind: "address", address: "0x140001014" },
       { kind: "address", address: "0x140001010" },
     ]);
+    expect(parsed.value.rawResult).toEqual(wire);
     expect(
       parseGhidraFunctionResult("procedure_pseudo_code", {
         ...wire,
@@ -95,6 +266,43 @@ describe("Ghidra function-analysis result values", () => {
     });
   });
 
+  it("preserves handler-region limitations on procedure references", () => {
+    const limitation =
+      "Ghidra Listing shows a Borland/Delphi-style SEH frame registration at 0x401008 (push 0x4010a0 followed by fs-segment stack chaining); handler 0x4010a0 lies outside this procedure's body, so callees, strings, and cross-references may omit the handler region.";
+    const parsed = parseGhidraFunctionResult("procedure_references", {
+      value: {
+        procedure: ghidraFunctionIdentity(),
+        direction: "outgoing",
+        references: [ghidraReferenceEdge()],
+        reference_kinds_available: true,
+        unresolved_calls: [],
+      },
+      limitations: [limitation],
+    });
+    expect(parsed).toEqual({
+      ok: true,
+      value: {
+        value: {
+          procedure: ghidraFunctionIdentity(),
+          direction: "outgoing",
+          references: [ghidraReferenceEdge()],
+          reference_kinds_available: true,
+          unresolved_calls: [],
+        },
+        limitations: [limitation],
+      },
+    });
+    expect(
+      parseGhidraFunctionResult("procedure_references", {
+        procedure: ghidraFunctionIdentity(),
+        direction: "outgoing",
+        references: [],
+        reference_kinds_available: true,
+        unresolved_calls: [],
+      }),
+    ).toMatchObject({ ok: false, error: { _tag: "AnalysisOutputError" } });
+  });
+
   it.each(["procedure_callees", "procedure_callers"] as const)(
     "requires the function-observation envelope to carry terminal-call limitations for %s",
     (operation) => {
@@ -120,6 +328,49 @@ describe("Ghidra function-analysis result values", () => {
 });
 
 describe("Ghidra reference and value-flow completeness", () => {
+  it.each(["procedure", "source_procedure", "target_procedure"] as const)(
+    "requires producer symbol metadata on %s identities",
+    (location) => {
+      const observation = (identity: JsonValue) => ({
+        procedure:
+          location === "procedure" ? identity : ghidraFunctionIdentity(),
+        direction: "outgoing",
+        references: [
+          {
+            ...ghidraReferenceEdge(),
+            ...(location === "procedure" ? {} : { [location]: identity }),
+          },
+        ],
+        reference_kinds_available: true,
+        unresolved_calls: [],
+      });
+      const identity = ghidraFunctionIdentity();
+      expect(
+        parseFunctionValueFixture("procedure_references", observation(identity))
+          .ok,
+      ).toBe(true);
+      expect(
+        parseFunctionValueFixture(
+          "procedure_references",
+          observation({ ...identity, symbol: null }),
+        ).ok,
+      ).toBe(true);
+      const { symbol: omitted, ...withoutSymbol } = identity;
+      expect(omitted).toBeDefined();
+      for (const invalid of [
+        withoutSymbol,
+        { ...identity, symbol: { primary: "yes" } },
+        { ...identity, unexpected: true },
+      ]) {
+        expect(
+          parseFunctionValueFixture(
+            "procedure_references",
+            observation(invalid),
+          ),
+        ).toMatchObject({ ok: false, error: { _tag: "AnalysisOutputError" } });
+      }
+    },
+  );
   it.each(["reference_kinds_available", "unresolved_calls"])(
     "rejects omitted %s instead of inventing complete reference observations",
     (field) => {
@@ -752,5 +1003,121 @@ describe("complete Ghidra function body range evidence", () => {
         body: { ...body(), ...change },
       }).ok,
     ).toBe(false);
+  });
+});
+
+describe("Ghidra native instruction decoder context for ARM TMode and MIPS ISA_MODE", () => {
+  it.each([
+    {
+      arch: "ARM:LE:32:v7",
+      register: "TMode",
+      value: "1",
+      description: "Thumb execution mode",
+    },
+    {
+      arch: "ARM:LE:32:v7",
+      register: "TMode",
+      value: "0",
+      description: "ARM 32-bit execution mode",
+    },
+    {
+      arch: "MIPS:LE:32:default",
+      register: "ISA_MODE",
+      value: "1",
+      description: "MIPS16 mode",
+    },
+    {
+      arch: "MIPS:LE:32:default",
+      register: "ISA_MODE",
+      value: "0",
+      description: "Standard MIPS32 mode",
+    },
+  ])(
+    "preserves $description ($register=$value) across boundary",
+    ({ arch, register, value }) => {
+      const instruction = {
+        ...compactInstruction(),
+        architecture: arch,
+        decoder_context: [
+          {
+            register,
+            value,
+            source: "ghidra-program-context",
+          },
+        ],
+      };
+      const parsed = parseFunctionValueFixture(
+        "inspect_native_instruction",
+        instruction,
+      );
+      expect(parsed.ok).toBe(true);
+      if (!parsed.ok) return;
+      expect(parsed.value).toMatchObject({
+        architecture: arch,
+        decoder_context: [
+          { register, value, source: "ghidra-program-context" },
+        ],
+      });
+    },
+  );
+
+  it("admits null value for uninitialized processor context register", () => {
+    const instruction = {
+      ...compactInstruction(),
+      architecture: "ARM:LE:32:v7",
+      decoder_context: [
+        {
+          register: "TMode",
+          value: null,
+          source: "ghidra-program-context",
+        },
+      ],
+    };
+    const parsed = parseFunctionValueFixture(
+      "inspect_native_instruction",
+      instruction,
+    );
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(parsed.value).toMatchObject({
+      decoder_context: [{ register: "TMode", value: null }],
+    });
+  });
+
+  it("rejects malformed decoder context entries", () => {
+    const emptyRegister = {
+      ...compactInstruction(),
+      decoder_context: [{ register: "", value: "1", source: "ghidra" }],
+    };
+    expect(
+      parseFunctionValueFixture("inspect_native_instruction", emptyRegister).ok,
+    ).toBe(false);
+
+    const emptySource = {
+      ...compactInstruction(),
+      decoder_context: [{ register: "TMode", value: "1", source: "" }],
+    };
+    expect(
+      parseFunctionValueFixture("inspect_native_instruction", emptySource).ok,
+    ).toBe(false);
+  });
+});
+
+describe("Ghidra bridge script processor context contract", () => {
+  it("binds TMode to ARM and ISA_MODE to MIPS in ReaGhidraBridge.java", async () => {
+    const bridgePath = new URL(
+      "../../bridge/ghidra/ReaGhidraBridge.java",
+      import.meta.url,
+    );
+    const content = await readFile(bridgePath, "utf8");
+    expect(content).toContain(
+      'currentProgram.getLanguageID().getIdAsString().startsWith("ARM:")',
+    );
+    expect(content).toContain(
+      'currentProgram.getLanguageID().getIdAsString().startsWith("MIPS:")',
+    );
+    expect(content).toContain('"TMode"');
+    expect(content).toContain('"ISA_MODE"');
+    expect(content).toContain('"ghidra-program-context"');
   });
 });

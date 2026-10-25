@@ -1,3 +1,4 @@
+import type { DolHeader } from "./gamecubeDol.js";
 import type { ZipPackageFormat } from "./zipPackageFormat.js";
 
 /** Provider-neutral CPU families detected from headers or explicitly selected raw loads. */
@@ -6,11 +7,25 @@ export const BINARY_ARCHITECTURES = [
   "x86_64",
   "arm",
   "arm64",
+  "arm64_32",
   "mips",
   "6502",
   "riscv",
+  "powerpc",
+  "m68k",
+  "hexagon",
 ] as const;
 export type BinaryArchitecture = (typeof BINARY_ARCHITECTURES)[number];
+
+/**
+ * Families admitted only by explicit raw-binary selection. Header detection
+ * never yields them, so detected targets and Evidence subjects exclude them.
+ */
+export const RAW_ONLY_ARCHITECTURES = [
+  "6502",
+  "m68k",
+] as const satisfies readonly BinaryArchitecture[];
+export type RawOnlyArchitecture = (typeof RAW_ONLY_ARCHITECTURES)[number];
 
 /**
  * ELF header facts for a family whose ISA and ABI are not established by the
@@ -36,6 +51,7 @@ export interface PeCodeViewRecord {
 export const ELF_METADATA_ARCHITECTURES = [
   "mips",
   "riscv",
+  "powerpc",
 ] as const satisfies readonly BinaryArchitecture[];
 export type ElfMetadataArchitecture =
   (typeof ELF_METADATA_ARCHITECTURES)[number];
@@ -49,13 +65,15 @@ export const isElfMetadataArchitecture = (
 /** Recognized family with no ELF metadata member; the header alone is the fact. */
 export type HeaderArchitecture = Exclude<
   BinaryArchitecture,
-  ElfMetadataArchitecture | "6502"
+  ElfMetadataArchitecture | RawOnlyArchitecture | "hexagon" | "arm64_32"
 >;
 
 /** Raw ELF facts; family recognition does not establish ISA or ABI support. */
 export interface MipsElfMetadata extends ElfFamilyMetadata {
   /** Undefined until inspected; null means no ABI record was observed. */
   readonly abiFlags?: MipsAbiFlags | null;
+  /** Undefined until inspected; null means no GNU attribute section was observed. */
+  readonly gnuAttributes?: MipsGnuAttributes | null;
   /** Unavailable declaration sources; missing records there remain unknown. */
   readonly limitations?: readonly string[];
   /** Complete dynamic REL declarations, or the reason they could not be inspected. */
@@ -84,11 +102,22 @@ export interface MipsAbiFlags {
   readonly flags2: number;
 }
 
+/** File-scope GNU object attributes parsed from `SHT_GNU_ATTRIBUTES`. */
+export interface MipsGnuAttributes {
+  /** Tag_GNU_MIPS_ABI_FP; null means this file did not declare the tag. */
+  readonly fpAbi: number | null;
+  /** Tag_GNU_MIPS_ABI_MSA vector-argument ABI; null means undeclared. */
+  readonly msa: number | null;
+}
+
 /**
  * ELF class and flags retain the width and ABI declarations used by this lane.
  * ISA extensions in `.riscv.attributes` are not inspected by this header parser.
  */
 export type RiscvElfMetadata = ElfFamilyMetadata;
+
+/** Raw PowerPC declarations; family identity does not select a processor variant. */
+export type PowerPcElfMetadata = ElfFamilyMetadata;
 
 /** Byte range of the selected slice inside its universal Mach-O container. */
 export interface UniversalMachOSlice {
@@ -140,6 +169,32 @@ export type BinaryTarget =
       readonly executableRole?: never;
       readonly managed?: never;
     })
+  | (BinaryTargetIdentity & {
+      readonly kind: "executable";
+      readonly format: "elf";
+      readonly architecture: "powerpc";
+      readonly availableArchitectures: readonly "powerpc"[];
+      readonly powerpc: PowerPcElfMetadata;
+      readonly executableRole?: never;
+      readonly managed?: never;
+    })
+  | (BinaryTargetIdentity & {
+      readonly kind: "executable";
+      readonly format: "elf";
+      readonly architecture: "hexagon";
+      readonly availableArchitectures: readonly "hexagon"[];
+      readonly executableRole?: never;
+      readonly managed?: never;
+    })
+  | (BinaryTargetIdentity & {
+      readonly kind: "executable";
+      readonly format: "mach-o";
+      readonly architecture: "arm64_32";
+      readonly availableArchitectures: readonly "arm64_32"[];
+      readonly universalSlice?: never;
+      readonly executableRole?: never;
+      readonly managed?: never;
+    })
   | (ExecutableTarget & {
       readonly format: "mach-o" | "elf" | "dos-mz" | "dos-com";
       readonly universalSlice?: never;
@@ -156,21 +211,36 @@ export type BinaryTarget =
   | (BinaryTargetIdentity & {
       readonly kind: "executable";
       readonly format: "raw-binary";
-      readonly architecture: Exclude<
-        BinaryArchitecture,
-        ElfMetadataArchitecture
-      >;
-      readonly availableArchitectures: readonly Exclude<
-        BinaryArchitecture,
-        ElfMetadataArchitecture
-      >[];
+      readonly architecture: HeaderArchitecture | RawOnlyArchitecture;
+      readonly availableArchitectures: readonly (
+        | HeaderArchitecture
+        | RawOnlyArchitecture
+      )[];
       readonly entryPoint: string;
       readonly entryPointSource: string;
       readonly executableRole?: never;
       readonly managed?: never;
     })
+  | (BinaryTargetIdentity & {
+      readonly kind: "executable";
+      readonly format: "gamecube-dol";
+      /** Fixed by the DOL selection; the header does not carry a CPU family. */
+      readonly architecture: "powerpc";
+      readonly availableArchitectures: readonly ["powerpc"];
+      readonly byteOrder: "big";
+      readonly bits: 32;
+      /** Canonical hex entry taken from the DOL header. */
+      readonly entryPoint: string;
+      readonly entryPointSource: "dol-header";
+      /** Validated header: used sections, BSS, and BSS-overlapping data slots. */
+      readonly dol: DolHeader;
+      readonly executableRole?: never;
+      readonly managed?: never;
+    })
   | (ExecutableTarget & {
       readonly format: "pe";
+      /** Original COFF machine; undefined means this header fact is unavailable. */
+      readonly peMachine?: number;
       /** Provider-neutral PE image role observed from COFF characteristics. */
       readonly executableRole:
         | "application"
@@ -189,7 +259,12 @@ export type BinaryTarget =
   | (BinaryTargetIdentity &
       NonExecutableMetadata & {
         readonly kind: "archive";
-        readonly format: ZipPackageFormat | "asar" | "dmg" | "pkg";
+        readonly format:
+          | ZipPackageFormat
+          | "asar"
+          | "godot-pck"
+          | "dmg"
+          | "pkg";
       })
   | (BinaryTargetIdentity &
       NonExecutableMetadata & {

@@ -8,6 +8,7 @@ import {
   selectAgentEvalClient,
 } from "../../scripts/lib/agent-eval-clients.mjs";
 import { createTestTempDirectory } from "../fixtures/temporaryDirectory.js";
+import { TOOL_CONTRACTS } from "../../src/contracts/toolContracts.js";
 
 afterEach(() => vi.unstubAllEnvs());
 
@@ -22,6 +23,106 @@ it("resolves path-like client overrides from the repository root", () => {
   );
   vi.stubEnv("REA_VERIFY_GEMINI_COMMAND", "gemini");
   expect(selectAgentEvalClient("gemini-cli", root).command).toBe("gemini");
+});
+
+it.each([
+  {
+    id: "gemini-cli",
+    variable: "REA_VERIFY_GEMINI_COMMAND",
+    entry: "bundle/gemini.js",
+  },
+  {
+    id: "claude-code",
+    variable: "REA_VERIFY_CLAUDE_COMMAND",
+    entry: "./cli.mjs",
+  },
+])(
+  "$id runs a selected JavaScript entry point under this Node",
+  ({ id, variable, entry }) => {
+    const root = "/repo/rea";
+    vi.stubEnv(variable, entry);
+    const client = selectAgentEvalClient(id, root);
+    const selected = resolve(root, entry);
+    expect(client.command).toBe(selected);
+    // Preflight and scenarios take the same launch; the selected entry is kept.
+    expect(client.launch(["--version"])).toEqual({
+      command: process.execPath,
+      arguments: [selected, "--version"],
+    });
+    vi.stubEnv(variable, "gemini");
+    expect(selectAgentEvalClient(id, root).launch(["--version"])).toEqual({
+      command: "gemini",
+      arguments: ["--version"],
+    });
+  },
+);
+
+it("permits REA tools from their audited effects, not from advertised hints", async () => {
+  const root = await createTestTempDirectory("rea-agent-client-effects-");
+  vi.stubEnv("CLAUDE_CONFIG_DIR", join(root, "caller"));
+  const client = await prepareAgentEvalClient(
+    selectAgentEvalClient("claude-code"),
+    {
+      evaluationRoot: root,
+      account: join(root, "account"),
+      authPaths: [],
+    },
+  );
+  const args = await client.arguments("prompt", []);
+  const settingsValue = args[args.indexOf("--settings") + 1];
+  if (settingsValue === undefined)
+    throw new Error("Claude settings argument is missing");
+  const allowed = new Set<string>(JSON.parse(settingsValue).permissions.allow);
+  const refused = TOOL_CONTRACTS.filter(
+    ({ effects }) =>
+      effects.executesForeignCode ||
+      effects.mutatesDevice ||
+      effects.mayDiscardData ||
+      effects.launchesProcess ||
+      effects.accessesNetwork,
+  );
+  const permitted = TOOL_CONTRACTS.filter(
+    (contract) => !refused.includes(contract),
+  );
+  expect(refused.length).toBeGreaterThan(0);
+  expect(permitted.length).toBeGreaterThan(0);
+  for (const { name } of refused)
+    expect(allowed).not.toContain(`mcp__rea__${name}`);
+  for (const { name } of permitted)
+    expect(allowed).toContain(`mcp__rea__${name}`);
+  // Session-mutating Evidence tools stay permitted; only the audited effects above refuse.
+  expect(allowed).toContain("mcp__rea__inspect_analysis_settings");
+  expect(allowed).not.toContain("mcp__rea__capture_process_scenario");
+});
+
+it("forwards Claude's gateway auth token only to the Claude client", async () => {
+  const root = await createTestTempDirectory("rea-agent-client-token-");
+  vi.stubEnv("CODEX_HOME", join(root, "caller"));
+  vi.stubEnv("CLAUDE_CONFIG_DIR", join(root, "caller"));
+  vi.stubEnv("GEMINI_CLI_HOME", join(root, "caller"));
+  vi.stubEnv("ANTHROPIC_API_KEY", undefined);
+  vi.stubEnv("ANTHROPIC_AUTH_TOKEN", "gateway-token");
+  vi.stubEnv("ANTHROPIC_BASE_URL", "https://claude-gateway.invalid/custom");
+  for (const id of ["claude-code", "gemini-cli", "codex"] as const) {
+    await mkdir(join(root, id, "run"), { recursive: true });
+    const client = await prepareAgentEvalClient(selectAgentEvalClient(id), {
+      evaluationRoot: join(root, id, "run"),
+      account: join(root, id, "account"),
+      authPaths: [],
+    });
+    const environment = agentEvalEnvironment({
+      account: join(root, id, "account"),
+      runId: "test",
+      client,
+    });
+    if (id === "claude-code") {
+      expect(environment).toHaveProperty(
+        "ANTHROPIC_AUTH_TOKEN",
+        "gateway-token",
+      );
+      expect(environment).not.toHaveProperty("ANTHROPIC_API_KEY");
+    } else expect(environment).not.toHaveProperty("ANTHROPIC_AUTH_TOKEN");
+  }
 });
 
 it.each(["claude-code", "gemini-cli"])(
@@ -202,5 +303,18 @@ it.each([undefined, ""])(
         ),
       ),
     ).toMatchObject({ security: { auth: { selectedType: "oauth-personal" } } });
+  },
+);
+
+it.each([
+  { id: "codex", file: "codex/auth.json" },
+  { id: "claude-code", file: "claude-code/.credentials.json" },
+  { id: "gemini-cli", file: "gemini-cli/.gemini/oauth_creds.json" },
+])(
+  "$id names its credential destination before preparation",
+  ({ id, file }) => {
+    expect(selectAgentEvalClient(id).credentialPaths("/run")).toEqual([
+      join("/run", file),
+    ]);
   },
 );

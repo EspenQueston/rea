@@ -2,6 +2,7 @@ import type {
   AnalysisOperation,
   CapabilityDescriptor,
 } from "../application/AnalysisProvider.js";
+import { REGEX_MATCHING_LIMITATION } from "../process/RegexMatcher.js";
 
 /** This version identifies REA's adapter, not IDA or the upstream MCP server. */
 export const IDA_PROVIDER_IDENTITY = Object.freeze({
@@ -32,7 +33,6 @@ export type IdaOperation = (typeof IDA_OPERATIONS)[number];
 /** Operations only the modern headless profile implements. */
 const HEADLESS_ONLY_OPERATIONS: ReadonlySet<IdaOperation> = new Set([
   "resolve_containing_procedure",
-  "list_documents",
 ]);
 
 /** Whether the configured profile admits an operation. */
@@ -71,6 +71,7 @@ export const idaCapabilities = (
   mode: "attached" | "headless",
   stdio: boolean,
   native = false,
+  regexLimitation = REGEX_MATCHING_LIMITATION,
 ): readonly CapabilityDescriptor[] =>
   IDA_OPERATIONS.filter((operation) => idaProfileAdmits(operation, mode)).map(
     (operation) => ({
@@ -99,10 +100,15 @@ export const idaCapabilities = (
         changesPermissions: false,
         requiresRoot: false,
       },
-      limitations:
-        native &&
+      limitations: [
+        ...IDA_LIMITATIONS,
+        ...(native &&
         (operation === "list_strings" || operation === "search_strings")
-          ? [...IDA_LIMITATIONS, IDA_NATIVE_STRING_LIMITATION]
-          : IDA_LIMITATIONS,
+          ? [IDA_NATIVE_STRING_LIMITATION]
+          : []),
+        ...(operation === "search_procedures" || operation === "search_strings"
+          ? [regexLimitation]
+          : []),
+      ],
     }),
   );

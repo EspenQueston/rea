@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
 
 import { createEvidence } from "../../../src/domain/evidence.js";
-import { evaluateAgentTranscript } from "../../../src/evaluation/AgentEval.js";
+import { evaluateAgentTranscript } from "./AgentEval.js";
 import {
   parseClaudeCodeEvents,
   parseCodexEvents,
   parseGeminiCliEvents,
-} from "../../../src/evaluation/AgentTranscript.js";
+} from "./AgentTranscript.js";
 
 const evidence = createEvidence(
   { path: "/tmp/app.asar", sha256: "1".repeat(64), format: "asar" },
@@ -52,6 +52,7 @@ const claudeResult = {
   subtype: "success",
   is_error: false,
   result: answer,
+  permission_denials: [],
   usage: {
     input_tokens: 12,
     cache_creation_input_tokens: 100,
@@ -82,8 +83,10 @@ describe("Claude Code transcripts", () => {
         tool: "analyze_javascript_application",
         arguments: { input_path: "/tmp/app.asar" },
         delivered: true,
+        error: false,
       }),
     ]);
+    expect(transcript.clientFailures).toEqual([]);
     expect(transcript.usage).toEqual({
       inputTokens: 1012,
       cachedInputTokens: 900,
@@ -99,6 +102,7 @@ describe("Claude Code transcripts", () => {
       evidenceIds: [evidence.evidence_id],
       finalCitesEvidence: true,
       finalMessage: answer,
+      clientFailures: [],
     });
   });
 
@@ -164,6 +168,44 @@ describe("Claude Code transcripts", () => {
     const metrics = evaluateAgentTranscript(transcript, null);
     expect(metrics.reaCalls).toEqual([]);
   });
+
+  it("fails a run whose refused permission request still produced an answer", () => {
+    // A refused `dontAsk` request leaves Claude free to explain that REA was
+    // unavailable and exit 0; the denial is the run's own failure fact.
+    const transcript = parseClaudeCodeEvents([
+      claudeToolUse("toolu_1", "mcp__rea__list_browser_targets"),
+      {
+        ...claudeResult,
+        result:
+          "The REA browser inspection tool was unavailable because the permission request was refused, so no target could be observed.",
+        permission_denials: [
+          {
+            tool_name: "mcp__rea__list_browser_targets",
+            tool_use_id: "toolu_1",
+            tool_input: {},
+          },
+        ],
+      },
+    ]);
+    expect(transcript.clientFailures).toEqual([
+      "permission_denied:mcp__rea__list_browser_targets",
+    ]);
+    const metrics = evaluateAgentTranscript(transcript, "list_browser_targets");
+    expect(metrics).toMatchObject({
+      naturalUse: true,
+      correctFirstTool: true,
+      clientFailures: ["permission_denied:mcp__rea__list_browser_targets"],
+      answerHeuristicsMet: false,
+    });
+  });
+
+  it("keeps a terminal client error distinct from the answer text", () => {
+    const transcript = parseClaudeCodeEvents([
+      { ...claudeResult, is_error: true, subtype: "error_max_turns" },
+    ]);
+    expect(transcript.clientFailures).toEqual(["result_error:error_max_turns"]);
+    expect(transcript.finalMessage).toBe(answer);
+  });
 });
 
 // Shapes from Gemini CLI 0.63.0 `--output-format stream-json`.
@@ -203,6 +245,7 @@ describe("Gemini CLI transcripts", () => {
       },
     ]);
     expect(transcript.finalMessage).toBe(answer);
+    expect(transcript.clientFailures).toEqual([]);
     expect(transcript.usage).toEqual({
       inputTokens: 500,
       cachedInputTokens: 200,
@@ -238,31 +281,159 @@ describe("Gemini CLI transcripts", () => {
     expect(metrics.evidenceIds).toEqual([]);
     expect(metrics.inputTokens).toBe(0);
   });
+
+  it("does not count a result without retained output as delivered", () => {
+    const transcript = parseGeminiCliEvents([
+      toolUse("call-1", "mcp_rea_analyze_javascript_application"),
+      { type: "tool_result", tool_id: "call-1", status: "success" },
+    ]);
+    expect(transcript.calls).toEqual([
+      expect.objectContaining({ delivered: false, error: false }),
+    ]);
+  });
+
+  it("records a terminal result status other than success as a client failure", () => {
+    const transcript = parseGeminiCliEvents([
+      { type: "result", status: "error", stats: { input_tokens: 5 } },
+    ]);
+    expect(transcript.clientFailures).toEqual(["result_status:error"]);
+    expect(transcript.usage.inputTokens).toBe(5);
+  });
 });
 
-describe("Codex normalized input authority", () => {
+describe("Codex transcripts", () => {
+  const completed = (item: Record<string, unknown>) => ({
+    type: "item.completed",
+    item: {
+      id: "call",
+      type: "mcp_tool_call",
+      server: "rea",
+      tool: "open_binary",
+      arguments: {},
+      status: "completed",
+      ...item,
+    },
+  });
+
   it.each([
     { arguments: null, input: {} },
     { server: null, server_name: "rea" },
     { tool: null, name: "open_binary" },
   ])("does not authenticate conflicting input aliases: %j", (aliases) => {
     const transcript = parseCodexEvents([
-      {
-        type: "item.completed",
-        item: {
-          id: "call",
-          type: "mcp_tool_call",
-          server: "rea",
-          tool: "open_binary",
-          arguments: {},
-          result: { structuredContent: { opened: true } },
-          ...aliases,
-        },
-      },
+      completed({
+        result: { structuredContent: { opened: true } },
+        ...aliases,
+      }),
     ]);
     expect(transcript.calls.every((call) => !call.delivered)).toBe(true);
   });
+
+  it.each([
+    { label: "omits its result", item: {} },
+    { label: "reports a non-object result", item: { result: "done" } },
+  ])("does not mark a completed call delivered when it $label", ({ item }) => {
+    const transcript = parseCodexEvents([completed(item)]);
+    expect(transcript.calls).toEqual([
+      expect.objectContaining({
+        tool: "open_binary",
+        delivered: false,
+        error: false,
+      }),
+    ]);
+    const metrics = evaluateAgentTranscript(transcript, "open_binary", {
+      requiredToolSubsequence: ["open_binary"],
+    });
+    expect(metrics.naturalUse).toBe(true);
+    expect(metrics.requiredToolSubsequenceMet).toBe(false);
+  });
+
+  it("marks a completed call with a retained empty result delivered without Evidence", () => {
+    const metrics = evaluateAgentTranscript(
+      parseCodexEvents([completed({ result: {} })]),
+      "open_binary",
+      { requiredToolSubsequence: ["open_binary"] },
+    );
+    expect(metrics.reaCalls).toEqual([
+      expect.objectContaining({ delivered: true, evidenceIds: [] }),
+    ]);
+    expect(metrics.requiredToolSubsequenceMet).toBe(true);
+  });
+
+  it("does not count an unidentified MCP server as a REA workflow", () => {
+    const transcript = parseCodexEvents([
+      {
+        type: "item.completed",
+        item: {
+          type: "mcp_tool_call",
+          tool: "open_binary",
+          arguments: {},
+          result: { structuredContent: { opened: true } },
+        },
+      },
+    ]);
+    const metrics = evaluateAgentTranscript(transcript, "open_binary", {
+      requiredToolSubsequence: ["open_binary"],
+    });
+    expect(metrics.reaCalls).toEqual([]);
+    expect(metrics.correctFirstTool).toBe(false);
+    expect(metrics.requiredToolSubsequenceMet).toBe(false);
+  });
+
+  it("preserves identical completed calls when the client omits IDs", () => {
+    const call = {
+      type: "item.completed",
+      item: {
+        type: "mcp_tool_call",
+        status: "completed",
+        server: "rea",
+        tool: "analyze_javascript_application",
+        arguments: {},
+        result: { structuredContent: evidence },
+      },
+    };
+    const transcript = parseCodexEvents([call, call]);
+    expect(transcript.calls).toHaveLength(2);
+  });
 });
+
+it.each(["claude-code", "gemini-cli"])(
+  "%s preserves a text failure without choosing between duplicate error codes",
+  (client) => {
+    const text = '{"error":{"code":"bridge_timeout","code":"invalid_request"}}';
+    const transcript =
+      client === "claude-code"
+        ? parseClaudeCodeEvents([
+            claudeToolUse("call", "mcp__rea__close_binary"),
+            claudeToolResult(
+              "call",
+              { content: [{ type: "text", text }], isError: true },
+              true,
+            ),
+          ])
+        : parseGeminiCliEvents([
+            {
+              type: "tool_use",
+              tool_id: "call",
+              tool_name: "mcp_rea_close_binary",
+              parameters: {},
+            },
+            {
+              type: "tool_result",
+              tool_id: "call",
+              status: "error",
+              output: text,
+            },
+          ]);
+    expect(transcript.calls).toEqual([
+      expect.objectContaining({ error: true, errorCode: null }),
+    ]);
+    expect(
+      evaluateAgentTranscript(transcript, "close_binary")
+        .inputValidationFailureCount,
+    ).toBe(0);
+  },
+);
 
 it.each(["claude-code", "gemini-cli"])(
   "%s rejects conflicting duplicate results while retaining identical reports",
@@ -386,68 +557,3 @@ it.each(["codex", "claude-code", "gemini-cli"] as const)(
     });
   },
 );
-
-it("does not count an unidentified MCP server as a REA workflow", () => {
-  const transcript = parseCodexEvents([
-    {
-      type: "item.completed",
-      item: {
-        type: "mcp_tool_call",
-        tool: "open_binary",
-        arguments: {},
-        result: { structuredContent: { opened: true } },
-      },
-    },
-  ]);
-  const metrics = evaluateAgentTranscript(transcript, "open_binary", {
-    requiredToolSubsequence: ["open_binary"],
-  });
-  expect(metrics.reaCalls).toEqual([]);
-  expect(metrics.correctFirstTool).toBe(false);
-  expect(metrics.requiredToolSubsequenceMet).toBe(false);
-});
-
-it("retains completed legacy Codex routing without authenticating its Evidence", () => {
-  const transcript = parseCodexEvents([
-    {
-      type: "item.completed",
-      item: {
-        type: "mcp_tool_call",
-        status: "completed",
-        tool: "analyze_javascript_application",
-        arguments: {},
-        result: { structuredContent: evidence },
-      },
-    },
-    { type: "item.completed", item: { type: "agent_message", text: answer } },
-  ]);
-  const metrics = evaluateAgentTranscript(
-    transcript,
-    "analyze_javascript_application",
-    {
-      requireEvidence: true,
-    },
-  );
-  expect(metrics.naturalUse).toBe(true);
-  expect(metrics.correctFirstTool).toBe(true);
-  expect(metrics.reaCalls[0]?.server).toBeNull();
-  expect(metrics.evidenceIds).toEqual([]);
-  expect(metrics.finalCitesEvidence).toBe(false);
-  expect(metrics.answerHeuristicsMet).toBe(false);
-});
-
-it("preserves identical completed legacy Codex calls when the client omits IDs", () => {
-  const call = {
-    type: "item.completed",
-    item: {
-      type: "mcp_tool_call",
-      status: "completed",
-      server: "rea",
-      tool: "analyze_javascript_application",
-      arguments: {},
-      result: { structuredContent: evidence },
-    },
-  };
-  const transcript = parseCodexEvents([call, call]);
-  expect(transcript.calls).toHaveLength(2);
-});

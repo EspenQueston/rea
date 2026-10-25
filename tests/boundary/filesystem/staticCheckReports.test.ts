@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { expect, it } from "vitest";
 import { z } from "zod";
 
+import { writeRepositoryOxlintConfiguration } from "../../fixtures/oxlintConfiguration.js";
 import { createTestTempDirectory } from "../../fixtures/temporaryDirectory.js";
 
 const script = fileURLToPath(
@@ -49,7 +50,7 @@ const lintDiagnostics = async (root: string) =>
       ),
     ).diagnostics;
 
-it("includes every actually linted file in both cached lint task inputs", () => {
+it("covers the lint inventory and root tool configs in resolved cache inputs", () => {
   const scan = spawnSync(
     process.execPath,
     [join(repository, "node_modules/oxlint/bin/oxlint"), "--debug=files"],
@@ -69,6 +70,7 @@ it("includes every actually linted file in both cached lint task inputs", () => 
       "run",
       "lint",
       "lint:built",
+      "knip",
       "--dry=json",
     ],
     {
@@ -99,6 +101,14 @@ it("includes every actually linted file in both cached lint task inputs", () => 
       files.filter((file) => !Object.hasOwn(task.inputs, file)),
       `${task.task} omits actual checker inputs`,
     ).toEqual([]);
+  const knip = tasks.find(({ task }) => task === "knip");
+  expect(knip).toBeDefined();
+  expect(
+    files.filter(
+      (file) => !file.includes("/") && !Object.hasOwn(knip!.inputs, file),
+    ),
+    "knip omits root tool configuration inputs",
+  ).toEqual([]);
 });
 
 it("summarizes warnings without losing their complete diagnostic records", async () => {
@@ -140,8 +150,11 @@ it("keeps lint errors failing and visible alongside the retained warnings", asyn
 
 it("excludes translation staging while retaining authored website errors", async () => {
   const root = await fixture();
-  for (const name of [".gitignore", ".oxlintrc.json"])
-    await writeFile(join(root, name), await readFile(join(repository, name)));
+  await writeFile(
+    join(root, ".gitignore"),
+    await readFile(join(repository, ".gitignore")),
+  );
+  await writeRepositoryOxlintConfiguration(root);
   const authored = "website/public/assets/authored.js";
   const staged =
     "website/.i18n-regression/site/examples/notes-electron/main.js";

@@ -19,6 +19,11 @@ export const toolFamilyCatalog = (sources) => {
       contracts: [
         ...sources.nativeContracts.NATIVE_TOOL_CONTRACTS,
         ...sources.binaryDiagnosticsContracts.BINARY_DIAGNOSTICS_TOOL_CONTRACTS,
+        ...sources.cutterContracts.CUTTER_TOOL_CONTRACTS,
+        ...sources.reverseEngineeringContracts
+          .REVERSE_ENGINEERING_TOOL_CONTRACTS,
+        ...sources.gdbContracts.GDB_TOOL_CONTRACTS,
+        ...sources.rizinDebugContracts.RIZIN_DEBUG_TOOL_CONTRACTS,
       ],
     },
     {
@@ -26,10 +31,17 @@ export const toolFamilyCatalog = (sources) => {
       surface: "artifact-provider",
       contracts: [
         ...sources.artifactContracts.ARTIFACT_TOOL_CONTRACTS,
+        ...sources.desktopContracts.DESKTOP_APPLICATION_TOOL_CONTRACTS,
         ...sources.evmContracts.EVM_TOOL_CONTRACTS,
         ...sources.goContracts.GO_TOOL_CONTRACTS,
+        ...sources.gpuContracts.GPU_TOOL_CONTRACTS,
+        ...sources.il2cppContracts.IL2CPP_TOOL_CONTRACTS,
+        ...sources.modelContracts.MODEL_TOOL_CONTRACTS,
         ...sources.rustContracts.RUST_TOOL_CONTRACTS,
+        ...sources.pythonPycContracts.PYTHON_PYC_TOOL_CONTRACTS,
+        ...sources.erlangContracts.ERLANG_BEAM_TOOL_CONTRACTS,
         ...sources.wasmContracts.WASM_TOOL_CONTRACTS,
+        ...sources.apkSignatureContracts.APK_SIGNATURE_TOOL_CONTRACTS,
         ...sources.sqliteContracts.SQLITE_TOOL_CONTRACTS,
         ...sources.captureContracts.CAPTURE_TOOL_CONTRACTS,
         ...sources.signalContracts.SIGNAL_TOOL_CONTRACTS,
@@ -111,10 +123,12 @@ export const toolFamilyCatalog = (sources) => {
       surface: "application-workflow",
       contracts: [
         ...sources.applicationContracts.APPLICATION_TOOL_CONTRACTS,
+        ...sources.analysisSettingsContracts.ANALYSIS_SETTINGS_TOOL_CONTRACTS,
         ...sources.analysisViewContracts.ANALYSIS_VIEW_TOOL_CONTRACTS,
         ...sources.webScriptContracts.WEB_SCRIPT_TOOL_CONTRACTS,
         ...sources.javascriptRecoveryContracts
           .JAVASCRIPT_RECOVERY_TOOL_CONTRACTS,
+        ...sources.environmentContracts.ENVIRONMENT_TOOL_CONTRACTS,
       ],
     },
     {
@@ -134,7 +148,8 @@ export const toolFamilyCatalog = (sources) => {
   );
   if (
     familyTotal !== sources.toolContracts.TOOL_CONTRACTS.length ||
-    familyTotal !== sources.catalogIdentity.CATALOG_IDENTITY.counts.mcp_tools
+    familyTotal !==
+      sources.catalogIdentity.FULL_CATALOG_IDENTITY.counts.mcp_tools
   )
     throw new Error("Tool family inventory does not match TOOL_CONTRACTS");
   return { total: familyTotal, families };
@@ -162,8 +177,35 @@ export const providerCatalog = (sources) => {
     reconciliationContracts,
     observationContracts,
     activeContracts,
+    fuseContracts,
   } = electronContractSlices(sources);
   return [
+    {
+      identity: sources.cutterProvider.CUTTER_PROVIDER_IDENTITY,
+      contracts: sources.cutterContracts.CUTTER_TOOL_CONTRACTS,
+    },
+    {
+      identity: sources.objdumpProvider.OBJDUMP_PROVIDER_IDENTITY,
+      contracts:
+        sources.reverseEngineeringContracts.REVERSE_ENGINEERING_TOOL_CONTRACTS.filter(
+          ({ name }) => name === "inspect_with_objdump",
+        ),
+    },
+    {
+      identity: sources.rizinProvider.RIZIN_PROVIDER_IDENTITY,
+      contracts:
+        sources.reverseEngineeringContracts.REVERSE_ENGINEERING_TOOL_CONTRACTS.filter(
+          ({ name }) => name === "execute_rizin_command",
+        ),
+    },
+    {
+      identity: sources.gdbProvider.GDB_PROVIDER_IDENTITY,
+      contracts: sources.gdbContracts.GDB_TOOL_CONTRACTS,
+    },
+    {
+      identity: sources.rizinDebugProvider.RIZIN_DEBUGGER_PROVIDER_IDENTITY,
+      contracts: sources.rizinDebugContracts.RIZIN_DEBUG_TOOL_CONTRACTS,
+    },
     {
       identity: sources.fridaProvider.FRIDA_PROVIDER_IDENTITY,
       contracts: sources.fridaContracts.FRIDA_TOOL_CONTRACTS,
@@ -187,6 +229,13 @@ export const providerCatalog = (sources) => {
       contracts: declaredContracts("ida", sources.idaProvider.IDA_OPERATIONS),
     },
     {
+      identity: sources.kunaProvider.KUNA_PROVIDER_IDENTITY,
+      contracts: declaredContracts(
+        "kuna",
+        sources.kunaProvider.KUNA_OPERATIONS,
+      ),
+    },
+    {
       identity: sources.nativeProvider.NATIVE_MACOS_PROVIDER_IDENTITY,
       contracts: sources.nativeContracts.NATIVE_TOOL_CONTRACTS,
     },
@@ -194,7 +243,9 @@ export const providerCatalog = (sources) => {
       identity: sources.pwntoolsProvider.PWNTOOLS_PROVIDER_IDENTITY,
       contracts:
         sources.binaryDiagnosticsContracts.BINARY_DIAGNOSTICS_TOOL_CONTRACTS.filter(
-          ({ name }) => name !== "inspect_pe_resources",
+          ({ name }) =>
+            name === "inspect_binary_layout" ||
+            name === "inspect_recorded_crash",
         ),
     },
     {
@@ -202,6 +253,69 @@ export const providerCatalog = (sources) => {
       contracts:
         sources.binaryDiagnosticsContracts.BINARY_DIAGNOSTICS_TOOL_CONTRACTS.filter(
           ({ name }) => name === "inspect_pe_resources",
+        ),
+    },
+    {
+      identity: sources.artifactProviders.PE_CERTIFICATES_PROVIDER,
+      contracts:
+        sources.binaryDiagnosticsContracts.BINARY_DIAGNOSTICS_TOOL_CONTRACTS.filter(
+          ({ name }) => name === "inspect_pe_certificates",
+        ),
+    },
+    {
+      identity: sources.artifactProviders.PE_IMPORTS_PROVIDER,
+      contracts:
+        sources.binaryDiagnosticsContracts.BINARY_DIAGNOSTICS_TOOL_CONTRACTS.filter(
+          ({ name }) => name === "inspect_pe_imports",
+        ),
+    },
+    {
+      identity: sources.artifactProviders.DEVICETREE_PROVIDER,
+      contracts:
+        sources.binaryDiagnosticsContracts.BINARY_DIAGNOSTICS_TOOL_CONTRACTS.filter(
+          ({ name }) => name === "inspect_devicetree",
+        ),
+    },
+    {
+      identity: sources.artifactProviders.PE_LOAD_CONFIG_PROVIDER,
+      contracts:
+        sources.binaryDiagnosticsContracts.BINARY_DIAGNOSTICS_TOOL_CONTRACTS.filter(
+          ({ name }) => name === "inspect_pe_load_config",
+        ),
+    },
+    {
+      identity: sources.artifactProviders.ELF_NOTES_PROVIDER,
+      contracts:
+        sources.binaryDiagnosticsContracts.BINARY_DIAGNOSTICS_TOOL_CONTRACTS.filter(
+          ({ name }) => name === "inspect_elf_notes",
+        ),
+    },
+    {
+      identity: sources.artifactProviders.APPLE_IPS_PROVIDER,
+      contracts:
+        sources.binaryDiagnosticsContracts.BINARY_DIAGNOSTICS_TOOL_CONTRACTS.filter(
+          ({ name }) => name === "inspect_apple_ips",
+        ),
+    },
+    {
+      identity: sources.artifactProviders.KERNEL_MODULE_PROVIDER,
+      contracts:
+        sources.binaryDiagnosticsContracts.BINARY_DIAGNOSTICS_TOOL_CONTRACTS.filter(
+          ({ name }) => name === "inspect_kernel_module",
+        ),
+    },
+    {
+      identity: sources.artifactProviders.BYTE_ENTROPY_PROVIDER,
+      contracts:
+        sources.binaryDiagnosticsContracts.BINARY_DIAGNOSTICS_TOOL_CONTRACTS.filter(
+          ({ name }) => name === "inspect_byte_entropy",
+        ),
+    },
+    {
+      identity: sources.artifactProviders.NATIVE_EXPORTS_PROVIDER,
+      contracts:
+        sources.binaryDiagnosticsContracts.BINARY_DIAGNOSTICS_TOOL_CONTRACTS.filter(
+          ({ name }) => name === "inspect_native_exports",
         ),
     },
     {
@@ -219,6 +333,10 @@ export const providerCatalog = (sources) => {
       ),
     },
     {
+      identity: sources.apkSignatureProvider.APK_SIGNATURE_PROVIDER_IDENTITY,
+      contracts: sources.apkSignatureContracts.APK_SIGNATURE_TOOL_CONTRACTS,
+    },
+    {
       identity: sources.evmProvider.EVMOLE_PROVIDER_IDENTITY,
       contracts: sources.evmContracts.EVM_TOOL_CONTRACTS,
     },
@@ -227,8 +345,32 @@ export const providerCatalog = (sources) => {
       contracts: sources.goContracts.GO_TOOL_CONTRACTS,
     },
     {
+      identity: sources.gpuProvider.GPU_CODE_OBJECTS_PROVIDER_IDENTITY,
+      contracts: sources.gpuContracts.GPU_TOOL_CONTRACTS,
+    },
+    {
+      identity: sources.il2cppProvider.IL2CPP_METADATA_PROVIDER_IDENTITY,
+      contracts: sources.il2cppContracts.IL2CPP_TOOL_CONTRACTS,
+    },
+    {
+      identity: sources.modelProvider.MODEL_ARTIFACT_PROVIDER_IDENTITY,
+      contracts: sources.modelContracts.MODEL_TOOL_CONTRACTS,
+    },
+    {
       identity: sources.rustProvider.RUST_BINARY_PROVIDER_IDENTITY,
       contracts: sources.rustContracts.RUST_TOOL_CONTRACTS,
+    },
+    {
+      identity: sources.pythonPycProvider.PYTHON_PYC_PROVIDER_IDENTITY,
+      contracts: sources.pythonPycContracts.PYTHON_PYC_TOOL_CONTRACTS,
+    },
+    {
+      identity: sources.erlangProvider.ERLANG_BEAM_PROVIDER_IDENTITY,
+      contracts: sources.erlangContracts.ERLANG_BEAM_TOOL_CONTRACTS,
+    },
+    {
+      identity: sources.electronFuseProvider.ELECTRON_FUSE_PROVIDER_IDENTITY,
+      contracts: fuseContracts,
     },
     {
       identity: sources.sqliteDomain.SQLITE_PROVIDER_IDENTITY,
@@ -236,7 +378,10 @@ export const providerCatalog = (sources) => {
     },
     {
       identity: sources.artifactProviders.ARTIFACT_GRAPH_PROVIDER,
-      contracts: sources.artifactContracts.ARTIFACT_TOOL_CONTRACTS,
+      contracts: [
+        ...sources.artifactContracts.ARTIFACT_TOOL_CONTRACTS,
+        ...sources.desktopContracts.DESKTOP_APPLICATION_TOOL_CONTRACTS,
+      ],
     },
     {
       identity: sources.artifactProviders.MANAGED_STATIC_PROVIDER,
@@ -394,17 +539,23 @@ const electronContractSlices = (sources) => {
       ({ name }) =>
         name !== "analyze_javascript_application" &&
         name !== "reconcile_javascript_runtime" &&
-        name !== "capture_electron_scenario",
+        name !== "capture_electron_scenario" &&
+        name !== "inspect_electron_fuses",
     );
   const activeContracts =
     sources.electronContracts.ELECTRON_TOOL_CONTRACTS.filter(
       ({ name }) => name === "capture_electron_scenario",
     );
+  const fuseContracts =
+    sources.electronContracts.ELECTRON_TOOL_CONTRACTS.filter(
+      ({ name }) => name === "inspect_electron_fuses",
+    );
   if (
     applicationContracts.length !== 1 ||
     reconciliationContracts.length !== 1 ||
     observationContracts.length !== 2 ||
-    activeContracts.length !== 1
+    activeContracts.length !== 1 ||
+    fuseContracts.length !== 1
   )
     throw new Error("Electron provider capability ownership drifted");
   return {
@@ -412,5 +563,6 @@ const electronContractSlices = (sources) => {
     reconciliationContracts,
     observationContracts,
     activeContracts,
+    fuseContracts,
   };
 };

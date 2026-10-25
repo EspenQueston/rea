@@ -52,8 +52,8 @@ export const decodeSazCapture = async (
       }
       if (declaredBytes > WEB_NETWORK_CAPTURE_LIMITS.inputBytes)
         throw new CaptureFormatError(
-          "limit",
-          "SAZ expanded members exceed the 32 MiB complete-evidence budget.",
+          "expanded-limit",
+          "SAZ expanded members exceed the 32 MiB complete-evidence budget. This release has no runtime override.",
         );
       inventory.push({
         path: entry.path,
@@ -90,6 +90,7 @@ export const decodeSazCapture = async (
         websocket: null,
         grpc: null,
       };
+      const limitations: string[] = [];
       for (const entry of entries) {
         const stream = await reader.open(entry);
         const chunks: Buffer[] = [];
@@ -114,17 +115,23 @@ export const decodeSazCapture = async (
             "SAZ member does not match its declared size.",
           );
         const bytes = Buffer.concat(chunks, length);
-        if (entry.path.endsWith("_c.txt"))
-          source.request = {
-            member: entry.path,
-            ...decodeSazHttp(bytes, true),
-          };
-        else if (entry.path.endsWith("_s.txt"))
-          source.response = {
-            member: entry.path,
-            ...decodeSazHttp(bytes, false),
-          };
-        else if (entry.path.endsWith("_m.xml"))
+        const http = entry.path.endsWith("_c.txt")
+          ? "request"
+          : entry.path.endsWith("_s.txt")
+            ? "response"
+            : null;
+        if (http !== null) {
+          // Fiddler stores a session without this message as a zero-byte member.
+          if (length === 0)
+            limitations.push(
+              `The stored ${http} member is empty (zero bytes); the ${http} is reported as null.`,
+            );
+          else
+            source[http] = {
+              member: entry.path,
+              ...decodeSazHttp(bytes, http === "request"),
+            };
+        } else if (entry.path.endsWith("_m.xml"))
           source.metadata = {
             member: entry.path,
             document: decodeSazMetadata(bytes),
@@ -142,7 +149,7 @@ export const decodeSazCapture = async (
           members: entries.map((entry) => entry.path),
         },
         ...projectSazRecord(source, sensitiveValues),
-        limitations: [],
+        limitations,
       });
     }
     const container = projectSazRecord({ members: inventory }, sensitiveValues);
@@ -161,7 +168,7 @@ export const decodeSazCapture = async (
     if (cause instanceof CaptureFormatError) throw cause;
     if (cause instanceof ArtifactReaderFailure && cause.reason === "limit")
       throw new CaptureFormatError(
-        "limit",
+        "expanded-limit",
         "SAZ archive exceeds the ZIP reader's resource budget.",
       );
     throw new CaptureFormatError(

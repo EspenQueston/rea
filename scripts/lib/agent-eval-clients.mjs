@@ -15,16 +15,19 @@ const CLIENTS = {
     setupClient: "codex",
     commandVariable: "REA_CODEX_CLI",
     defaultCommand: "codex",
+    credentialFile: "auth.json",
   },
   "claude-code": {
     setupClient: "claude_code",
     commandVariable: "REA_VERIFY_CLAUDE_COMMAND",
     defaultCommand: "claude",
+    credentialFile: ".credentials.json",
   },
   "gemini-cli": {
     setupClient: "gemini_cli",
     commandVariable: "REA_VERIFY_GEMINI_COMMAND",
     defaultCommand: "gemini",
+    credentialFile: ".gemini/oauth_creds.json",
   },
 };
 
@@ -40,29 +43,49 @@ export const selectAgentEvalClient = (
     throw new Error(
       `REA_AGENT_EVAL_CLIENT must be one of ${Object.keys(CLIENTS).join(", ")}`,
     );
-  const command = process.env[client.commandVariable] ?? client.defaultCommand;
+  const selected = process.env[client.commandVariable] ?? client.defaultCommand;
+  const command =
+    selected.includes("/") || selected.includes("\\")
+      ? resolve(repositoryRoot, selected)
+      : selected;
+  // npm installs provide a JavaScript entry point; on Windows only a .cmd shim
+  // reaches PATH, which Node does not spawn without a shell, so a selected .js
+  // entry runs under this Node for the version preflight and every scenario.
+  const entryPoint = /\.(c|m)?js$/iu.test(command) ? command : undefined;
   return {
     id: value,
     ...client,
-    command:
-      command.includes("/") || command.includes("\\")
-        ? resolve(repositoryRoot, command)
-        : command,
+    command,
+    // Known before preparation, so a run that fails earlier still removes it.
+    credentialPaths: (evaluationRoot) => [
+      join(evaluationRoot, value, client.credentialFile),
+    ],
+    launch: (arguments_) =>
+      entryPoint === undefined
+        ? { command, arguments: [...arguments_] }
+        : { command: process.execPath, arguments: [entryPoint, ...arguments_] },
   };
 };
 
 /**
- * REA tools a non-Codex client may run without a scenario approval: tools
- * whose audited annotations are read-only, or neither destructive nor open
- * world. Other tools are refused unless the scenario approves them by name.
+ * Permission policy for a non-Codex client, taken from each tool's audited
+ * effects: a tool that may run foreign code, change a device, discard caller
+ * state, launch a process, or reach the network needs a scenario approval by
+ * name. The MCP hints are display derivations of these same effects and are
+ * not consulted, so changing a hint cannot change what a client may run.
  */
+const permittedWithoutApproval = ({ effects }) =>
+  !(
+    effects.executesForeignCode ||
+    effects.mutatesDevice ||
+    effects.mayDiscardData ||
+    effects.launchesProcess ||
+    effects.accessesNetwork
+  );
+
 const allowedTools = (approvedTools) => [
   ...new Set([
-    ...TOOL_CONTRACTS.filter(
-      ({ annotations }) =>
-        annotations.readOnlyHint ||
-        !(annotations.destructiveHint || annotations.openWorldHint),
-    ).map(({ name }) => name),
+    ...TOOL_CONTRACTS.filter(permittedWithoutApproval).map(({ name }) => name),
     ...approvedTools,
   ]),
 ];
@@ -183,7 +206,7 @@ const claudeCodeClient = (profile, model) => ({
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
     // Account-level claude.ai connectors are user configuration.
     ENABLE_CLAUDEAI_MCP_SERVERS: "false",
-    ...apiKeys("ANTHROPIC_API_KEY"),
+    ...apiKeys("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"),
     ...(process.env.ANTHROPIC_BASE_URL === undefined
       ? {}
       : { ANTHROPIC_BASE_URL: process.env.ANTHROPIC_BASE_URL }),
