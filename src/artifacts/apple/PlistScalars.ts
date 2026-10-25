@@ -172,6 +172,30 @@ export const binaryPlistCloneOffsetWidth = (
   );
 };
 
+/**
+ * Bytes a clone rewrite adds: the clone records and the rebuilt offset table,
+ * less the old table bytes it replaces. Decoder bounds admit an old table
+ * that runs into the trailer; only its bytes before the trailer are replaced.
+ */
+export const binaryPlistCloneGrowth = ({
+  trailerOffset,
+  tableOffset,
+  objectCount,
+  offsetSize,
+  normalizedOffsetSize,
+  cloneBytes,
+}: {
+  readonly trailerOffset: number;
+  readonly tableOffset: number;
+  readonly objectCount: number;
+  readonly offsetSize: number;
+  readonly normalizedOffsetSize: number;
+  readonly cloneBytes: number;
+}): number =>
+  cloneBytes +
+  objectCount * normalizedOffsetSize -
+  Math.min(objectCount * offsetSize, Math.max(0, trailerOffset - tableOffset));
+
 /** Normalize unsupported binary-plist UID widths for the pinned parser. */
 export const decodeBinaryPlistUids = (
   bytes: Buffer,
@@ -557,7 +581,15 @@ const cloneBinaryPlistObjects = (
   );
   const newTableOffset = cloneStart + cloneBytes;
   const newLength =
-    bytes.length + cloneBytes + objectCount * (newOffsetSize - offsetSize);
+    bytes.length +
+    binaryPlistCloneGrowth({
+      trailerOffset,
+      tableOffset: oldTableOffset,
+      objectCount,
+      offsetSize,
+      normalizedOffsetSize: newOffsetSize,
+      cloneBytes,
+    });
   if (!Number.isSafeInteger(newLength))
     throw new RangeError(
       "binary plist cloned scalar representation is too large",

@@ -1,6 +1,7 @@
 import { decodeXmlPlistText } from "../../domain/propertyListXmlText.js";
 import { hasBinaryPlistSignature } from "../../domain/apple/appleArchiveFormat.js";
 import {
+  binaryPlistCloneGrowth,
   binaryPlistCloneOffsetWidth,
   binaryDateRequiresExactSeconds,
   binaryPlistObjectEnd,
@@ -596,8 +597,14 @@ export const estimateBinaryPlistExpansion = (
     const normalizedOffsetSize = normalizeOffsetWidth(cloneLengths);
     if (cloneLengths.length > 0 || normalizedOffsetSize !== offsetSize) {
       const cloneBytes = cloneLengths.reduce((sum, length) => sum + length, 0);
-      estimate +=
-        cloneBytes + objectCount * (normalizedOffsetSize - offsetSize);
+      estimate += binaryPlistCloneGrowth({
+        trailerOffset: trailer,
+        tableOffset: offsetTable,
+        objectCount,
+        offsetSize,
+        normalizedOffsetSize,
+        cloneBytes,
+      });
       if (estimate > maxBytes)
         throw fail(
           "expansion",
@@ -664,7 +671,14 @@ export const estimateBinaryPlistExpansion = (
   const normalizedOffsetSize = normalizeOffsetWidth(cloneLengths);
   if (cloneLengths.length > 0 || normalizedOffsetSize !== offsetSize) {
     const cloneBytes = cloneLengths.reduce((sum, length) => sum + length, 0);
-    estimate += cloneBytes + objectCount * (normalizedOffsetSize - offsetSize);
+    estimate += binaryPlistCloneGrowth({
+      trailerOffset: trailer,
+      tableOffset: offsetTable,
+      objectCount,
+      offsetSize,
+      normalizedOffsetSize,
+      cloneBytes,
+    });
     if (estimate > maxBytes)
       throw fail(
         "expansion",
