@@ -52,6 +52,7 @@ import {
 import {
   createdInteger,
   explainCreate,
+  type CreateEvidence,
   insertCandidates,
   insertIndex,
   randomIdentities,
@@ -269,27 +270,69 @@ const refineCreate = (
     linkedUnexplained(explained.rules, evidence.observed.object, held)
   )
     return false;
-  const merged = mergedCreatePlan(
-    { rules: draft.plan.rules, body: draft.plan.body! },
-    draft.observed!,
+  const later = laterOf(evidence, explained);
+  const widened =
+    mergedCreatePlan(
+      { rules: draft.plan.rules, body: draft.plan.body! },
+      draft.observed!,
+      later,
+      { kept: draft.kept, clockOf: (field) => clockEvidence(draft, field) },
+    ) ?? reexplained(draft, explained.rules, later);
+  if (widened === undefined) return false;
+  retainFixed(context, widened.body.fixed.slice(draft.plan.body!.fixed.length));
+  draft.plan.rules = widened.rules;
+  draft.plan.body = widened.body;
+  draft.exemplarInput = undefined;
+  return true;
+};
+
+/** A later create as the plan merge reads it. */
+const laterOf = (
+  evidence: CreateCallEvidence,
+  explained: ReturnType<typeof explainCreate>,
+) => ({
+  entity: evidence.observed.object,
+  body: evidence.call.body,
+  rules: explained.rules,
+  contract: {
+    ...explained.body,
+    ...(evidence.envelope === undefined ? {} : { envelope: evidence.envelope }),
+  },
+});
+
+/**
+ * The plan its exemplar gives again with the composed rules a later call learned for fields the exemplar left
+ * unexplained, such as an address spelled from an id that equals the title's slug, merged with that call. Undefined
+ * once a later call widened the plan, or unless the rules spell the exemplar's own values.
+ */
+const reexplained = (
+  draft: WriteDraft,
+  learned: readonly FieldRule[],
+  later: ReturnType<typeof laterOf>,
+) => {
+  const input = draft.exemplarInput;
+  if (input === undefined) return undefined;
+  const hints = learned.filter(
+    (rule) =>
+      rule.rule === "composed" &&
+      !draft.plan.rules.some((held) => held.field === rule.field),
+  );
+  if (hints.length === 0) return undefined;
+  const again = explainCreate({ ...input, hints });
+  if (!hints.every((hint) => again.rules.includes(hint))) return undefined;
+  const envelope = draft.plan.body!.envelope;
+  return mergedCreatePlan(
     {
-      entity: evidence.observed.object,
-      body: evidence.call.body,
-      rules: explained.rules,
-      contract: {
-        ...explained.body,
-        ...(evidence.envelope === undefined
-          ? {}
-          : { envelope: evidence.envelope }),
+      rules: again.rules,
+      body: {
+        ...again.body,
+        ...(envelope === undefined ? {} : { envelope }),
       },
     },
+    draft.observed!,
+    later,
     { kept: draft.kept, clockOf: (field) => clockEvidence(draft, field) },
   );
-  if (merged === undefined) return false;
-  retainFixed(context, merged.body.fixed.slice(draft.plan.body!.fixed.length));
-  draft.plan.rules = merged.rules;
-  draft.plan.body = merged.body;
-  return true;
 };
 
 type CreateCallEvidence = {
@@ -309,7 +352,7 @@ const explainedCall = (
   const type = draft.plan.target!;
   const members = fieldsOf(context.state.members(type, evidence.collection));
   const held = fieldsOf(context.state.ofType(type));
-  const explained = explainCreate({
+  const input: CreateEvidence = {
     entity: evidence.observed.object,
     call: evidence.call,
     idField: context.idField(type),
@@ -317,8 +360,8 @@ const explainedCall = (
     collection: members,
     type: held,
     named: (id) => context.state.named(id),
-  });
-  return { explained, members, held };
+  };
+  return { explained: explainCreate(input), members, held, input };
 };
 
 /** Build a create plan from its exemplar's observation. */
@@ -330,7 +373,7 @@ const buildCreate = (
 ): boolean => {
   const type = draft.plan.target!;
   const idField = context.idField(type);
-  const { explained, members, held } = explainedCall(
+  const { explained, members, held, input } = explainedCall(
     context,
     draft,
     step,
@@ -397,6 +440,7 @@ const buildCreate = (
     insert: draft.candidates[0]!,
   });
   draft.observed = evidence.observed.object;
+  draft.exemplarInput = input;
   for (const entity of held) noteFixedWidths(draft.fixedWidth, entity);
   return true;
 };
@@ -481,7 +525,11 @@ const followsCreateRules = (
   draft.plan.rules.every((rule) => {
     const value = created.fields[rule.field];
     const exemplar = draft.observed?.[rule.field];
-    if (rule.rule === "composed" || rule.rule === "reference")
+    if (
+      rule.rule === "composed" ||
+      rule.rule === "template" ||
+      rule.rule === "reference"
+    )
       return (
         !Object.hasOwn(created.observed, rule.field) ||
         value === created.observed[rule.field] ||

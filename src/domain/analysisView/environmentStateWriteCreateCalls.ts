@@ -24,10 +24,17 @@ const agreeing = (
     readonly field: string;
     readonly later: JsonValue | undefined;
     readonly earlier: EarlierEvidence;
+    readonly exemplar: JsonObject;
+    readonly laterEntity: JsonObject;
   },
 ): FieldRule | undefined => {
   const alike = alikeRules(held, later, values.earlier.kept);
   if (alike !== undefined) return alike;
+  const spelled = ampersandSpelled(
+    { rule: held, entity: values.exemplar },
+    { rule: later, entity: values.laterEntity },
+  );
+  if (spelled !== undefined) return spelled;
   if (held.rule !== "clock" || later.rule !== "clock") return undefined;
   const format = fittedClockFormat(
     held.format,
@@ -35,6 +42,50 @@ const agreeing = (
     values.earlier.clockOf(values.field),
   );
   return format === undefined ? undefined : { ...held, format };
+};
+
+/** A rule with its slugs spelled the default way. */
+const unspelled = (rule: FieldRule): FieldRule => {
+  if (rule.rule === "slug") {
+    const { ampersand: _ampersand, ...plain } = rule;
+    return plain;
+  }
+  if (rule.rule !== "composed") return rule;
+  return {
+    ...rule,
+    parts: rule.parts.map((part) =>
+      "as" in part && part.as === "slug"
+        ? { from: part.from, as: "slug" as const }
+        : part,
+    ),
+  };
+};
+
+/** Whether a call's entity holds `&` in a field the rule slugs, which shows how it spells one. */
+const showsAmpersand = (rule: FieldRule, entity: JsonObject): boolean =>
+  (rule.rule === "slug"
+    ? [rule.from]
+    : rule.rule === "composed"
+      ? rule.parts.flatMap((part) =>
+          "as" in part && part.as === "slug" ? [part.from] : [],
+        )
+      : []
+  ).some((field) => {
+    const value = entity[field];
+    return typeof value === "string" && value.includes("&");
+  });
+
+/** Two calls' rules that differ only in how a slug spells `&`: the one that spells it as the word, when the other call slugged no `&`. */
+const ampersandSpelled = (
+  held: { readonly rule: FieldRule; readonly entity: JsonObject },
+  later: { readonly rule: FieldRule; readonly entity: JsonObject },
+): FieldRule | undefined => {
+  const plainHeld = unspelled(held.rule);
+  if (!same(plainHeld, unspelled(later.rule))) return undefined;
+  const heldSpells = !same(held.rule, plainHeld);
+  if (heldSpells === !same(later.rule, unspelled(later.rule))) return undefined;
+  const [spelling, plain] = heldSpells ? [held, later] : [later, held];
+  return showsAmpersand(plain.rule, plain.entity) ? undefined : spelling.rule;
 };
 
 /** Defaults joined, undefined when two calls showed one member left out at different values. */
@@ -80,6 +131,8 @@ const addedReference = (
           field,
           later: later.entity[field],
           earlier: calls.earlier,
+          exemplar: calls.exemplar,
+          laterEntity: later.entity,
         });
   return rule === undefined ? undefined : { rule };
 };
@@ -113,6 +166,8 @@ const mergedField = (
       field,
       later: later.entity[field],
       earlier: calls.earlier,
+      exemplar,
+      laterEntity: later.entity,
     });
     return rule === undefined ? undefined : { rule };
   }

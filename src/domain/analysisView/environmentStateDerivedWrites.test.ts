@@ -20,6 +20,7 @@ import {
   UNKNOWN_TAG_UPDATE_ROWS,
 } from "../../../tests/fixtures/environmentStateDerivedValues.js";
 import {
+  bookClock,
   environmentStateViewOf,
   numberedUuid,
 } from "../../../tests/fixtures/environmentStateWrites.js";
@@ -346,6 +347,32 @@ describe("values an application composes or generates", () => {
     });
   });
 
+  it("serves folder creates whose address follows a generated uid and the title's slug", () => {
+    const generated = FOLDER_ROWS.map((row): TimedCaptureRow => {
+      const [method, path, body, status, sent] = row;
+      if (method !== "POST" || !isObject(sent) || body === undefined)
+        return row;
+      const { uid: _uid, ...title } = sent;
+      return [method, path, body, status!, title];
+    });
+    expect(planOf(generated, "post_folders")).toMatchObject({
+      served: true,
+      body: { accepted: ["title"] },
+      rules: expect.arrayContaining([
+        {
+          field: "url",
+          rule: "composed",
+          parts: [
+            { text: "/dashboards/f/" },
+            { from: "uid", as: "value" },
+            { text: "/" },
+            { from: "title", as: "slug" },
+          ],
+        },
+      ]),
+    });
+  });
+
   it("withholds renames whose address a later call composes when an earlier call left it otherwise", () => {
     expect(
       planOf(restoredAddressRows(true), "put_folders_by_uuid"),
@@ -440,6 +467,186 @@ const mirrored = (
       : [method, path, answered, ...rest];
   });
 };
+
+/** A folder's slug with `&` spelled as Grafana's Go slugs spell it. */
+const wordSlug = (title: string): string =>
+  title
+    .replaceAll("&", " and ")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/gu, "-")
+    .replace(/^-|-$/gu, "");
+
+/** A folder's slug with `&` dropped, as Django's slugify drops it. */
+const droppedSlug = (title: string): string =>
+  wordSlug(title.replaceAll("&", " "));
+
+/** When the seeded folder was made, well before the capture. */
+const SEEDED = "2026-10-01T09:00:00Z";
+
+/** Grafana's time-based folder ids, as the recorded folders hold them. */
+const FOLDER_IDS = [1655476044521472, 1656166527623168, 1656166745726976];
+
+interface CreatedFolder {
+  readonly uid: string;
+  readonly title: string;
+  /** Whether the call sent the uid, or the application generated it. */
+  readonly sent: boolean;
+  /** The address's last segment, when the application spells it otherwise than the title's slug. */
+  readonly tail?: string;
+}
+
+/** A seeded folder and folder creates, each read back and listed, whose addresses join the uid and `spell` of the title. */
+const folderCreates = (
+  created: readonly CreatedFolder[],
+  spell: (title: string) => string,
+  seed: { readonly uid: string; readonly title: string } = {
+    uid: numberedUuid(101),
+    title: "Lighthouse Rota",
+  },
+): TimedCaptureRow[] => {
+  const entity = (
+    folder: {
+      readonly uid: string;
+      readonly title: string;
+      readonly tail?: string;
+    },
+    index: number,
+    at: number,
+  ): JsonObject => ({
+    id: FOLDER_IDS[index]!,
+    uid: folder.uid,
+    title: folder.title,
+    url: `/dashboards/f/${folder.uid}/${folder.tail ?? spell(folder.title)}`,
+    created: bookClock(at),
+    updated: bookClock(at),
+  });
+  const held: JsonObject[] = [
+    { ...entity(seed, 0, 0), created: SEEDED, updated: SEEDED },
+  ];
+  const rows: TimedCaptureRow[] = [
+    ["GET", "/api/folders", [...held]],
+    ["GET", `/api/folders/${seed.uid}`, held[0]!],
+  ];
+  created.forEach((folder, index) => {
+    // The application stamps a create with the time of its call, the row's position.
+    const answered = entity(folder, index + 1, rows.length);
+    held.push(answered);
+    rows.push(
+      [
+        "POST",
+        "/api/folders",
+        answered,
+        200,
+        folder.sent
+          ? { uid: folder.uid, title: folder.title }
+          : { title: folder.title },
+      ],
+      ["GET", `/api/folders/${folder.uid}`, answered],
+      ["GET", "/api/folders", [...held]],
+    );
+  });
+  return rows;
+};
+
+const addressParts = (ampersand?: "and") => [
+  { text: "/dashboards/f/" },
+  { from: "uid", as: "value" },
+  { text: "/" },
+  {
+    from: "title",
+    as: "slug",
+    ...(ampersand === undefined ? {} : { ampersand }),
+  },
+];
+
+describe("slugs, ambiguous addresses and templates across creates", () => {
+  it("learns that a slug spells & as the word from the first create that sends one", () => {
+    const rows = folderCreates(
+      [
+        { uid: numberedUuid(102), title: "Alpha Harbour", sent: false },
+        { uid: numberedUuid(103), title: "Bravo Tide & Wind", sent: false },
+      ],
+      wordSlug,
+    );
+    expect(planOf(rows, "post_folders")).toMatchObject({
+      served: true,
+      rules: expect.arrayContaining([
+        { field: "url", rule: "composed", parts: addressParts("and") },
+      ]),
+    });
+  });
+
+  it("keeps a slug that drops &, and refuses a later create that spells it as the word", () => {
+    const dropped = folderCreates(
+      [
+        { uid: numberedUuid(102), title: "Alpha & Harbour", sent: false },
+        { uid: numberedUuid(103), title: "Bravo Tide", sent: false },
+      ],
+      droppedSlug,
+    );
+    expect(planOf(dropped, "post_folders")).toMatchObject({
+      served: true,
+      rules: expect.arrayContaining([
+        { field: "url", rule: "composed", parts: addressParts() },
+      ]),
+    });
+    const mixed = folderCreates(
+      [
+        { uid: numberedUuid(102), title: "Alpha & Harbour", sent: false },
+        {
+          uid: numberedUuid(103),
+          title: "Bravo Tide & Wind",
+          sent: false,
+          tail: "bravo-tide-and-wind",
+        },
+      ],
+      droppedSlug,
+    );
+    expect(planOf(mixed, "post_folders")).toMatchObject({ served: false });
+  });
+
+  it("learns an address the first create cannot tell apart, its uid being its title's slug, from the second", () => {
+    const rows = folderCreates(
+      [
+        { uid: "alpha-harbour", title: "Alpha Harbour", sent: true },
+        { uid: "bravo-store", title: "Bravo Tide Notes", sent: true },
+      ],
+      wordSlug,
+      { uid: "lighthouse-rota", title: "Lighthouse Rota" },
+    );
+    expect(planOf(rows, "post_folders")).toMatchObject({
+      served: true,
+      body: { accepted: ["uid", "title"], fixed: [] },
+      rules: expect.arrayContaining([
+        { field: "url", rule: "composed", parts: addressParts() },
+      ]),
+    });
+  });
+
+  it("withholds creates whose template a later create answers otherwise", () => {
+    const rows = folderCreates(
+      [
+        {
+          uid: numberedUuid(102),
+          title: "Alpha Harbour",
+          sent: false,
+          tail: "inbox",
+        },
+        {
+          uid: numberedUuid(103),
+          title: "Bravo Tide",
+          sent: false,
+          tail: "outbox",
+        },
+      ],
+      wordSlug,
+    );
+    expect(planOf(rows, "post_folders")).toMatchObject({
+      served: false,
+      reason: "unexplained-change",
+    });
+  });
+});
 
 describe("generated integers another field repeats", () => {
   it("withholds folder creates a later call answers with a UUID where the exemplar generated an integer", () => {

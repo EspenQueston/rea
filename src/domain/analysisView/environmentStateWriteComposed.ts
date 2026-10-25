@@ -8,6 +8,7 @@ import {
   joinsBefore,
   readClock,
   slugOf,
+  slugSpellings,
   zoneMinutesForFormat,
 } from "./environmentStateWriteValues.js";
 import {
@@ -42,7 +43,7 @@ export const composedPartText = (
   const value = fields[part.from];
   if (part.as === "clock") return clockDigits(value, part.pattern);
   if (part.as === "value") return scalarText(value);
-  return typeof value === "string" ? slugOf(value) : undefined;
+  return typeof value === "string" ? slugOf(value, part.ampersand) : undefined;
 };
 
 /** A composed string spelled from written fields, or undefined when a part has nothing to spell. */
@@ -69,11 +70,17 @@ const candidatesOf = (
   const text = scalarText(value);
   if (text !== undefined && text.length >= shortest)
     candidates.push({ token: text, part: { from: field, as: "value" } });
-  if (typeof value === "string") {
-    const slug = slugOf(value);
-    if (slug !== value && slug.length >= COPY_MIN_LENGTH)
-      candidates.push({ token: slug, part: { from: field, as: "slug" } });
-  }
+  if (typeof value === "string")
+    for (const { slug, ampersand } of slugSpellings(value))
+      if (slug !== value && slug.length >= COPY_MIN_LENGTH)
+        candidates.push({
+          token: slug,
+          part: {
+            from: field,
+            as: "slug",
+            ...(ampersand === undefined ? {} : { ampersand }),
+          },
+        });
   if (readClock(value) !== undefined)
     for (const pattern of CLOCK_PATTERNS) {
       const digits = clockDigits(value, pattern);
@@ -118,36 +125,45 @@ const matchesAt = (
   return [];
 };
 
+/** More ways to read one string than this leave it unexplained. */
+const MAX_SEGMENTATIONS = 8;
+
 /**
- * Literal text around the longest delimited candidate at each position, left to right; undefined when none shows, or
- * when one text comes from two sources serving could tell apart. `alike` names parts serving fills with one value.
+ * Literal text around the longest delimited candidate at each position, left to right: one reading per choice where
+ * sources serving could tell apart spell the same text, which other entities then tell apart. Empty when no candidate
+ * shows, or the choices exceed `MAX_SEGMENTATIONS`. `alike` names parts serving fills with one value.
  */
-const segmented = (
+const segmentations = (
   text: string,
   index: CandidateIndex,
   alike: (left: SourcePart, right: SourcePart) => boolean,
-): ComposedPart[] | undefined => {
-  const parts: ComposedPart[] = [];
+): ComposedPart[][] => {
+  let readings: ComposedPart[][] = [[]];
   let literal = "";
   let shown = false;
   for (let at = 0; at < text.length;) {
     const matches = matchesAt(text, at, index);
-    const match = matches[0];
-    if (match === undefined) {
+    if (matches.length === 0) {
       literal += text[at];
       at += 1;
       continue;
     }
-    if (matches.some((other) => !alike(match.part, other.part)))
-      return undefined;
-    if (literal !== "") parts.push({ text: literal });
+    const choices: SourcePart[] = [];
+    for (const { part } of matches)
+      if (!choices.some((choice) => alike(choice, part))) choices.push(part);
+    const lead: ComposedPart[] = literal === "" ? [] : [{ text: literal }];
+    readings = readings.flatMap((parts) =>
+      choices.map((choice) => [...parts, ...lead, choice]),
+    );
+    if (readings.length > MAX_SEGMENTATIONS) return [];
     literal = "";
-    parts.push(match.part);
     shown = true;
-    at += match.token.length;
+    at += matches[0]!.token.length;
   }
-  if (literal !== "") parts.push({ text: literal });
-  return shown ? parts : undefined;
+  if (!shown) return [];
+  return literal === ""
+    ? readings
+    : readings.map((parts) => [...parts, { text: literal }]);
 };
 
 const samePart = (left: SourcePart, right: SourcePart): boolean =>
@@ -155,7 +171,10 @@ const samePart = (left: SourcePart, right: SourcePart): boolean =>
   left.as === right.as &&
   (left.as !== "clock" ||
     right.as !== "clock" ||
-    left.pattern === right.pattern);
+    left.pattern === right.pattern) &&
+  (left.as !== "slug" ||
+    right.as !== "slug" ||
+    left.ampersand === right.ampersand);
 
 /** How many entities holding the field and what its parts read spell it as the parts do, or undefined when one holds it otherwise, a non-string value included. */
 const heldSpellings = (
@@ -222,12 +241,14 @@ export const createdComposer = (
           : [],
       ),
     );
-    const parts = segmented(text, index, alike);
-    return parts === undefined ||
-      parts.some((part) => "from" in part && part.from === field) ||
-      !((heldSpellings(parts, field, held) ?? 0) > 0)
-      ? undefined
-      : { field, rule: "composed", parts };
+    const fits = segmentations(text, index, alike).filter(
+      (parts) =>
+        !parts.some((part) => "from" in part && part.from === field) &&
+        (heldSpellings(parts, field, held) ?? 0) > 0,
+    );
+    return fits.length === 1
+      ? { field, rule: "composed", parts: fits[0]! }
+      : undefined;
   };
 };
 
@@ -265,10 +286,12 @@ export const composedChange = (
       ),
     ),
   );
-  const parts = segmented(text, index, samePart);
-  return parts === undefined ||
-    composedValue(parts, before) !== before[field] ||
-    heldSpellings(parts, field, entity.others) === undefined
-    ? undefined
-    : { field, rule: "composed", parts };
+  const fits = segmentations(text, index, samePart).filter(
+    (parts) =>
+      composedValue(parts, before) === before[field] &&
+      heldSpellings(parts, field, entity.others) !== undefined,
+  );
+  return fits.length === 1
+    ? { field, rule: "composed", parts: fits[0]! }
+    : undefined;
 };

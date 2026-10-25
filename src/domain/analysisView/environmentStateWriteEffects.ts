@@ -49,6 +49,7 @@ import {
 } from "./environmentStateWriteObserve.js";
 import { plannedBody, restampedFields } from "./environmentStateWriteStamps.js";
 import { readClock } from "./environmentStateWriteValues.js";
+import type { CreateEvidence } from "./environmentStateWriteExplain.js";
 import {
   fittedClockFormat,
   matchesClockFormat,
@@ -96,6 +97,8 @@ export interface WriteDraft {
   readonly kept: Set<string>;
   /** A value a held entity or an accepted call showed each clock field at a fixed width in, which keeps it untrimmed. */
   readonly fixedWidth: Map<string, JsonValue>;
+  /** What explained a create's exemplar, kept until a later call widens the plan, which it may then explain again. */
+  exemplarInput?: CreateEvidence | undefined;
 }
 
 /** The value a draft fits a clock field against: one showing it at a fixed width, else the exemplar's. */

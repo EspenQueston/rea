@@ -284,7 +284,8 @@ const derive = (
   for (const rule of rules) {
     if (rule.rule === "slug") {
       const from = sent[rule.from];
-      if (typeof from === "string") written[rule.field] = slugOf(from);
+      if (typeof from === "string")
+        written[rule.field] = slugOf(from, rule.ampersand);
     } else if (rule.rule === "template") {
       const value = templated(observed, written, rule);
       if (value !== undefined) written[rule.field] = value;

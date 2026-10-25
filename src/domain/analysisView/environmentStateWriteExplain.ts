@@ -25,11 +25,14 @@ import {
   isUuid,
   readClock,
   sequenceNumber,
-  slugOf,
+  slugSpellings,
   sortedStrings,
   type ClockFormat,
 } from "./environmentStateWriteValues.js";
-import { createdComposer } from "./environmentStateWriteComposed.js";
+import {
+  composedValue,
+  createdComposer,
+} from "./environmentStateWriteComposed.js";
 import { referenceRule } from "./environmentStateWriteReferences.js";
 import {
   fittedClockFormat,
@@ -59,6 +62,8 @@ import {
   heldClock,
   sameSecondClocks,
   sentRule,
+  slugRule,
+  type SlugSource,
   type UpdateEvidence,
 } from "./environmentStateWriteChanges.js";
 
@@ -73,6 +78,8 @@ export interface CreateEvidence {
   readonly type: readonly JsonObject[];
   /** The entities of any type the state holds under an id. */
   readonly named?: (id: string) => readonly StateEntity[];
+  /** Composed rules another call of the tool learned, which explain a field here when they spell its value. */
+  readonly hints?: readonly FieldRule[];
 }
 
 /** What explaining a create looks values up in, built once per request body. */
@@ -80,8 +87,23 @@ interface BodyIndex {
   /** Each body string long enough to show a copy, at its shallowest pointer (breadth-first, members in order). */
   readonly copies: ReadonlyMap<string, string>;
   /** Each slug a top-level string member slugs to, other than its own value, from the first such member. */
-  readonly slugs: ReadonlyMap<string, string>;
+  readonly slugs: ReadonlyMap<string, SlugSource>;
 }
+
+/** Add a string's slugs to an index, keeping the first member that spells each; `own` keeps one equal to the string. */
+const addSlugs = (
+  slugs: Map<string, SlugSource>,
+  member: string,
+  sent: string,
+  own = false,
+): void => {
+  for (const { slug, ampersand } of slugSpellings(sent))
+    if ((own || slug !== sent) && !slugs.has(slug))
+      slugs.set(slug, {
+        from: member,
+        ...(ampersand === undefined ? {} : { ampersand }),
+      });
+};
 
 /** Index a request body once, so explaining each field looks values up rather than walking the body again. */
 const indexBody = (body: JsonObject): BodyIndex => {
@@ -108,12 +130,9 @@ const indexBody = (body: JsonObject): BodyIndex => {
         pointer: `${next.pointer}${pointerTo(key)}`,
       });
   }
-  const slugs = new Map<string, string>();
+  const slugs = new Map<string, SlugSource>();
   for (const [member, sent] of Object.entries(body))
-    if (typeof sent === "string") {
-      const slug = slugOf(sent);
-      if (slug !== sent && !slugs.has(slug)) slugs.set(slug, member);
-    }
+    if (typeof sent === "string") addSlugs(slugs, member, sent);
   return { copies, slugs };
 };
 
@@ -164,10 +183,8 @@ const requestRule = (
     if (text !== undefined && text === pathValue)
       return { field, rule: "path", from: name };
   const slugged = typeof value === "string" && value.length >= 3;
-  const member = slugged ? index.slugs.get(value) : undefined;
-  return member === undefined
-    ? undefined
-    : { field, rule: "slug", from: member };
+  const source = slugged ? index.slugs.get(value) : undefined;
+  return source === undefined ? undefined : slugRule(field, source);
 };
 
 /** A clock's format, trimmed when the type's values of the field show its fraction trimmed and none shows a fixed width. */
@@ -287,6 +304,12 @@ const bodyOf = (
 });
 
 /** Explain every field of a created entity: echoed, copied, path, slug, generated, template or constant (unlisted). */
+/** Whether a composed string spells a field besides the one a template rebuilds it around, such as a title's slug beside a generated id. */
+const spellsMore = (composed: FieldRule, template: FieldRule): boolean =>
+  composed.rule === "composed" &&
+  template.rule === "template" &&
+  composed.parts.some((part) => "from" in part && part.from !== template.from);
+
 export const explainCreate = (
   evidence: CreateEvidence,
 ): {
@@ -325,10 +348,25 @@ export const explainCreate = (
   const constants: string[] = [];
   const composed = createdComposer(evidence.entity, rules, evidence.type);
   for (const field of unexplained) {
-    const template =
-      templateRule(evidence.entity, field, sources) ?? composed(field);
-    if (template === undefined) constants.push(field);
-    else rules.push(template);
+    const hinted = evidence.hints?.find(
+      (rule) =>
+        rule.field === field &&
+        rule.rule === "composed" &&
+        composedValue(rule.parts, evidence.entity) === evidence.entity[field],
+    );
+    if (hinted !== undefined) {
+      rules.push(hinted);
+      continue;
+    }
+    const template = templateRule(evidence.entity, field, sources);
+    const spelled = composed(field);
+    const rule =
+      spelled !== undefined &&
+      (template === undefined || spellsMore(spelled, template))
+        ? spelled
+        : template;
+    if (rule === undefined) constants.push(field);
+    else rules.push(rule);
   }
   const tokens = [...evidence.call.pathValues.values()].filter(
     (value) => value.length > 0,
@@ -385,12 +423,11 @@ export const explainCreate = (
 const echoedSlugs = (
   body: JsonObject,
   echoed: ReadonlySet<string>,
-): Map<string, string> => {
-  const slugs = new Map<string, string>();
+): Map<string, SlugSource> => {
+  const slugs = new Map<string, SlugSource>();
   for (const member of echoed) {
     const sent = body[member];
-    if (typeof sent === "string" && !slugs.has(slugOf(sent)))
-      slugs.set(slugOf(sent), member);
+    if (typeof sent === "string") addSlugs(slugs, member, sent, true);
   }
   return slugs;
 };
