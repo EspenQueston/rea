@@ -138,6 +138,32 @@ const browserScenarioPageValueSchemas = [
   }),
 ] as const;
 
+const jsonPointerSchema = z.string().regex(/^(?:\/.*)?$/u);
+
+/** A value an earlier request step saved from its JSON response. */
+const savedValueSchema = z.strictObject({
+  source: z.literal("saved"),
+  name: scenarioIdentifierSchema.describe(
+    "Name an earlier request step's `save` gave the value.",
+  ),
+});
+
+/** A literal, declared secret or saved value a request step sends. */
+export const browserScenarioRequestValueSchema = z.discriminatedUnion(
+  "source",
+  [...browserScenarioValueSchema.options, savedValueSchema],
+);
+export type BrowserScenarioRequestValue = z.infer<
+  typeof browserScenarioRequestValueSchema
+>;
+
+/** A username and password sent as the base64 of `username:password`, as HTTP Basic auth spells them; redacted like a declared secret. */
+const basicCredentialsSchema = z.strictObject({
+  source: z.literal("basic_credentials"),
+  username: browserScenarioRequestValueSchema,
+  password: browserScenarioRequestValueSchema,
+});
+
 const requestHeaderSchema = z.strictObject({
   name: z
     .string()
@@ -148,6 +174,8 @@ const requestHeaderSchema = z.strictObject({
   value: z.discriminatedUnion("source", [
     ...browserScenarioValueSchema.options,
     ...browserScenarioPageValueSchemas,
+    savedValueSchema,
+    basicCredentialsSchema,
   ]),
   prefix: z
     .string()
@@ -321,14 +349,62 @@ export const browserScenarioActionSchema = z.discriminatedUnion("action", [
       .string()
       .regex(/^\/(?![/\\])/u)
       .describe(
-        "Path, and optional literal query, on the start URL's origin, such as /api/folders; it must resolve to that origin.",
+        "Path, and optional literal query, on the start URL's origin, such as /api/folders; it must resolve to that origin. `{name}` placeholders take `path_params`.",
       ),
-    query: z.array(queryEntrySchema).default([]),
+    path_params: z
+      .array(
+        z.strictObject({
+          name: scenarioIdentifierSchema,
+          value: browserScenarioRequestValueSchema,
+        }),
+      )
+      .default([])
+      .describe(
+        "Values for the path's `{name}` placeholders, each sent percent-encoded, such as an id an earlier step saved.",
+      ),
+    query: z
+      .array(
+        z.strictObject({
+          name: z.string().min(1),
+          value: browserScenarioRequestValueSchema,
+        }),
+      )
+      .default([]),
     headers: z.array(requestHeaderSchema).default([]),
     json: jsonValueSchema
       .optional()
       .describe(
         "JSON request body, sent with Content-Type application/json unless a header sets one; not allowed for GET or HEAD.",
+      ),
+    json_values: z
+      .array(
+        z.strictObject({
+          json_pointer: jsonPointerSchema.min(1),
+          value: browserScenarioRequestValueSchema,
+        }),
+      )
+      .default([])
+      .describe(
+        "Values set in the JSON body at these pointers before it is sent; a saved value keeps the JSON type it was saved with.",
+      ),
+    save: z
+      .array(
+        z.strictObject({
+          name: scenarioIdentifierSchema,
+          json_pointer: jsonPointerSchema.describe(
+            "Pointer to a string or number in the JSON response, such as /id.",
+          ),
+          secret: z
+            .boolean()
+            .default(false)
+            .describe(
+              "Redact the value from everything recorded after it, as a declared secret is.",
+            ),
+        }),
+      )
+      .default([])
+      .describe(
+        "Values this step saves from its JSON response, by name, for later request steps to send.",
       ),
     expected_status: z
       .array(

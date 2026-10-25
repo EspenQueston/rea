@@ -93,7 +93,19 @@ shape, with the application's own locators, paths and headers:
           "value": { "source": "cookie", "name": "csrftoken" }
         }
       ],
+      "save": [{ "name": "folder_1", "json_pointer": "/id" }],
       "expected_status": [200, 201]
+    },
+    {
+      "step_id": "read-folder-1",
+      "action": "request",
+      "timeout_ms": 15000,
+      "method": "GET",
+      "path": "/api/folders/{id}",
+      "path_params": [
+        { "name": "id", "value": { "source": "saved", "name": "folder_1" } }
+      ],
+      "expected_status": [200]
     }
   ]
 }
@@ -109,13 +121,12 @@ client with it. Match `wait_for` locators to exactly one element.
 2. Read with `request` steps: each collection the environment needs, twice
    before any write, so fields that change on their own show up; one item of
    each.
-3. Use `request` steps only when the API lets the caller choose each scratch
-   object's ID or a prior read already established it. Request paths are fixed
-   strings; no action substitutes a value from an earlier response. For
-   server-assigned IDs, create through the UI and open the new object's detail
-   view to record its read, edit and delete through UI actions. If that journey
-   cannot be scripted, leave the write unserved and report the limitation;
-   never guess an ID or create objects with no supported cleanup path.
+3. Write with `request` steps too. When the application assigns an object's
+   ID, `save` it from the create's response and send it to later steps through
+   `path_params` (a `{name}` placeholder in `path`), `json_values` or a header:
+   never guess an ID, and never create a probe object to learn the next one.
+   Use the UI only for what the API cannot do; if a journey cannot be scripted,
+   leave the write unserved and report the limitation.
    Record two numbered scratch objects per write type,
    with varied free text. After each write, and before the next one, read the
    object back by id and then its list: create 1, read 1, list, create 2,
@@ -129,13 +140,23 @@ About `request` steps:
 
 - `path` is on the start URL's origin; the page must be on that origin.
 - Header values are literals, declared secrets, a cookie the browser holds
-  (`{source: "cookie", name}`), or a local storage entry
-  (`{source: "local_storage", key, json_pointer}`), with an optional
-  `prefix` such as `"Bearer "`. Copy the headers the application's own
-  requests send (a CSRF header, a bearer token). Values read from the page
-  are redacted from records made after they are read, not from the login
-  response that returned them, and values shorter than 8 characters are not
-  redacted at all.
+  (`{source: "cookie", name}`), a local storage entry
+  (`{source: "local_storage", key, json_pointer}`), a saved value
+  (`{source: "saved", name}`), or Basic credentials
+  (`{source: "basic_credentials", username, password}`, sent as the base64 of
+  `username:password` and redacted), with an optional `prefix` such as
+  `"Bearer "` or `"Basic "`. An API that takes Basic auth, or a header of
+  encoded credentials with no prefix, needs no session from the UI. Copy the
+  headers the application's own requests send (a CSRF header, a bearer
+  token). Values read from the page are redacted from records made after they
+  are read, not from the login response that returned them, and values
+  shorter than 8 characters are not redacted at all.
+- `save: [{name, json_pointer, secret}]` keeps a string or number from the
+  step's JSON response, such as the created object's `/id`, for later steps;
+  `secret: true` redacts it, as for a token the API returns. Later steps send
+  it as `{source: "saved", name}` in `path_params`, `query`, headers, or
+  `json_values: [{json_pointer, value}]`, which sets it in the body with the
+  JSON type it was saved with.
 - Reading a page value makes later bodies costlier to keep: after a CSRF
   token, bodies over about 47 KiB are kept as `unavailable`. When the API
   returns larger responses, raise `capture.limits`

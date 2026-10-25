@@ -5,6 +5,7 @@ import { createHash } from "node:crypto";
 import type { BrowserScenario } from "../domain/browserScenario.js";
 import type {
   BrowserScenarioUrl,
+  BrowserScenarioRequestValue,
   BrowserScenarioValue,
 } from "../domain/browserScenarioValues.js";
 import {
@@ -318,8 +319,31 @@ export class BrowserScenarioSecrets {
     return ok(new BrowserScenarioSecrets(values));
   }
 
-  value(source: BrowserScenarioValue): string {
+  /** Values request steps saved from their responses, by name, as JSON strings or numbers. */
+  private readonly saved = new Map<string, string | number>();
+
+  /** Keep a value a request step saved from its response; a secret one is redacted from everything recorded after it. */
+  save(
+    label: string,
+    name: string,
+    value: string | number,
+    secret: boolean,
+  ): void {
+    this.saved.set(name, value);
+    if (secret) this.admitPageValue(label, String(value));
+  }
+
+  /** A saved value with the JSON type it was saved with. */
+  savedValue(name: string): string | number {
+    const value = this.saved.get(name);
+    if (value === undefined)
+      throw new Error(`No earlier request step saved ${name}`);
+    return value;
+  }
+
+  value(source: BrowserScenarioValue | BrowserScenarioRequestValue): string {
     if (source.source === "literal") return source.value;
+    if (source.source === "saved") return String(this.savedValue(source.name));
     const value = this.values.get(source.secret_id);
     if (value === undefined)
       throw new Error("Validated browser secret was not resolved");

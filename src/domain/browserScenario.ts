@@ -13,6 +13,7 @@ import {
   HEADER_FIELD_VALUE,
   type BrowserScenarioAction,
   type BrowserScenarioUrl,
+  type BrowserScenarioRequestValue,
   type BrowserScenarioValue,
 } from "./browserScenarioValues.js";
 
@@ -58,8 +59,26 @@ const assertUnique = (
 };
 
 const secretReferencesInValue = (
-  value: BrowserScenarioValue | undefined,
+  value: BrowserScenarioValue | BrowserScenarioRequestValue | undefined,
 ): readonly string[] => (value?.source === "secret" ? [value.secret_id] : []);
+
+/** The values a request step sends: query, path and body values, headers, and both parts of Basic credentials. */
+const requestValues = (
+  action: Extract<BrowserScenarioAction, { action: "request" }>,
+): readonly BrowserScenarioRequestValue[] => [
+  ...action.query.map(({ value }) => value),
+  ...action.path_params.map(({ value }) => value),
+  ...action.json_values.map(({ value }) => value),
+  ...action.headers.flatMap(({ value }) =>
+    value.source === "basic_credentials"
+      ? [value.username, value.password]
+      : value.source === "literal" ||
+          value.source === "secret" ||
+          value.source === "saved"
+        ? [value]
+        : [],
+  ),
+];
 
 const destinationSecretReferences = (
   destination: BrowserScenarioUrl,
@@ -74,13 +93,37 @@ const actionSecretReferences = (
   if (action.action === "goto")
     return destinationSecretReferences(action.destination);
   if (action.action === "request")
-    return [
-      ...action.query.flatMap(({ value }) => secretReferencesInValue(value)),
-      ...action.headers.flatMap(({ value }) =>
-        value.source === "secret" ? [value.secret_id] : [],
-      ),
-    ];
+    return requestValues(action).flatMap(secretReferencesInValue);
   return [];
+};
+
+/** Each saved value a request step sends was saved by an earlier step, and each path placeholder has a value. */
+const validateSavedValues = (
+  scenario: ScenarioShape,
+  context: z.RefinementCtx,
+): void => {
+  const saved = new Set<string>();
+  scenario.actions.forEach((action, index) => {
+    if (action.action !== "request") return;
+    for (const value of requestValues(action))
+      if (value.source === "saved" && !saved.has(value.name))
+        addIssue(
+          context,
+          ["actions", index],
+          `Request step ${action.step_id} sends saved value ${value.name}, which no earlier request step saves`,
+        );
+    const params = new Set(action.path_params.map(({ name }) => name));
+    for (const [, name] of action.path.matchAll(
+      /\{([A-Za-z][A-Za-z0-9._-]*)\}/gu,
+    ))
+      if (!params.has(name!))
+        addIssue(
+          context,
+          ["actions", index, "path"],
+          `The path placeholder {${name!}} has no path_params value`,
+        );
+    for (const { name } of action.save) saved.add(name);
+  });
 };
 
 /** Request steps stay on the start origin and send a body only with methods that carry one. */
@@ -198,6 +241,7 @@ const validateBrowserScenario = (
   );
 
   validateRequestSteps(scenario, context);
+  validateSavedValues(scenario, context);
   const references = scenario.actions.flatMap(actionSecretReferences);
   references.push(...destinationSecretReferences(scenario.start_url));
   references.push(...validateStorage(scenario));
