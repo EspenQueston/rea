@@ -8,6 +8,7 @@ import { readMipsElfMetadata } from "../../../src/application/MipsElfMetadata.js
 import { AnalysisCancelledError } from "../../../src/domain/analysisErrorCore.js";
 import { expectBinaryTargetError } from "../../fixtures/binaryTargetAdmission.js";
 import {
+  ghidraMipsElfImageBase,
   ghidraMipsProfileParameters,
   ghidraMipsUnsupportedReason,
 } from "../../../src/ghidra/GhidraMipsProfile.js";
@@ -104,7 +105,7 @@ for (const little of [true, false]) {
       relocationCount: 2,
       relocationTypes: [0, 3],
       symbolRelativeCount: 0,
-      linkBase: 0,
+      loadAddresses: [{ headerIndex: 0, virtualAddress: 0 }],
       prelinkBase: null,
     });
     assert.equal(ghidraMipsUnsupportedReason(target), null);
@@ -218,10 +219,11 @@ for (const little of [true, false]) {
 }
 
 it.each([3, 21])(
-  "selects the lowest nonzero load address among only the first 20 headers (%s headers)",
+  "keeps every load address and applies Ghidra's first-20-headers base rule only in the profile (%s headers)",
   async (count) => {
     const bytes = fixture(true);
     const base = 0x800000;
+    bytes.writeUInt32LE(0x70001007, 36); // Plain MIPS32 PIC: the standard shared lane.
     bytes.copy(bytes, 1024, 256, 288);
     bytes.writeUInt16LE(count, 44);
     bytes.writeUInt32LE(base, 60);
@@ -238,7 +240,15 @@ it.each([3, 21])(
     const target = await resolve(bytes);
     assert.equal(target.mips.sharedLoad?.status, "complete");
     if (target.mips.sharedLoad?.status === "complete")
-      assert.equal(target.mips.sharedLoad.linkBase, 0x400000);
+      assert.deepEqual(target.mips.sharedLoad.loadAddresses, [
+        { headerIndex: 0, virtualAddress: base },
+        { headerIndex: 2, virtualAddress: 0x400000 },
+        ...(count === 21
+          ? [{ headerIndex: 20, virtualAddress: 0x200000 }]
+          : []),
+      ]);
+    // The lower address at header index 20 is past Ghidra's cutoff.
+    assert.equal(ghidraMipsElfImageBase(target), "400000");
   },
 );
 
@@ -252,7 +262,7 @@ it("examines relocation records beyond a read chunk before deciding completeness
     relocationCount: count,
     relocationTypes: [0, 3],
     symbolRelativeCount: 1,
-    linkBase: 0,
+    loadAddresses: [{ headerIndex: 0, virtualAddress: 0 }],
     prelinkBase: null,
   });
   assert.match(ghidraMipsUnsupportedReason(target) ?? "", /mode tag/u);
@@ -376,7 +386,7 @@ it("retains unverified relocation type instead of claiming every examined record
     relocationCount: 2,
     relocationTypes: [0, 5],
     symbolRelativeCount: 0,
-    linkBase: 0,
+    loadAddresses: [{ headerIndex: 0, virtualAddress: 0 }],
     prelinkBase: null,
   });
   assert.match(

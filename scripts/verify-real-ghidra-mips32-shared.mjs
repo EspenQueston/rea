@@ -108,7 +108,8 @@ async function verifyFixture(byteOrder, softFloat) {
     independent.mips,
     "REA ELF/ABI interpretation disagrees with GNU readelf",
   );
-  assert.deepEqual(sharedLoad, {
+  const { loadAddresses, ...relocationFacts } = sharedLoad;
+  assert.deepEqual(relocationFacts, {
     status: "complete",
     relocationCount: independent.relocations.length,
     relocationTypes: [
@@ -117,10 +118,15 @@ async function verifyFixture(byteOrder, softFloat) {
     symbolRelativeCount: independent.relocations.filter(
       (item) => item.type === 3 && item.symbolIndex !== 0,
     ).length,
-    // The fixture has fewer than 20 program headers and no prelink trailer.
-    linkBase: Math.min(...independent.loads.map((load) => load.address)),
     prelinkBase: null,
   });
+  // Every PT_LOAD, in header order; the fixture has fewer than 20 headers.
+  assert.deepEqual(
+    loadAddresses.map((load) => load.virtualAddress),
+    independent.loads.map((load) => load.address),
+    "REA PT_LOAD facts disagree with GNU readelf",
+  );
+  assert.ok(loadAddresses.every((load) => load.headerIndex < 20));
   assert.equal(resolved.value.sha256, fixture.sha256);
   const label = `${byteOrder}${softFloat ? "-soft-float" : ""}`;
   const snapshotPath = join(workspace, `${label}.snapshot.json`);

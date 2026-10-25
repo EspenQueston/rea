@@ -371,15 +371,30 @@ export const ghidraMipsSharedLimitations = (
   ];
 };
 
+/** Ghidra's ELF image-base rule (`ElfHeader.getImageBase`): the lowest PT_LOAD
+ * address among the first 20 program headers, else 0. Importing there applies
+ * no image shift, so analysis addresses equal the image's link addresses. */
+const GHIDRA_IMAGE_BASE_HEADER_LIMIT = 20;
+
 /** Ghidra image base, as bare hex, that places a MIPS32 shared image at its link addresses. */
 export const ghidraMipsElfImageBase = (
   target: BinaryTarget,
-): string | undefined =>
-  isGhidraMipsStandardSharedTarget(target) &&
-  target.architecture === "mips" &&
-  target.mips.sharedLoad?.status === "complete"
-    ? target.mips.sharedLoad.linkBase.toString(16)
-    : undefined;
+): string | undefined => {
+  if (
+    !isGhidraMipsStandardSharedTarget(target) ||
+    target.architecture !== "mips" ||
+    target.mips.sharedLoad?.status !== "complete"
+  )
+    return undefined;
+  const counted = target.mips.sharedLoad.loadAddresses.filter(
+    (load) => load.headerIndex < GHIDRA_IMAGE_BASE_HEADER_LIMIT,
+  );
+  const base =
+    counted.length === 0
+      ? 0
+      : Math.min(...counted.map((load) => load.virtualAddress));
+  return base.toString(16);
+};
 
 /** Profile commitment for the image base the launcher passes to ElfLoader. */
 export const ghidraMipsElfImageBaseCommitment = (

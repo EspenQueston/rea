@@ -14,6 +14,7 @@ import { hopperLoaderArgsForTarget } from "../hopper/HopperAnalysisProfile.js";
 import { IdaProvider } from "../ida/IdaProvider.js";
 import { GhidraProvider } from "./GhidraProvider.js";
 import {
+  ghidraMipsElfImageBase,
   ghidraMipsProfileParameters,
   ghidraPinnedMipsLanguage,
 } from "./GhidraMipsProfile.js";
@@ -517,7 +518,7 @@ describe("MIPS16 shared-image profile", () => {
         relocationCount: 14,
         relocationTypes: [0, 3],
         symbolRelativeCount: 0,
-        linkBase: 0,
+        loadAddresses: [{ headerIndex: 0, virtualAddress: 0 }],
         prelinkBase: null,
       },
       ...change,
@@ -574,7 +575,7 @@ describe("MIPS16 shared-image profile", () => {
         relocationCount: 1,
         relocationTypes: [3],
         symbolRelativeCount: 1,
-        linkBase: 0,
+        loadAddresses: [{ headerIndex: 0, virtualAddress: 0 }],
         prelinkBase: null,
       },
     },
@@ -652,13 +653,44 @@ const library = (change: Partial<MipsElfMetadata> = {}) =>
       relocationCount: 314,
       relocationTypes: [0, 3, 38],
       symbolRelativeCount: 120,
-      linkBase: 0,
+      loadAddresses: [{ headerIndex: 0, virtualAddress: 0 }],
       prelinkBase: null,
     },
     ...change,
   });
 
 describe("MIPS32 shared-image link base", () => {
+  it.each([
+    [[{ headerIndex: 19, virtualAddress: 0x10000 }], "10000"],
+    [
+      [
+        { headerIndex: 3, virtualAddress: 0x30000 },
+        { headerIndex: 19, virtualAddress: 0x20000 },
+        { headerIndex: 20, virtualAddress: 0x10000 },
+      ],
+      "20000",
+    ],
+    [[{ headerIndex: 20, virtualAddress: 0x10000 }], "0"],
+    [[], "0"],
+  ])(
+    "applies Ghidra's first-20-program-headers rule to the recorded loads %j",
+    (loadAddresses, base) => {
+      expect(
+        ghidraMipsElfImageBase(
+          library({
+            sharedLoad: {
+              status: "complete",
+              relocationCount: 1,
+              relocationTypes: [3],
+              symbolRelativeCount: 0,
+              loadAddresses,
+              prelinkBase: null,
+            },
+          }),
+        ),
+      ).toBe(base);
+    },
+  );
   it("commits the ELF link base only for this lane and refuses a different one", async () => {
     const highBase = library({
       sharedLoad: {
@@ -666,7 +698,7 @@ describe("MIPS32 shared-image link base", () => {
         relocationCount: 2,
         relocationTypes: [0, 3],
         symbolRelativeCount: 1,
-        linkBase: 0x2aaa0000,
+        loadAddresses: [{ headerIndex: 0, virtualAddress: 0x2aaa0000 }],
         prelinkBase: null,
       },
     });
@@ -693,7 +725,7 @@ describe("MIPS32 shared-image link base", () => {
           relocationCount: 1,
           relocationTypes: [3],
           symbolRelativeCount: 0,
-          linkBase: 0,
+          loadAddresses: [{ headerIndex: 0, virtualAddress: 0 }],
           prelinkBase: null,
         },
       }),
@@ -747,7 +779,7 @@ describe("MIPS32 shared-image profile", () => {
           relocationCount: 2,
           relocationTypes: [0, 3],
           symbolRelativeCount: 1,
-          linkBase: 0,
+          loadAddresses: [{ headerIndex: 0, virtualAddress: 0 }],
           prelinkBase: null,
         },
       }),
@@ -769,7 +801,7 @@ describe("MIPS32 shared-image profile", () => {
           relocationCount: 1,
           relocationTypes: [3, 5],
           symbolRelativeCount: 0,
-          linkBase: 0,
+          loadAddresses: [{ headerIndex: 0, virtualAddress: 0 }],
           prelinkBase: null,
         },
       },
@@ -782,7 +814,7 @@ describe("MIPS32 shared-image profile", () => {
           relocationCount: 1,
           relocationTypes: [3],
           symbolRelativeCount: 0,
-          linkBase: 0,
+          loadAddresses: [{ headerIndex: 0, virtualAddress: 0 }],
           prelinkBase: 0x40000000,
         },
       },

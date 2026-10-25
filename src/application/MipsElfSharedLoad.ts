@@ -64,18 +64,14 @@ export const readMipsElfSharedLoad = async (
     return err("invalid MIPS ELF32 dynamic table size");
   if (dynamic.offset > fileSize - dynamic.size)
     return err("MIPS PT_DYNAMIC range extends beyond the file");
-  // Ghidra's ELF image base (ElfHeader.getImageBase): the lowest PT_LOAD
-  // address among the first 20 program headers, else 0. Importing at that
-  // base applies no image shift, so analysis addresses equal link addresses.
-  const linkBase =
-    loads
-      .filter((load) => load.index < 20)
-      .reduce<number | undefined>(
-        (lowest, load) => Math.min(lowest ?? load.address, load.address),
-        undefined,
-      ) ?? 0;
-  // Ghidra prefers an Android prelink trailer (base word, then "PRE") over
-  // PT_LOAD; Java trim() strips code points up to U+0020 from both ends.
+  // Source facts only: every PT_LOAD address with its program-header index.
+  // Providers apply their own image-base selection rules to these.
+  const loadAddresses = loads.map((load) => ({
+    headerIndex: load.index,
+    virtualAddress: load.address,
+  }));
+  // Android apriori prelink trailer: the prelinked base word, then the tag
+  // "PRE " (padding around the tag is tolerated).
   let prelinkBase: number | null = null;
   if (fileSize >= 8) {
     const trailer = await read(fileSize - 8, 8, "MIPS prelink trailer");
@@ -191,7 +187,7 @@ export const readMipsElfSharedLoad = async (
           relocationCount: 0,
           relocationTypes: [],
           symbolRelativeCount: 0,
-          linkBase,
+          loadAddresses,
           prelinkBase,
         })
       : err(reason);
@@ -243,7 +239,7 @@ export const readMipsElfSharedLoad = async (
     relocationCount: size / 8,
     relocationTypes: [...types].sort((left, right) => left - right),
     symbolRelativeCount,
-    linkBase,
+    loadAddresses,
     prelinkBase,
   });
 };
