@@ -292,7 +292,9 @@ export class ViteCacheIdentities {
     const seen = new Set<Vertex>();
     const pending: Vertex[] = [];
     let examined = 0;
-    const retain = (vertex: Vertex): void => {
+    const retain = (vertex: Vertex, includeAllocation = true): void => {
+      if (includeAllocation && vertex.fact?.allocation != null)
+        allocations.add(vertex.fact.allocation);
       if (!seen.has(vertex)) {
         seen.add(vertex);
         pending.push(vertex);
@@ -307,8 +309,6 @@ export class ViteCacheIdentities {
       if (examined++ % 1024 === 0) yield;
       const vertex = pending[index];
       if (vertex === undefined) continue;
-      if (vertex.fact?.allocation != null)
-        allocations.add(vertex.fact.allocation);
       for (const input of vertex.inputs) {
         if (examined++ % 1024 === 0) yield;
         // A selection whose resolved value is a known foreign constant (a
@@ -326,6 +326,8 @@ export class ViteCacheIdentities {
               !this.state.arrayIterationUnknown
               ? (input.source.fact?.allocation?.elementFamily ?? input.source)
               : input.source,
+            input.kind !== "copy-family" ||
+              input.source.fact?.allocation?.kind !== "cache",
           );
         if (
           input.kind === "default" &&
@@ -764,7 +766,7 @@ export class ViteCacheIdentities {
       }
       if (uncertain) {
         this.connect(result, { kind: "copy-family", source: table });
-        this.connect(elementFamily, { kind: "family", source: table });
+        this.connect(elementFamily, { kind: "copy-family", source: table });
       }
       const allocation: ViteCacheAllocation = {
         kind: "container",

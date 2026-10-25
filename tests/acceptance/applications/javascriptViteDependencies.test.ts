@@ -325,6 +325,57 @@ const allScenarios: readonly ViteScenario[] = [
     resolved: [],
     unknown: true,
   },
+  ...[
+    {
+      file: "returned-variable-index-string-log.js",
+      setup: "const index = 0;",
+      indexes: "[index]",
+      after: "",
+      kept: true,
+    },
+    {
+      file: "returned-spread-index-string-log.js",
+      setup: "const indexes = [0];",
+      indexes: "[...indexes]",
+      after: "",
+      kept: true,
+    },
+    {
+      file: "returned-variable-index-string-log-before-copy.js",
+      setup: "const index = 0;",
+      indexes: "[index]",
+      after: "Object.assign({}, __vite__mapDeps);",
+      kept: true,
+    },
+    {
+      file: "returned-variable-index-named-cache-log.js",
+      setup:
+        '__vite__mapDeps.f.owned = __vite__mapDeps.f; const index = "owned";',
+      indexes: "[index]",
+      after: "",
+      kept: false,
+    },
+    {
+      file: "returned-variable-index-written-cache-log.js",
+      setup: "__vite__mapDeps.f[1] = __vite__mapDeps.f; const index = 1;",
+      indexes: "[index]",
+      after: "",
+      kept: false,
+    },
+  ].map(({ file, setup, indexes, after, kept }): ViteScenario => {
+    const call = `__vite__mapDeps(${indexes})`;
+    return {
+      file,
+      callSources: [defaultCall, call],
+      callOccurrences: [0, 1, 2],
+      ...(kept ? { unknownCallOccurrences: [1] } : {}),
+      source:
+        mapDependencies('["./first.js"]', "[0]") +
+        `\n${setup} const paths = ${call}; for (const path of paths) console.log(path); ${after} ${defaultCall};`,
+      resolved: kept ? ["first.js", "first.js"] : [],
+      unknown: true,
+    };
+  }),
   {
     file: "returned-named-cache-property-helper-escape.js",
     callSources: [defaultCall, '__vite__mapDeps(["owned"])'],
