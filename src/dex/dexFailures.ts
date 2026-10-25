@@ -4,6 +4,7 @@ import {
   AnalysisCleanupLeaseGroup,
 } from "../artifacts/AnalysisCleanupLease.js";
 import { ArtifactReaderFailure } from "../artifacts/ArtifactReader.js";
+import { completedStableArtifact } from "../artifacts/readStableArtifact.js";
 import {
   ArtifactFileCancelled,
   ArtifactFileCleanupFailure,
@@ -18,6 +19,7 @@ import {
 import type { InspectDexDebugMetadataInput } from "../domain/dex/dexDebugMetadataReport.js";
 import { createEvidence, type Evidence } from "../domain/evidence.js";
 import { analysisErrorWithCleanupFailure } from "../domain/analysisErrorCleanup.js";
+import { fileSnapshotPartialObservationSchema } from "../domain/fileSnapshotObservation.js";
 import { ProviderCleanupError } from "../domain/providerCleanupError.js";
 import { AnalysisError } from "../domain/analysisErrorBase.js";
 import {
@@ -269,7 +271,7 @@ export const dexFileFailure = (
   if (cleanedUp) {
     const error = primary ?? dexCancelled(signal, cause, report);
     bindArtifactFileCleanup(cause, error);
-    return error;
+    return retainStableSnapshot(error, cause, input.path);
   }
   const cleanup = new ProviderCleanupError(
     DEX_PROVIDER_IDENTITY.id,
@@ -286,6 +288,29 @@ export const dexFileFailure = (
       ? cleanup
       : analysisErrorWithCleanupFailure(primary, cleanup, OPERATION);
   if (leases !== undefined) new AnalysisCleanupLeaseGroup(error, leases);
+  return retainStableSnapshot(error, cause, input.path);
+};
+
+/**
+ * A loose DEX whose stable read and hash completed before its close failed or
+ * was cancelled keeps that digest and size, as the other stable-read
+ * providers do.
+ */
+const retainStableSnapshot = (
+  error: AnalysisError,
+  cause: unknown,
+  path: string,
+): AnalysisError => {
+  const snapshot = completedStableArtifact(cause);
+  if (snapshot !== undefined)
+    error.retainPartialObservation(
+      fileSnapshotPartialObservationSchema.parse({
+        kind: "file-snapshot-hash",
+        path,
+        sha256: snapshot.sha256,
+        bytes: snapshot.bytes.length,
+      }),
+    );
   return error;
 };
 

@@ -95,10 +95,15 @@ describe.each(targets)("DEX %s lifecycle", (_name, make, extra, workHandle) => {
     expect(result.error.cleanupIncomplete).toBe(true);
     expect(result.error.cleanupResources).toContain(path);
     // A completed APK report survives its descriptor's failed close; a loose
-    // read whose descriptor failed to close is an execution failure.
+    // read whose descriptor failed to close is an execution failure that
+    // keeps the completed read's digest and size.
     if (_name === "loose .dex") {
       expect(result.error).toBeInstanceOf(ProviderAdapterError);
-      expect(result.error.partialObservation).toBeUndefined();
+      expect(result.error.partialObservation).toMatchObject({
+        kind: "file-snapshot-hash",
+        path,
+        bytes: debuggableDex().length,
+      });
     } else {
       expect(result.error).toBeInstanceOf(ProviderCleanupError);
       expect(result.error.partialObservation).toMatchObject({
