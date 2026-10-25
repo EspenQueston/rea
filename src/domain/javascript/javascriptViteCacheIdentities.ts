@@ -10,6 +10,7 @@ import {
   type JavaScriptSemanticAnalysisState,
   type JavaScriptSemanticBindingState,
 } from "./javascriptSemanticState.js";
+import { semanticArrayIndex } from "./javascriptSemanticPropertyPaths.js";
 import { semanticLoopValueSource } from "./javascriptSemanticIterationSources.js";
 import type { JavaScriptIntrinsicInvocation } from "./javascriptElectronMemberWrites.js";
 import {
@@ -320,7 +321,12 @@ export class ViteCacheIdentities {
             vertex.fact?.allocation?.kind === "foreign"
           )
         )
-          retain(input.source);
+          retain(
+            input.kind === "iteration-family" &&
+              !this.state.arrayIterationUnknown
+              ? (input.source.fact?.allocation?.elementFamily ?? input.source)
+              : input.source,
+          );
         if (
           input.kind === "default" &&
           !providedDefaultInput(input, input.source.fact)
@@ -350,9 +356,17 @@ export class ViteCacheIdentities {
       admitted.add(owner);
       const helper: ViteCacheAllocation = { kind: "helper", owner };
       const cache = this.vertex({});
-      cache.seed = { allocation: { kind: "cache", owner, node: table }, owner };
+      const elementFamily = this.newElementFamily();
+      cache.seed = {
+        allocation: { kind: "cache", owner, node: table, elementFamily },
+        owner,
+      };
       this.allocations.set(owner, cache);
       const tableVertex = this.normalize(table);
+      this.connect(elementFamily, {
+        kind: "iteration-family",
+        source: tableVertex,
+      });
       this.connect(cache, { kind: "family", source: tableVertex });
       const initialization = this.state.parentsByNode.get(table);
       if (initialization !== undefined)
@@ -512,7 +526,30 @@ export class ViteCacheIdentities {
     retained.push(write);
     this.retainedWrites.set(write, allocation);
     this.properties.writes.set(allocation, retained);
+    this.retainElementWrite(allocation, write);
     if (write.value !== undefined) this.normalize(write.value);
+  }
+
+  private newElementFamily(): Vertex {
+    const family = this.vertex({});
+    family.seed = UNKNOWN;
+    this.enqueue(family);
+    return family;
+  }
+
+  private retainElementWrite(
+    allocation: ViteCacheAllocation,
+    write: ViteCacheWrite,
+  ): void {
+    if (
+      allocation.elementFamily !== undefined &&
+      write.value !== undefined &&
+      (write.key === null || semanticArrayIndex(write.key) !== null)
+    )
+      this.connect(allocation.elementFamily, {
+        kind: "family",
+        source: this.normalize(write.value),
+      });
   }
 
   private *retainExposureSteps(
@@ -573,6 +610,7 @@ export class ViteCacheIdentities {
               continue;
             this.retainedWrites.set(write, next.allocation);
             yield* this.properties.retainLateWriteSteps(next.allocation, write);
+            this.retainElementWrite(next.allocation, write);
             const container = this.allocationVertices.get(next.allocation);
             if (container !== undefined && write.value !== undefined)
               this.connect(container, {
@@ -642,6 +680,21 @@ export class ViteCacheIdentities {
     if (input.kind === "prototype")
       return yield* this.prototypeSteps(source, input.read, vertex);
     if (input.kind === "alias") return source;
+    if (
+      input.kind === "iteration-family" &&
+      !this.state.arrayIterationUnknown
+    ) {
+      const family = source.allocation?.elementFamily;
+      if (family !== undefined) {
+        family.listeners.add(vertex);
+        if (family.fact === undefined) return undefined;
+        return {
+          allocation: vertex.seed?.allocation ?? null,
+          owner: family.fact.owner,
+          children: family.fact.owner,
+        };
+      }
+    }
     const owner =
       input.kind === "copy-family" && source.allocation?.kind === "cache"
         ? source.children
@@ -666,6 +719,7 @@ export class ViteCacheIdentities {
     let result = this.helperResults.get(input.call);
     if (result === undefined) {
       result = this.vertex({});
+      const elementFamily = this.newElementFamily();
       this.helperResults.set(input.call, result);
       const indexes = input.call.arguments[0];
       const selection =
@@ -701,18 +755,21 @@ export class ViteCacheIdentities {
           keys.push(key);
           if (key === undefined) continue;
           if (key === null) uncertain = true;
-          else
-            this.connect(result, {
-              kind: "family",
-              source: this.project(table, [key], input.call),
-            });
+          else {
+            const selected = this.project(table, [key], input.call);
+            this.connect(result, { kind: "family", source: selected });
+            this.connect(elementFamily, { kind: "family", source: selected });
+          }
         }
       }
-      if (uncertain)
+      if (uncertain) {
         this.connect(result, { kind: "copy-family", source: table });
+        this.connect(elementFamily, { kind: "family", source: table });
+      }
       const allocation: ViteCacheAllocation = {
         kind: "container",
         node: input.call,
+        elementFamily,
         helperResult: {
           table,
           keys,
@@ -890,12 +947,8 @@ export class ViteCacheIdentities {
         if (source === undefined) vertex.seed = UNKNOWN;
         else
           this.connect(vertex, {
-            kind: "alias",
-            source: this.project(
-              this.normalize(source.node),
-              source.projection,
-              expression,
-            ),
+            kind: "iteration-family",
+            source: this.normalize(source.node),
           });
         this.enqueue(vertex);
         continue;
@@ -1015,9 +1068,13 @@ export class ViteCacheIdentities {
     vertex: Vertex,
     expression: t.Node,
   ): Generator<void> {
+    const elementFamily = t.isArrayExpression(expression)
+      ? this.newElementFamily()
+      : undefined;
     const allocation: ViteCacheAllocation = {
       kind: "container",
       node: expression,
+      ...(elementFamily === undefined ? {} : { elementFamily }),
     };
     vertex.seed = { allocation, owner: undefined };
     this.allocationVertices.set(allocation, vertex);
@@ -1040,11 +1097,17 @@ export class ViteCacheIdentities {
         : t.isObjectProperty(child)
           ? child.value
           : child;
+      const normalized = this.normalize(value);
       this.connect(vertex, {
         kind:
           t.isSpreadElement(child) || shallowCopy ? "copy-family" : "family",
-        source: this.normalize(value),
+        source: normalized,
       });
+      if (elementFamily !== undefined)
+        this.connect(elementFamily, {
+          kind: t.isSpreadElement(child) ? "iteration-family" : "family",
+          source: normalized,
+        });
     }
     this.enqueue(vertex);
   }

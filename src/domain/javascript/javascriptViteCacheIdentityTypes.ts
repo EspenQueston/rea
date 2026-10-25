@@ -10,6 +10,8 @@ export interface ViteCacheAllocation {
   readonly kind: "helper" | "cache" | "container" | "foreign";
   readonly owner?: string;
   readonly node?: t.Node;
+  /** cache owners reachable through indexed array elements. */
+  readonly elementFamily?: Vertex;
   readonly copy?: {
     readonly source: Vertex;
     readonly initializer: Initializer;
@@ -52,7 +54,7 @@ export type Input =
       readonly call: t.CallExpression | t.OptionalCallExpression;
     }
   | {
-      readonly kind: "alias" | "family" | "copy-family";
+      readonly kind: "alias" | "family" | "copy-family" | "iteration-family";
       readonly source: Vertex;
     }
   | {

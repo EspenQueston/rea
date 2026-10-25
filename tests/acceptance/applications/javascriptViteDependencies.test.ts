@@ -157,6 +157,15 @@ const initializeCache = "const initialize = __vite__mapDeps; initialize([]); ";
 
 const allScenarios: readonly ViteScenario[] = [
   {
+    file: "for-of-cache-object-value-escape.js",
+    callOccurrences: [0, 1],
+    source:
+      mapDependencies('["./first.js", m]', "[0]") +
+      "\nfor (const value of __vite__mapDeps.f) { opaque(value); } __vite__mapDeps([0]);",
+    resolved: [],
+    unknown: true,
+  },
+  {
     file: "escaped.js",
     callSource: "__vite__mapDeps([0, 1, 2])",
     source: mapDependencies(
@@ -1926,6 +1935,29 @@ const allScenarios: readonly ViteScenario[] = [
       file: "retained-copy-child.js",
       mutation:
         '__vite__mapDeps([0]); const copy = {...__vite__mapDeps}; const retained = copy.f; copy.f = []; retained[0] = "./last.js";',
+    },
+    {
+      file: "for-of-cache-string-log.js",
+      mutation:
+        "__vite__mapDeps([0]); for (const path of __vite__mapDeps.f) { console.log(path); }",
+      kept: true,
+    },
+    {
+      file: "for-of-cache-string-log-with-metadata.js",
+      mutation:
+        "__vite__mapDeps([0]); __vite__mapDeps.f.extra = __vite__mapDeps.f; for (const path of __vite__mapDeps.f) { console.log(path); }",
+      kept: true,
+    },
+    {
+      file: "for-of-cache-string-log-before-copy.js",
+      mutation:
+        "__vite__mapDeps([0]); for (const path of __vite__mapDeps.f) { console.log(path); } Object.assign({}, __vite__mapDeps);",
+      kept: true,
+    },
+    {
+      file: "for-of-indexed-cache-binding-write.js",
+      mutation:
+        '__vite__mapDeps([0]); const items = []; items[0] = __vite__mapDeps.f; for (const cache of items) { cache[0] = "./last.js"; }',
     },
     {
       file: "for-of-cache-binding-write.js",
