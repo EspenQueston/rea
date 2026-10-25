@@ -8,6 +8,7 @@ import {
   resolveNativePlistSelection,
   unreadablePlist,
   type NativePlistSelection,
+  resolveBundleResourcePlistSelection,
 } from "./NativePlistSource.js";
 import { bindArtifactFileCleanup } from "../artifacts/ArtifactFileOperation.js";
 import { snapshotEnvironment } from "../process/snapshotEnvironment.js";
@@ -59,6 +60,7 @@ import {
   AnalysisInputError,
   AnalysisOutputError,
   AnalysisUnsupportedTargetError,
+  type AnalysisResourceConstraintError,
 } from "../domain/analysisErrorCore.js";
 import {
   DEFAULT_NATIVE_COMMAND_TIMEOUT_MS,
@@ -113,10 +115,13 @@ import { parseDemangledSymbols } from "./parsers/demangle.js";
 import { parseLipoCapture } from "./parsers/lipo.js";
 import {
   readPlistJson,
+  readPlistJsonSource,
   parsePlistBinary,
   parsePlistXml,
+  parsePlistXmlSource,
   type ParsedPlist,
 } from "./parsers/plist.js";
+import { XmlPlistTextDecodeError } from "../domain/propertyListXmlText.js";
 import {
   architectureLocations,
   inspectNativeMacho,
@@ -131,7 +136,6 @@ import {
 } from "./NativeUiHelperRuntime.js";
 import { NativeUiInterruptionControl } from "./NativeUiInterruptionControl.js";
 import type { ResolvedAppBundleResourceRoot } from "../application/AppBundleExecutable.js";
-import { resolveBundleResourcePlistSelection } from "./NativePlistSource.js";
 import { UnsupportedBinaryPlistUidError } from "../artifacts/apple/PlistScalars.js";
 
 type SignatureRuntimeRootFactory = () => Promise<
@@ -206,7 +210,7 @@ export class NativeMacOSProvider implements AnalysisProvider {
 
 class NativeMacOSClient implements AnalysisClient {
   readonly #pendingNativeUiRuntimes = new Set<NativeUiHelperRuntime>();
-  readonly #pendingCommands = new Set<Promise<unknown>>();
+  readonly #pendingCommandOperations = new Set<Promise<unknown>>();
   readonly #signatureResources = new ArtifactResourceScope();
   readonly #plistResources = new ArtifactResourceScope();
   readonly #callResources = new ArtifactResourceScope();
@@ -347,12 +351,12 @@ class NativeMacOSClient implements AnalysisClient {
     ) {
       return this.#observeNativeUi(operation, parameters, options?.signal);
     }
+    const pending = Promise.resolve().then(() =>
+      this.#dispatchCommand(operation, parameters, options?.signal),
+    );
+    this.#pendingCommandOperations.add(pending);
     try {
-      const observation = await this.#dispatch(
-        operation,
-        parameters,
-        options?.signal,
-      );
+      const observation = await pending;
       return observation.ok
         ? ok(
             createAnalysisExecution(observation.value.result, IDENTITY, {
@@ -363,12 +367,14 @@ class NativeMacOSClient implements AnalysisClient {
         : err(resolvedAnalysisError(observation.error));
     } catch (cause: unknown) {
       return err(nativeOutputFailure(operation, cause));
+    } finally {
+      this.#pendingCommandOperations.delete(pending);
     }
   }
 
   async close(): Promise<Result<null, AnalysisError>> {
     this.#closed = true;
-    await Promise.allSettled(this.#pendingCommands);
+    await Promise.allSettled(this.#pendingCommandOperations);
     const uiCleanupFailures = await this.#serializeNativeUi(() =>
       this.#retryNativeUiCleanup(),
     );
@@ -564,33 +570,6 @@ class NativeMacOSClient implements AnalysisClient {
     partialObservation?: NativeUiObservationResult,
   ): ProviderCleanupError {
     return new NativeUiCleanupError(failures, operation, partialObservation);
-  }
-
-  #dispatch(
-    operation: NativeToolName,
-    parameters: Readonly<Record<string, JsonValue>>,
-    signal?: AbortSignal,
-  ): Promise<Result<NativeObservation, AnalysisError>> {
-    switch (operation) {
-      case "observe_native_ui":
-      case "capture_native_ui_scenario":
-      case "observe_native_calls":
-        return Promise.resolve(
-          err(
-            new AnalysisCapabilityUnavailableError(
-              IDENTITY.id,
-              operation,
-              "UI observation uses its explicit authority boundary",
-            ),
-          ),
-        );
-      case "inspect_macho":
-      case "inspect_signature":
-      case "inspect_plist":
-      case "list_architectures":
-      case "demangle_swift":
-        return this.#dispatchCommand(operation, parameters, signal);
-    }
   }
 
   #dispatchCommand(
@@ -1011,7 +990,22 @@ class NativeMacOSClient implements AnalysisClient {
             classified.value,
           );
           if (binary !== undefined) return binary;
-          return await this.#inspectConvertedPlist(fileInput, classified.value);
+          const format = await plistSourceFormat(
+            classified.value.stdout,
+            fileInput,
+          );
+          if (!format.ok) return format;
+          const source = await this.#inspectTextPlist(
+            fileInput,
+            classified.value,
+            format.value,
+          );
+          if (source !== undefined) return source;
+          return await this.#inspectConvertedPlist(
+            fileInput,
+            classified.value,
+            format.value,
+          );
         } catch (cause: unknown) {
           // Producer failures stay opaque; only scope admission failures reach the file mapper.
           return err(nativeOutputFailure("inspect_plist", cause));
@@ -1063,9 +1057,81 @@ class NativeMacOSClient implements AnalysisClient {
     );
   }
 
+  async #inspectTextPlist(
+    fileInput: NativePlistReadContext,
+    classified: NativeCommandCapture,
+    format: z.infer<typeof inspectPlistSchema>["format"],
+  ): Promise<Result<NativeObservation, AnalysisError> | undefined> {
+    const source = await readNativePlistBytes(fileInput);
+    if (!source.ok) return source;
+    let parsed: ReturnType<typeof parsePlistXmlSource>;
+    const provenance = [
+      invocation(classified, fileInput.selection.path, "$PLIST"),
+    ];
+    if (format === "xml") {
+      parsed = parsePlistXmlSource(source.value);
+      if (parsed.ok) {
+        const validated = await this.#run(
+          "inspect_plist",
+          "plutil",
+          ["-lint", "--", fileInput.selection.path],
+          {
+            signal: fileInput.signal,
+            acceptNonZero: true,
+            timeoutMs: fileInput.timeoutMs,
+          },
+        );
+        if (!validated.ok) return validated;
+        if (validated.value.exitCode !== 0)
+          return err(
+            nativePlistDecodeFailure(fileInput.selection, validated.value),
+          );
+        provenance.push(
+          invocation(validated.value, fileInput.selection.path, "$PLIST"),
+        );
+      }
+      if (
+        !parsed.ok &&
+        parsed.error instanceof XmlPlistTextDecodeError &&
+        parsed.error.reason === "unsupported-encoding"
+      )
+        return undefined;
+    } else {
+      const json = readPlistJsonSource(source.value);
+      if (
+        json === undefined ||
+        json.rootKind === "invalid" ||
+        (json.rootKind !== "container" && format !== "json") ||
+        json.needsNumberTypes ||
+        json.nonFiniteNumberObserved
+      )
+        return undefined;
+      parsed = json.project();
+    }
+    if (!parsed.ok)
+      return parsed.error instanceof AnalysisOutputError ||
+        parsed.error instanceof XmlPlistTextDecodeError
+        ? err(
+            unreadablePlist(fileInput.selection, parsed.error.message, {
+              cause: parsed.error,
+            }),
+          )
+        : err(parsed.error);
+    return ok(
+      nativePlistObservation({
+        parsed: parsed.value,
+        format,
+        path: fileInput.selection.path,
+        resourceRoot: this.bundleResourceRoot,
+        provenance,
+      }),
+    );
+  }
+
   async #inspectConvertedPlist(
     fileInput: NativePlistReadContext,
     classified: NativeCommandCapture,
+    format: z.infer<typeof inspectPlistSchema>["format"],
   ): Promise<Result<NativeObservation, AnalysisError>> {
     const { path } = fileInput.selection;
     const { signal, timeoutMs } = fileInput;
@@ -1084,7 +1150,10 @@ class NativeMacOSClient implements AnalysisClient {
       ? readPlistJson(json.value.stdout)
       : undefined;
     let xml: NativeCommandCapture | undefined;
-    let parsed: Result<ParsedPlist, AnalysisOutputError>;
+    let parsed: Result<
+      ParsedPlist,
+      AnalysisOutputError | AnalysisResourceConstraintError
+    >;
     if (jsonAttempt === undefined || jsonAttempt.needsNumberTypes) {
       const converted = await this.#run(
         "inspect_plist",
@@ -1095,24 +1164,7 @@ class NativeMacOSClient implements AnalysisClient {
       if (!converted.ok) return converted;
       xml = converted.value;
       if (xml.exitCode !== 0) {
-        const capture = failureCapture(xml, false);
-        return err(
-          unreadablePlist(
-            fileInput.selection,
-            `plutil could not decode it as a property list (${plutilDiagnostic(capture, path)})`,
-            {
-              capturedOutput: {
-                stdout: capture.stdout,
-                stderr: capture.stderr,
-                truncated: capture.truncated,
-                stdout_bytes: capture.stdoutBytes,
-                stderr_bytes: capture.stderrBytes,
-                exit_code: capture.exitCode,
-                signal: capture.signal,
-              },
-            },
-          ),
-        );
+        return err(nativePlistDecodeFailure(fileInput.selection, xml));
       }
       parsed =
         jsonAttempt === undefined
@@ -1127,24 +1179,10 @@ class NativeMacOSClient implements AnalysisClient {
       json.value,
       ...(xml === undefined ? [] : [xml]),
     ].map((item) => invocation(item, path, "$PLIST"));
-    const converted = xml ?? json.value;
-    const format = await plistSourceFormat(classified.stdout, {
-      ...fileInput,
-      capturedOutput: {
-        stdout: converted.stdout,
-        stderr: converted.stderr,
-        truncated: false,
-        stdout_bytes: converted.stdoutBytes,
-        stderr_bytes: converted.stderrBytes,
-        exit_code: converted.exitCode,
-        signal: converted.signal,
-      },
-    });
-    if (!format.ok) return format;
     return ok(
       nativePlistObservation({
         parsed: parsed.value,
-        format: format.value,
+        format,
         path,
         resourceRoot: this.bundleResourceRoot,
         provenance,
@@ -1190,27 +1228,13 @@ class NativeMacOSClient implements AnalysisClient {
         | undefined;
     },
   ): Promise<Result<NativeCommandCapture, AnalysisError>> {
-    if (this.#closed)
-      return err(
-        new AnalysisCapabilityUnavailableError(
-          IDENTITY.id,
-          operation,
-          "Native provider client is closed",
-        ),
-      );
-    const command = this.runner.run(tool, arguments_, {
+    // Commands borrow their enclosing operation's admission through finalization.
+    const captured = await this.runner.run(tool, arguments_, {
       ...(options.signal === undefined ? {} : { signal: options.signal }),
       timeoutMs: options.timeoutMs,
       acceptNonZero:
         options.acceptNonZero ?? options.acceptNonZeroIf !== undefined,
     });
-    this.#pendingCommands.add(command);
-    let captured: Awaited<typeof command>;
-    try {
-      captured = await command;
-    } finally {
-      this.#pendingCommands.delete(command);
-    }
     if (captured.ok) {
       const hasFailedExit =
         captured.value.exitCode !== 0 || captured.value.signal !== null;
@@ -1501,7 +1525,29 @@ const parseEntitlements = (
   };
 };
 
-/** Failed plutil conversions can report on either stream; preserve both. */
+/** Native admission failures preserve the selected/default source and physical command output. */
+const nativePlistDecodeFailure = (
+  selection: NativePlistSelection,
+  command: NativeCommandCapture,
+): AnalysisError => {
+  const capture = failureCapture(command, false);
+  return unreadablePlist(
+    selection,
+    `plutil could not decode it as a property list (${plutilDiagnostic(capture, selection.path)})`,
+    {
+      capturedOutput: {
+        stdout: capture.stdout,
+        stderr: capture.stderr,
+        truncated: capture.truncated,
+        stdout_bytes: capture.stdoutBytes,
+        stderr_bytes: capture.stderrBytes,
+        exit_code: capture.exitCode,
+        signal: capture.signal,
+      },
+    },
+  );
+};
+
 const plutilDiagnostic = (
   capture: Pick<NativeCommandCapture, "stdout" | "stderr">,
   path: string,

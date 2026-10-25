@@ -2,6 +2,10 @@
 // Shared build inputs are classified once in plan.mjs rather than repeated in
 // every workflow.
 export const SCOPES = {
+  readiness: [
+    "tests/conformance/readiness/**",
+    "scripts/verify-reconstruction-readiness.mjs",
+  ],
   reverse_tools: [
     ".github/workflows/mutation.yml",
     "src/application/reverse/**",
@@ -140,7 +144,11 @@ export const SCOPES = {
     "scripts/windows-capabilities.mjs",
     "scripts/prepack.mjs",
     "scripts/prepare.mjs",
+    "scripts/lib/release-proposal.mjs",
+    "patches/release-please+17.3.0.patch",
+    "tests/boundary/filesystem/releaseProposal.test.ts",
     "scripts/rea.mjs",
+    "scripts/lib/cli-process-environment.mjs",
     "install.sh",
     "src/config/**",
     "src/application/Setup*.ts",
@@ -373,6 +381,7 @@ export const SCOPES = {
     "src/contracts/toolContracts.ts",
     "src/contracts/toolEffects.ts",
     "scripts/rea.mjs",
+    "scripts/lib/cli-process-environment.mjs",
     "src/process/**",
     "src/artifacts/SafeOutputTree.ts",
     "scripts/verify/javascript/recovery.mjs",

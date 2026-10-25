@@ -29,6 +29,7 @@ import {
   environmentManifestCaptureFixture,
   environmentStateCaptureFixture,
 } from "../../fixtures/analysisView.js";
+import { binaryLayoutFixture } from "../../fixtures/binaryDiagnostics/layout.js";
 import {
   createEvidence,
   parseEvidence,
@@ -739,6 +740,79 @@ cliTest(
 );
 
 cliTest(
+  "reports empty retained layout collections without invented index bounds",
+  async ({ cli }) => {
+    const root = await createTestTempDirectory("rea-empty-layout-view-cli-");
+    const empty = analysisViewLayoutEvidence(binaryLayoutFixture());
+    for (const collection of ["sections", "symbols"] as const) {
+      const result = await cli.run({
+        arguments: [
+          "inspect-analysis-view",
+          JSON.stringify({
+            source: { kind: "inline", evidence: empty },
+            view: { kind: "item", collection, selector: { index: 0 } },
+          }),
+          "--json",
+        ],
+        environment: {
+          HOME: root,
+          XDG_CONFIG_HOME: root,
+          XDG_CACHE_HOME: root,
+        },
+      });
+      expect(result.exitCode).toBe(1);
+      expect(result.json).toMatchObject({
+        code: "invalid_request",
+        details: {
+          issues: [
+            {
+              path: ["view", "selector", "index"],
+              reason: "invalid_value",
+              message: expect.stringContaining(`No retained ${collection}`),
+            },
+          ],
+        },
+      });
+      expect(result.json).not.toHaveProperty("details.issues.0.minimum");
+      expect(result.json).not.toHaveProperty("details.issues.0.maximum");
+    }
+    const populated = await cli.run({
+      arguments: [
+        "inspect-analysis-view",
+        JSON.stringify({
+          source: { kind: "inline", evidence: analysisViewLayoutEvidence() },
+          view: {
+            kind: "item",
+            collection: "sections",
+            selector: { index: 3 },
+          },
+        }),
+        "--json",
+      ],
+      environment: {
+        HOME: root,
+        XDG_CONFIG_HOME: root,
+        XDG_CACHE_HOME: root,
+      },
+    });
+    expect(populated.exitCode).toBe(1);
+    expect(populated.json).toMatchObject({
+      code: "invalid_request",
+      details: {
+        issues: [
+          {
+            path: ["view", "selector", "index"],
+            reason: "out_of_range",
+            minimum: 0,
+            maximum: 2,
+          },
+        ],
+      },
+    });
+  },
+);
+
+cliTest(
   "projects native function pseudocode without requiring Ghidra",
   async ({ cli }) => {
     const root = await createTestTempDirectory("rea-native-view-cli-");
@@ -1097,6 +1171,80 @@ cliTest(
     });
     for (const value of ["probe folder", "probe@example.test"])
       expect(result.stdout).toContain(value);
+  },
+);
+
+cliTest.for([
+  {
+    spelling: "minute-only offset timestamps",
+    starts: ["2026-10-20T09:00Z", "2026-10-20T09:02Z", "2026-10-20T09:01Z"],
+  },
+  {
+    spelling: "ten-digit fractional timestamps",
+    starts: [
+      "2026-10-20T09:00:00.0000000001Z",
+      "2026-10-20T09:00:00.0000000003Z",
+      "2026-10-20T09:00:00.0000000002Z",
+    ],
+  },
+])(
+  "keeps the pre-write environment state through the compiled CLI for $spelling",
+  async ({ starts }, { cli }) => {
+    const root = await createTestTempDirectory("rea-state-chronology-cli-");
+    const path = join(root, "view.json");
+    const entries = starts.map((startedDateTime, ordinal) => ({
+      startedDateTime,
+      time: 0,
+      request: {
+        method: ordinal === 2 ? "PATCH" : "GET",
+        url: "http://app.example/api/settings",
+        ...(ordinal === 2
+          ? {
+              postData: {
+                mimeType: "application/json",
+                text: '{"theme":"dark"}',
+              },
+            }
+          : {}),
+      },
+      response: {
+        status: 200,
+        content: {
+          mimeType: "application/json",
+          text: ordinal === 0 ? '{"theme":"light"}' : '{"theme":"dark"}',
+        },
+      },
+    }));
+    const parent = analysisViewCaptureEvidence(
+      environmentManifestCaptureFixture(entries),
+    );
+    expect(parent.normalized_result).toMatchObject({
+      records: entries.map((reported, ordinal) => ({ ordinal, reported })),
+    });
+    const request = JSON.stringify({
+      source: { kind: "inline", evidence: parent },
+      view: { kind: "environment-state" },
+    });
+    await writeFile(path, request);
+    const result = await cli.run({
+      arguments: ["inspect-analysis-view", path, "--json"],
+    });
+    expect(result.exitCode, result.stdout).toBe(0);
+    const evidence = parseEvidence(result.json);
+    expect(evidence.evidence_links).toEqual([parent.evidence_id]);
+    expect(evidence.normalized_result).toMatchObject({
+      kind: "environment-state",
+      timeline: "recorded-start-time",
+      documents: [
+        {
+          tool: "get_settings",
+          path: "/api/settings",
+          value: { theme: "light" },
+          record_ordinal: 0,
+        },
+      ],
+    });
+    expect(await readFile(path, "utf8")).toBe(request);
   },
 );
 

@@ -19,16 +19,20 @@ import type { WebNetworkCaptureRecord } from "../webNetworkCapture.js";
 import { analysisViewResultInputError } from "./analysisViewParent.js";
 import type { AnalysisViewParent } from "./analysisView.js";
 import type { WebNetworkProjectionAccumulator } from "./WebNetworkProjectionAccumulator.js";
-import { textBytes } from "./webNetworkRouteTemplates.js";
+import { ENTRY_BYTES, textBytes } from "./webNetworkRouteTemplates.js";
 
 type RequestEvent = Extract<BrowserScenarioEvent, { kind: "request" }>;
 type ContentEvent = Extract<BrowserScenarioEvent, { kind: "network-content" }>;
 type CapturedBody = Extract<BrowserNetworkBody, { state: "captured" }>;
 
+/** Response-byte retention, independent of whether the transaction has a usable request line. */
+export type ScenarioResponseBodyRetention = "absent" | "retained" | "redacted";
+
 /** A scenario capture's network transactions in the record shape HAR captures project from. */
 export interface ScenarioCaptureRecords {
   readonly records: readonly WebNetworkCaptureRecord[];
   readonly totalRecords: number;
+  readonly responseBodies: ReadonlyMap<number, ScenarioResponseBodyRetention>;
   readonly limitations: readonly string[];
 }
 
@@ -77,7 +81,10 @@ const utf8Text = (body: CapturedBody): string | undefined => {
   }
 };
 
-const mediaType = (content: ContentEvent | undefined): string | undefined =>
+/** A content event's media type: its captured body's, else its retained Content-Type value. */
+export const scenarioContentMediaType = (
+  content: ContentEvent | undefined,
+): string | undefined =>
   captured(content)?.media_type ??
   headerValue(content?.headers, "content-type");
 
@@ -89,9 +96,10 @@ const reportedRequest = (
 ): { readonly [key: string]: JsonValue } => {
   const body = purpose === "manifest" ? captured(content) : undefined;
   const text = body === undefined ? undefined : utf8Text(body);
-  const mimeType = mediaType(content);
+  const mimeType = scenarioContentMediaType(content);
   return {
     method: request.method,
+    bodySize: body !== undefined && !body.redacted ? body.bytes : -1,
     url: request.url.redacted ? null : request.url.url,
     ...(text === undefined || mimeType === undefined
       ? {}
@@ -99,17 +107,54 @@ const reportedRequest = (
   };
 };
 
+interface BrowserTiming {
+  readonly started_at?: string | undefined;
+  readonly elapsed_ms?: number | undefined;
+}
+
+/** Each transaction's browser-reported start and duration, from its single finished or failed event. */
+const timingByTransaction = (
+  events: RetainedBrowserScenarioCapture["events"]["items"],
+): ReadonlyMap<string, BrowserTiming> => {
+  const timing = new Map<string, BrowserTiming>();
+  for (const event of events) {
+    if (event.kind !== "request-finished" && event.kind !== "request-failed")
+      continue;
+    // A transaction ending twice has no single start or duration.
+    timing.set(
+      event.transaction_id,
+      timing.has(event.transaction_id)
+        ? {}
+        : { started_at: event.started_at, elapsed_ms: event.elapsed_ms },
+    );
+  }
+  return timing;
+};
+
+/**
+ * HAR timing for a record: the browser's start when it reported one, else when the request was observed, and the
+ * browser's duration (0 when it reported none).
+ */
+const recordTiming = (
+  request: RequestEvent,
+  timing: ReadonlyMap<string, BrowserTiming>,
+): { readonly startedDateTime: string; readonly time: number } | undefined => {
+  const browser = timing.get(request.transaction_id);
+  const started = browser?.started_at ?? request.observed_at;
+  return started === undefined
+    ? undefined
+    : { startedDateTime: started, time: browser?.elapsed_ms ?? 0 };
+};
+
 const record = (
   ordinal: number,
   observed: { readonly event: RequestEvent; readonly item: number },
   index: BrowserScenarioTransactionIndex,
   purpose: "manifest" | "replay",
+  timing: ReturnType<typeof recordTiming>,
 ): {
   readonly record: WebNetworkCaptureRecord;
-  /** The record keeps a usable request line, so the manifest may cite it. */
-  readonly represented: boolean;
-  readonly body: boolean;
-  readonly redacted: boolean;
+  readonly responseBody: ScenarioResponseBodyRetention;
 } => {
   const { item, event: request } = observed;
   const location = {
@@ -135,19 +180,18 @@ const record = (
   )
     return {
       record: { ordinal, location, reported: {}, ...empty },
-      represented: false,
-      body: false,
-      redacted: false,
+      responseBody: "absent",
     };
   const requestContent = onlyContent(index, request.sequence);
   const responseContent = onlyContent(index, response?.sequence);
   const body = retainedBody(responseContent);
-  const mimeType = mediaType(responseContent) ?? "";
+  const mimeType = scenarioContentMediaType(responseContent) ?? "";
   return {
     record: {
       ordinal,
       location,
       reported: {
+        ...timing,
         request: reportedRequest(request, requestContent, purpose),
         ...(response === undefined
           ? {}
@@ -176,9 +220,8 @@ const record = (
               },
             ],
     },
-    represented: !request.url.redacted,
-    body: body !== undefined,
-    redacted: body?.redacted === true,
+    responseBody:
+      body === undefined ? "absent" : body.redacted ? "redacted" : "retained",
   };
 };
 
@@ -188,37 +231,39 @@ export const scenarioCaptureRecords = (
   purpose: "manifest" | "replay",
 ): ScenarioCaptureRecords => {
   const index = indexBrowserScenarioTransactions(capture.events.items);
+  const timings = timingByTransaction(capture.events.items);
   const records: WebNetworkCaptureRecord[] = [];
-  let withoutBody = 0;
-  let representedCount = 0;
-  let redactedBodies = 0;
+  const responseBodies = new Map<number, ScenarioResponseBodyRetention>();
+  let timed = false;
   for (const [item, event] of capture.events.items.entries()) {
     if (event.kind !== "request") continue;
-    const projected = record(records.length, { event, item }, index, purpose);
+    const timing = recordTiming(event, timings);
+    timed ||= timing !== undefined;
+    const projected = record(
+      records.length,
+      { event, item },
+      index,
+      purpose,
+      timing,
+    );
     records.push(projected.record);
-    if (!projected.represented) continue;
-    representedCount += 1;
-    if (!projected.body) withoutBody += 1;
-    if (projected.redacted) redactedBodies += 1;
+    if (purpose === "manifest")
+      responseBodies.set(projected.record.ordinal, projected.responseBody);
   }
   return {
     records,
     totalRecords: records.length,
+    responseBodies,
     limitations: [
       "Scenario records are the capture's network transactions in request order; each record ordinal is the transaction's zero-based position.",
+      ...(timed
+        ? [
+            "Scenario record start times are the browser's own, from when the request ended, or when the provider observed the request where the browser reported none; durations are the browser's own, or 0 where it reported none.",
+          ]
+        : []),
       ...(capture.events.dropped > 0
         ? [
             `The scenario capture omitted ${String(capture.events.dropped)} events; the manifest covers only retained transactions.`,
-          ]
-        : []),
-      ...(withoutBody > 0
-        ? [
-            `${String(withoutBody)} of ${String(representedCount)} scenario transactions with a usable request line retained no response body; tools citing them replay only the recorded status and content type, either of which may be absent.`,
-          ]
-        : []),
-      ...(redactedBodies > 0
-        ? [
-            `${String(redactedBodies)} of ${String(representedCount)} scenario transactions with a usable request line retained a response body with declared secret values replaced by redaction markers; tools citing them replay the redacted bytes.`,
           ]
         : []),
     ],
@@ -234,14 +279,17 @@ const member = (value: unknown, key: string): unknown =>
 /**
  * Bytes the manifest derives from a borrowed scenario: validation decodes and re-encodes one body at
  * a time (two bytes per base64 character), and projection keeps the decoded text of every request
- * body. Response bodies stay borrowed, as HAR response text does.
+ * body. Response bodies stay borrowed, as HAR response text does; retention metadata is keyed
+ * by each request ordinal.
  */
 const derivedTextBytes = (value: unknown): number => {
   const items = member(member(value, "events"), "items");
   let largestBody = 0;
   let requestText = 0;
+  let responseBodyEntries = 0;
   // Each event is read on its own, so a body without content leaves the others counted.
   for (const event of Array.isArray(items) ? items : []) {
+    if (member(event, "kind") === "request") responseBodyEntries += 1;
     const content = member(member(event, "body"), "content");
     if (
       member(event, "kind") !== "network-content" ||
@@ -252,7 +300,7 @@ const derivedTextBytes = (value: unknown): number => {
     if (member(event, "phase") === "request")
       requestText += textBytes(Math.ceil((content.length * 3) / 4));
   }
-  return 64 + largestBody * 2 + requestText;
+  return 64 + largestBody * 2 + requestText + responseBodyEntries * ENTRY_BYTES;
 };
 
 /** Admit a capture_browser_scenario parent whose network content identifies response media types; state also needs bodies. */

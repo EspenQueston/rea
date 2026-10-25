@@ -14,7 +14,6 @@ import {
 } from "../domain/binaryTargetTypes.js";
 import {
   AnalysisCancelledError,
-  AnalysisInputError,
   AnalysisArtifactChangedError,
   AnalysisAccessDeniedError,
   AnalysisCapabilityUnavailableError,
@@ -365,8 +364,7 @@ export const inspectAppleDispatchMetadata = async (
     target.path,
     resources,
     signal,
-    async (handle) => {
-      const before = await handle.stat();
+    async ({ handle, initial: before }) => {
       if (before.size > maximumBytes)
         throw inputBudgetExceeded(admission, before.size);
       if (signal?.aborted) throw cancelled();
@@ -473,9 +471,9 @@ const appleDispatchMetadataPrimaryFailure = (
         cause,
       });
     if (cause instanceof ArtifactReaderFailure && cause.reason === "path")
-      return new AnalysisInputError(OPERATION, { cause }, [
-        { path: ["path"], reason: "invalid_value", message: cause.message },
-      ]);
+      return new AnalysisArtifactChangedError(OPERATION, path, cause.message, {
+        cause,
+      });
   }
   const readCause =
     origin === "owned-or-classified" &&
@@ -491,14 +489,15 @@ const appleDispatchMetadataPrimaryFailure = (
     return new AnalysisAccessDeniedError(OPERATION, path, readCause.code, {
       cause,
     });
+  // This path already belongs to the bound target; loss of readability is a
+  // change to that artifact, rather than a new caller input-selection error.
   if (isSelectedRegularFileError(readCause))
-    return new AnalysisInputError(OPERATION, { cause }, [
-      {
-        path: ["path"],
-        reason: "invalid_value",
-        message: `Selected metadata target could not be read (${String(readCause.code)}): ${path}`,
-      },
-    ]);
+    return new AnalysisArtifactChangedError(
+      OPERATION,
+      path,
+      `Bound metadata target could not be read (${readCause.code}): ${path}`,
+      { cause },
+    );
   return new ProviderAdapterError(IDENTITY.id, OPERATION, {
     cause,
     diagnostics: {

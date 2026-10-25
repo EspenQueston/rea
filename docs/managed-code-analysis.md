@@ -365,8 +365,9 @@ admitted digest, inspection and comparison report retryable `artifact_changed`;
 any completed hash retains the observed digest and byte count. Retry against a
 stable source. This differs from corrupted retained Evidence, which remains an
 Evidence-integrity failure. Malformed selected PE input has the same input-format
-classification in inspection and comparison, and a failed right-side comparison
-retains the completed left observation.
+classification in inspection and comparison. Its issue identifies the selected
+filename and argument: `path` for inspection, or `leftPath` / `rightPath` for CLI
+comparison. A failed right-side comparison retains the completed left observation.
 
 ## Member comparison
 
@@ -543,7 +544,11 @@ establish which library the runtime loaded.
 
 Signatures retain their decoded fields, but a Field or MethodDef row whose
 signature has the other member kind is malformed and cannot establish an
-unchanged signature. Runtime-provided methods are counted separately in
+unchanged signature. Comparison retains exact byte-based pairs for malformed
+signatures, including empty, truncated, or invalid headers, but reports them as
+unknown with a `signature-malformed` limitation when no change is observed.
+This applies to historical Evidence without signature-resolution attestation as
+well. Runtime-provided methods are counted separately in
 `native_implementations.runtime_provided`; they have no file-backed native body
 for this workflow to map and do not increase `native_body_unresolved`. Historical
 verification Evidence without this separate count leaves it unknown (`null`).

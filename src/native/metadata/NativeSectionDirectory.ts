@@ -1,9 +1,11 @@
 import { readElfTableDeclarations } from "../../domain/elfDeclaredRanges.js";
+import { readPeOptionalHeaderStructure } from "../../domain/peOptionalHeader.js";
 import {
   BinaryFormatFailure,
   BinaryReader,
   BinaryResourceFailure,
   declaredFileRange,
+  type ElfDynamicSegment,
 } from "./BinaryContainer.js";
 import { decodeElfSectionNameTable } from "./ElfSectionNameTable.js";
 
@@ -27,6 +29,18 @@ export interface NativeSection {
   readonly entry_size: bigint;
   readonly file_backed: boolean;
 }
+/** Raw relevant program declarations; consumers own load/dynamic admission. */
+export type ElfProgramDeclaration =
+  | {
+      readonly type: 1;
+      readonly flags: number;
+      readonly file_offset: bigint;
+      readonly file_size: bigint;
+      readonly virtual_address: bigint;
+      readonly memory_size: bigint;
+    }
+  | ({ readonly type: 2 } & ElfDynamicSegment);
+
 export interface NativeSectionDirectory {
   readonly format: "elf" | "pe";
   readonly bits: 32 | 64;
@@ -35,10 +49,7 @@ export interface NativeSectionDirectory {
   readonly elf_os_abi: number | null;
   readonly flags: number;
   readonly section_names_limitation?: string;
-  readonly program_offset: bigint;
-  readonly program_count: number;
-  readonly program_width: number;
-  readonly has_dynamic_segment: boolean;
+  readonly programs: readonly ElfProgramDeclaration[];
   readonly sections: readonly NativeSection[];
 }
 const STRUCTURE_BYTES = 16 * 1024 * 1024;
@@ -96,7 +107,7 @@ export function* readElfSectionDirectory(
     count,
     namesIndex,
   } = sectionTable;
-  let has_dynamic_segment = false;
+  const programDeclarations: ElfProgramDeclaration[] = [];
   if (program_count !== 0) {
     const programs = new BinaryReader(
       yield request(
@@ -106,11 +117,26 @@ export function* readElfSectionDirectory(
       ),
       little,
     );
+    // At most one record per table entry, bounded before allocation by the
+    // existing 16 MiB table allowance and minimum 32/56-byte ELF record width.
     for (let index = 0; index < program_count; index++) {
-      if (programs.u32(index * program_width) === 2) {
-        has_dynamic_segment = true;
-        break;
-      }
+      const at = index * program_width;
+      const type = programs.u32(at);
+      if (type === 1)
+        programDeclarations.push({
+          type,
+          flags: programs.u32(at + (wide ? 4 : 24)),
+          file_offset: programs.word(at + (wide ? 8 : 4), bits),
+          virtual_address: programs.word(at + (wide ? 16 : 8), bits),
+          file_size: programs.word(at + (wide ? 32 : 16), bits),
+          memory_size: programs.word(at + (wide ? 40 : 20), bits),
+        });
+      else if (type === 2)
+        programDeclarations.push({
+          type,
+          offset: programs.word(at + (wide ? 8 : 4), bits),
+          size: programs.word(at + (wide ? 32 : 16), bits),
+        });
     }
   }
   const sections: NativeSection[] = [];
@@ -228,10 +254,7 @@ export function* readElfSectionDirectory(
     ...(section_names_limitation === undefined
       ? {}
       : { section_names_limitation }),
-    program_offset,
-    program_count,
-    program_width,
-    has_dynamic_segment,
+    programs: programDeclarations,
     sections,
   };
 }
@@ -264,23 +287,24 @@ export function* readPeSectionDirectory(
   const coff = new BinaryReader(yield request(fileSize, BigInt(pe), 24n), true);
   if (coff.u32(0) !== 0x4550) reject("PE signature is invalid");
   const optionalSize = coff.u16(20);
-  const optional = new BinaryReader(
+  const optional = readPeOptionalHeaderStructure(
     yield request(fileSize, BigInt(pe + 24), BigInt(optionalSize)),
-    true,
   );
-  const magic = optional.u16(0);
-  const bits = magic === 0x10b ? 32 : magic === 0x20b ? 64 : null;
-  if (bits === null)
-    throw new BinaryFormatFailure(
-      "unsupported",
-      "Only PE32/PE32+ images are supported",
-    );
-  const minimum = bits === 64 ? 112 : 96;
-  if (
-    optionalSize < minimum ||
-    optional.u32(minimum - 4) * 8 > optionalSize - minimum
-  )
-    reject("PE optional header or data directories are truncated");
+  if (!optional.ok) {
+    switch (optional.error.reason) {
+      case "truncated-magic":
+        return reject("16-bit field range is truncated or outside the file");
+      case "unsupported-magic":
+        throw new BinaryFormatFailure(
+          "unsupported",
+          "Only PE32/PE32+ images are supported",
+        );
+      case "truncated-fixed-fields":
+      case "truncated-directory-table":
+        return reject("PE optional header or data directories are truncated");
+    }
+  }
+  const { bits } = optional.value;
   const count = coff.u16(6);
   const start = pe + 24 + optionalSize;
   const table = yield request(fileSize, BigInt(start), BigInt(count) * 40n);
@@ -316,23 +340,16 @@ export function* readPeSectionDirectory(
     little: true,
     machine: coff.u16(4),
     flags: coff.u16(22),
-    program_offset: 0n,
-    program_count: 0,
-    program_width: 0,
-    has_dynamic_segment: false,
+    programs: [],
     sections,
   };
 }
 
-/** Synchronous driver borrows bytes; file drivers satisfy the identical requests without loading payloads. */
-export const readNativeDirectoryFromBuffer = (
+/** Borrow ELF bytes; file drivers satisfy the identical requests without loading payloads. */
+export const readElfDirectoryFromBuffer = (
   bytes: Buffer,
-  format: "elf" | "pe",
 ): NativeSectionDirectory => {
-  const steps =
-    format === "elf"
-      ? readElfSectionDirectory(bytes.length)
-      : readPeSectionDirectory(bytes.length);
+  const steps = readElfSectionDirectory(bytes.length);
   let next = steps.next();
   while (!next.done) {
     const { offset, size } = next.value;
