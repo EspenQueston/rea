@@ -225,6 +225,8 @@ export class DexDebugInfoWalk {
   private explicitLocalCount = 0;
   private localLimitExceeded = false;
   private started = false;
+  /** The decoded result once the walk has ended; later resumes return it. */
+  private finished: DexMethodDebug | undefined;
   private sincePauseCheck = 0;
   private readonly budget: DexWorkBudget | undefined;
   private readonly pauseDue: (() => boolean) | undefined;
@@ -488,14 +490,22 @@ export class DexDebugInfoWalk {
     this.live.clear();
   }
 
+  /** End the walk; later resumes return the same result. */
+  private finish(complete: boolean): DexMethodDebug {
+    this.closeLiveAtEnd();
+    this.finished = this.result(!complete || this.malformed);
+    return this.finished;
+  }
+
   /**
    * Walk until the stream ends (the decoded result) or a pause is due
    * ({@link DEX_DEBUG_PAUSED}); call again after the host has yielded.
    */
   resume(): DexMethodDebug | typeof DEX_DEBUG_PAUSED {
+    if (this.finished !== undefined) return this.finished;
     if (!this.started) {
       this.started = true;
-      if (!this.header()) return this.result(true);
+      if (!this.header()) return this.finish(false);
     }
     // Every opcode consumes at least one byte, so the stream's own bytes bound
     // the loop; the member's work budget bounds its cost.
@@ -511,15 +521,11 @@ export class DexDebugInfoWalk {
       if (!this.charge() || this.localLimitExceeded) break;
       const op = this.cursor.u1();
       if (!op.ok) break;
-      if (op.value === DBG_END_SEQUENCE) {
-        this.closeLiveAtEnd();
-        return this.result(this.malformed);
-      }
+      if (op.value === DBG_END_SEQUENCE) return this.finish(true);
       if (!this.dispatch(op.value)) break;
     }
     // Ran off the end without DBG_END_SEQUENCE, or a fault above.
-    this.closeLiveAtEnd();
-    return this.result(true);
+    return this.finish(false);
   }
 }
 

@@ -395,3 +395,24 @@ describe("decodeDebugInfo sloppy local events", () => {
     }
   });
 });
+
+describe("DexDebugInfoWalk terminal state", () => {
+  it("returns the same result when resumed after it finished", () => {
+    const bytes = stream(
+      ...uleb(1),
+      ...uleb(0),
+      EMIT_HERE,
+      END_SEQUENCE,
+      EMIT_HERE, // bytes after END_SEQUENCE belong to no stream
+      EMIT_HERE,
+      END_SEQUENCE,
+    );
+    const walk = startDebugInfo(bytes, 1, 4);
+    if (!("resume" in walk)) throw new Error("expected a walk");
+    const first = walk.resume();
+    const second = walk.resume();
+    expect(first).not.toBe(DEX_DEBUG_PAUSED);
+    expect(second).toBe(first);
+    expect(second === DEX_DEBUG_PAUSED ? -1 : second.positionCount).toBe(1);
+  });
+});
