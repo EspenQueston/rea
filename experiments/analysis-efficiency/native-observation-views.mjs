@@ -27,53 +27,24 @@ for (const key of ["runtime", "target", "output", "ghidra", "java"]) {
 assert.ok(["complete", "summary"].includes(values.mode));
 await mkdir(values.output);
 const load = (path) => import(pathToFileURL(join(values.runtime, path)).href);
-const { parseEvidence, evidenceSubjectIdentity } = await load(
-  "dist/domain/evidence.js",
-);
-const { digestCanonicalValue } = await load("dist/domain/canonicalDigest.js");
+let parseEvidence, evidenceSubjectIdentity, digestCanonicalValue;
 const hash = (value) => createHash("sha256").update(value).digest("hex");
-const account = await mkdtemp(join(tmpdir(), "rea-native-observations-"));
-const transport = new StdioClientTransport({
-  command: process.execPath,
-  args: [join(values.runtime, "scripts/rea.mjs"), "mcp"],
-  cwd: values.runtime,
-  env: {
-    HOME: account,
-    PATH: process.env.PATH,
-    NODE_OPTIONS: "--max-old-space-size=3072",
-    GHIDRA_INSTALL_DIR: values.ghidra,
-    JAVA_HOME: values.java,
-    GHIDRA_HEADLESS_MAXMEM: "1536M",
-    REA_GHIDRA_STARTUP_TIMEOUT_MS: "600000",
-    REA_MCP_INPUT_SCHEMA_PROFILE: "compact",
-    REA_LOG_LEVEL: "silent",
-  },
-  stderr: "pipe",
-});
-const serverLog = createWriteStream(join(values.output, "server.log"));
-const serverLogFinished = finished(serverLog);
-serverLogFinished.catch(() => {});
-transport.stderr?.pipe(serverLog);
-const client = new Client({ name: "native-observation-views", version: "1" });
+let account, transport, serverLog, serverLogFinished, client, call;
 const git = async (args) =>
   (await promisify(execFile)("git", ["-C", values.runtime, ...args])).stdout;
 const report = {
   mode: values.mode,
   runtime: values.runtime,
-  revision: (await git(["rev-parse", "HEAD"])).trim(),
-  dirty: (await git(["status", "--porcelain"])).length > 0,
+  revision: null,
+  dirty: null,
   target: values.target,
-  sha256: hash(await readFile(values.target)),
+  sha256: null,
   question:
     "Resolve 21 recorded functions, retain all caller/callee facts and two graphs, materialize every source profile and caveat, and inspect one unknown-symbol error, twice in one session.",
   calls: [],
   runs: [],
 };
 const transcript = [];
-const call = createRetainedQueryCaller(client, (receipt, event) => {
-  report.calls.push(receipt);
-  transcript.push(event);
-});
 const good = async (name, input, phase) => {
   const reply = await call(name, input, phase);
   assert.notEqual(reply.isError, true, JSON.stringify(reply));
@@ -230,6 +201,40 @@ const observation = async (name, args, phase) => {
 let opened = false;
 const started = performance.now();
 try {
+  ({ parseEvidence, evidenceSubjectIdentity } = await load(
+    "dist/domain/evidence.js",
+  ));
+  ({ digestCanonicalValue } = await load("dist/domain/canonicalDigest.js"));
+  report.revision = (await git(["rev-parse", "HEAD"])).trim();
+  report.dirty = (await git(["status", "--porcelain"])).length > 0;
+  report.sha256 = hash(await readFile(values.target));
+  account = await mkdtemp(join(tmpdir(), "rea-native-observations-"));
+  transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [join(values.runtime, "scripts/rea.mjs"), "mcp"],
+    cwd: values.runtime,
+    env: {
+      HOME: account,
+      PATH: process.env.PATH,
+      NODE_OPTIONS: "--max-old-space-size=3072",
+      GHIDRA_INSTALL_DIR: values.ghidra,
+      JAVA_HOME: values.java,
+      GHIDRA_HEADLESS_MAXMEM: "1536M",
+      REA_GHIDRA_STARTUP_TIMEOUT_MS: "600000",
+      REA_MCP_INPUT_SCHEMA_PROFILE: "compact",
+      REA_LOG_LEVEL: "silent",
+    },
+    stderr: "pipe",
+  });
+  serverLog = createWriteStream(join(values.output, "server.log"));
+  serverLogFinished = finished(serverLog);
+  serverLogFinished.catch(() => {});
+  transport.stderr?.pipe(serverLog);
+  client = new Client({ name: "native-observation-views", version: "1" });
+  call = createRetainedQueryCaller(client, (receipt, event) => {
+    report.calls.push(receipt);
+    transcript.push(event);
+  });
   await client.connect(transport);
   const catalog = await client.listTools();
   assert.equal(catalog.nextCursor, undefined);
