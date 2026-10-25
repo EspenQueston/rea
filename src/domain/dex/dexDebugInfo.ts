@@ -5,8 +5,10 @@
  * LineNumberTable / LocalVariableTable, but it is an event stream, not a table.
  *
  * Facts are preserved on partial failure: a stream that runs short, drives a
- * line non-positive, or closes/restarts an empty register is marked `malformed`
- * while keeping every position and local recovered before the fault. Names are
+ * line negative, or names a register outside the method's frame is marked
+ * `malformed` while keeping every position and local recovered before the
+ * fault. Ending a register that holds no live local, or restarting one that is
+ * still live, is tolerated as ART's decoder tolerates it. Names are
  * left as string-pool indices here (`-1` = NO_INDEX); resolution is layered on
  * top. Addresses are 16-bit code units, bounded by the method's `insns_size`.
  */
@@ -383,11 +385,19 @@ export class DexDebugInfoWalk {
     return true;
   }
 
+  /** A register inside the method's frame (ART rejects the stream otherwise). */
+  private inFrame(reg: number): boolean {
+    const registersSize = this.layout?.registersSize;
+    return registersSize === undefined || reg < registersSize;
+  }
+
   private endLocal(): Step {
     const reg = this.cursor.uleb128();
-    if (!reg.ok) return false;
+    if (!reg.ok || !this.inFrame(reg.value)) return false;
     const existing = this.live.get(reg.value);
-    if (!existing) return false; // end of an empty register
+    // ART's decoder: "closing an already closed register is sloppy, but
+    // harmless" — nothing is emitted and the walk continues.
+    if (!existing) return true;
     this.pushLocal(reg.value, existing, this.address);
     this.live.delete(reg.value);
     return true;
@@ -395,9 +405,18 @@ export class DexDebugInfoWalk {
 
   private restartLocal(): Step {
     const reg = this.cursor.uleb128();
-    if (!reg.ok) return false;
-    const previous = this.lastByRegister.get(reg.value);
-    if (this.live.has(reg.value) || previous === undefined) return false;
+    if (!reg.ok || !this.inFrame(reg.value)) return false;
+    // A restart of a live register is superfluous; ART keeps its start.
+    if (this.live.has(reg.value)) return true;
+    // A register never declared restarts with no name or type, as ART's
+    // decoder does; it is not a declaration, so it is no local evidence.
+    const previous = this.lastByRegister.get(reg.value) ?? {
+      nameIdx: -1,
+      typeIdx: -1,
+      signatureIdx: -1,
+      startAddress: 0,
+      declaration: null,
+    };
     const local: LiveLocal = { ...previous, startAddress: this.address };
     this.live.set(reg.value, local);
     this.lastByRegister.set(reg.value, local);

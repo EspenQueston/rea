@@ -82,10 +82,18 @@ a generic parameter's register at address 0 (verified exact on 15 real members).
 On hand-crafted streams with zero-length scopes elsewhere, `dexdump` may list
 rows REA omits.
 
+Sloppy local events are tolerated as ART's decoder tolerates them:
+`DBG_END_LOCAL` on a register with no live local and `DBG_RESTART_LOCAL` on a
+register that is still live change nothing, and `DBG_RESTART_LOCAL` on a
+register never declared starts a local with no name or type (counted in
+`local_declarations`, as `dexdump` lists it, but not as a declaration). An end
+or restart naming a register outside the method's frame is malformed, as ART
+rejects it.
+
 Decoding is bounded by a per-member work budget and runs in slices: after
 each slice the reader yields to the event loop, so other MCP requests are
 served and a cancellation takes effect within one slice, not after the whole
-member.
+member. A single long debug stream also pauses between slices.
 
 ## What the facts do and do not mean
 

@@ -13,6 +13,7 @@ const END_SEQUENCE = 0x00;
 const ADVANCE_LINE = 0x02;
 const START_LOCAL = 0x03;
 const END_LOCAL = 0x05;
+const RESTART_LOCAL = 0x06;
 const SET_FILE = 0x09;
 const ADVANCE_PC = 0x01;
 const EMIT_HERE = 0x0e; // special opcode: line += 0, address += 0, emit a position
@@ -121,18 +122,6 @@ describe("decodeDebugInfo", () => {
     const d = decodeDebugInfo(bytes, 1, 7);
     expect(d.malformed).toBe(false);
     expect(d.locals[0]).toMatchObject({ startAddress: 0, endAddress: 7 });
-  });
-
-  it("marks malformed when a local is ended on an empty register", () => {
-    const bytes = stream(
-      ...uleb(1),
-      ...uleb(0),
-      END_LOCAL,
-      ...uleb(4),
-      END_SEQUENCE,
-    );
-    const d = decodeDebugInfo(bytes, 1, 4);
-    expect(d.malformed).toBe(true);
   });
 
   it("counts a SET_FILE redirect and the position after it", () => {
@@ -296,5 +285,88 @@ describe("decodeDebugInfo pool references", () => {
       END_SEQUENCE,
     );
     expect(decodeDebugInfo(bytes, 1, 4, layout).malformed).toBe(true);
+  });
+});
+
+describe("decodeDebugInfo sloppy local events", () => {
+  it("tolerates ending a register with no live local, as ART's decoder does", () => {
+    const bytes = stream(
+      ...uleb(1),
+      ...uleb(0),
+      END_LOCAL,
+      ...uleb(4),
+      EMIT_HERE,
+      END_SEQUENCE,
+    );
+    const d = decodeDebugInfo(bytes, 1, 4);
+    expect(d.malformed).toBe(false);
+    expect(d.positionCount).toBe(1);
+    expect(d.localCount).toBe(0);
+  });
+
+  it("keeps a live local's start when it is restarted, as ART's decoder does", () => {
+    const bytes = stream(
+      ...uleb(1),
+      ...uleb(0),
+      START_LOCAL,
+      ...uleb(1),
+      ...ulebp1(10),
+      ...ulebp1(11),
+      ADVANCE_PC,
+      ...uleb(2),
+      RESTART_LOCAL, // superfluous: register 1 is still live
+      ...uleb(1),
+      END_SEQUENCE,
+    );
+    const d = decodeDebugInfo(bytes, 1, 4);
+    expect(d.malformed).toBe(false);
+    expect(d.locals).toEqual([
+      expect.objectContaining({ register: 1, startAddress: 0, endAddress: 4 }),
+    ]);
+    expect(d.explicitLocalCount).toBe(1);
+  });
+
+  it("restarts a never-declared register without a name, and not as evidence", () => {
+    const bytes = stream(
+      ...uleb(1),
+      ...uleb(0),
+      ADVANCE_PC,
+      ...uleb(1),
+      RESTART_LOCAL,
+      ...uleb(2),
+      END_SEQUENCE,
+    );
+    const d = decodeDebugInfo(bytes, 1, 4);
+    expect(d.malformed).toBe(false);
+    expect(d.locals).toEqual([
+      expect.objectContaining({
+        register: 2,
+        nameIdx: -1,
+        typeIdx: -1,
+        startAddress: 1,
+        endAddress: 4,
+      }),
+    ]);
+    expect(d.explicitLocalCount).toBe(0);
+  });
+
+  it("marks an end or restart outside the method's frame malformed, as ART does", () => {
+    const layout = {
+      firstRegister: 0,
+      registersSize: 2,
+      accessFlags: 0x8,
+      thisTypeIdx: 0,
+      paramTypes: dexParameterList([]),
+    };
+    for (const op of [END_LOCAL, RESTART_LOCAL]) {
+      const bytes = stream(
+        ...uleb(1),
+        ...uleb(0),
+        op,
+        ...uleb(2),
+        END_SEQUENCE,
+      );
+      expect(decodeDebugInfo(bytes, 1, 4, layout).malformed).toBe(true);
+    }
   });
 });
