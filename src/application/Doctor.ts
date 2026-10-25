@@ -459,7 +459,13 @@ const doctorReportWithCleanup = (
     // The suggested scope would also report this finalization failure.
     ...(report.configured_scope === undefined
       ? {}
-      : { configured_scope: { ...report.configured_scope, healthy: false } }),
+      : {
+          configured_scope: {
+            ...report.configured_scope,
+            healthy: false,
+            failing_checks: [...report.configured_scope.failing_checks, check],
+          },
+        }),
     checks: [...report.checks, check],
     scope_checks: [...report.scope_checks, check],
   };

@@ -395,7 +395,10 @@ arguments of the `rea doctor` invocation that reports that scope, starting with
 `npx -y rea-agents@<version>` or `bunx rea-agents@<version>`, pinned to the
 running release, when doctor was launched that way; `command` is
 the same invocation quoted for PowerShell on Windows and for POSIX shells
-elsewhere. It is omitted when no client or provider is set up.
+elsewhere. `failing_checks` lists the checks that make the scope unhealthy, with
+their detail and remediation, and is empty when it is healthy. The skill check
+there reflects the configured clients' copies, so it can differ from the audit's
+`skill:identity`. It is omitted when no client or provider is set up.
 
 An invalid `REA_LOG_LEVEL` fails every scope, including one client or the
 installed skill, because the executable rejects it before any command. A

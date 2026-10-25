@@ -52,6 +52,8 @@ export interface DoctorConfiguredScopeReport {
   readonly argv: readonly string[];
   /** `argv` quoted for this host's shell: PowerShell on Windows, POSIX elsewhere. */
   readonly command: string;
+  /** The checks that make this scope unhealthy; empty when it is healthy. */
+  readonly failing_checks: readonly DoctorCheck[];
 }
 
 /** Clients and providers this host has set up; absent when none is. */
@@ -122,15 +124,17 @@ export const configuredDoctorScope = (
     ...(skill ? ["--skill"] : []),
     ...(input.target === null ? [] : ["--target", input.target]),
   ];
+  const judged = scopeDoctorChecks({ ...input, scope });
   return {
     clients,
     providers,
     skill,
-    healthy: scopeDoctorChecks({ ...input, scope }).healthy,
+    healthy: judged.healthy,
     argv,
     command: argv
       .map((argument) => shellArgument(argument, input.platform))
       .join(" "),
+    failing_checks: judged.scopeChecks.filter(({ ok }) => !ok),
   };
 };
 

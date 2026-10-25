@@ -1374,6 +1374,7 @@ describe("doctor configured scope", () => {
       ],
       command:
         "rea doctor --client cursor --provider ghidra --provider hopper --skill",
+      failing_checks: [],
     });
 
     const scoped = await runDoctor(undefined, workstation(true), {
@@ -1391,6 +1392,14 @@ describe("doctor configured scope", () => {
       providers: ["ghidra", "hopper"],
       healthy: false,
     });
+    // The summary names the failing check with its detail and remediation.
+    expect(audit.configured_scope?.failing_checks).toEqual([
+      expect.objectContaining({
+        name: "ghidra-java",
+        ok: false,
+        remediation: "Set JAVA_HOME to a JDK 21 installation.",
+      }),
+    ]);
   });
 
   it("keeps a stale registration in the configured workflow", async () => {
@@ -1461,6 +1470,10 @@ describe("doctor configured scope", () => {
       skill: true,
       healthy: false,
     });
+    expect(
+      staleCopy.configured_scope?.failing_checks.map(({ name }) => name),
+    ).toEqual(["skill:identity"]);
+    expect(audit.configured_scope?.failing_checks).toEqual([]);
   });
 });
 
@@ -1506,6 +1519,9 @@ describe("doctor configured scope edge cases", () => {
     const audit = await runDoctorOwned(undefined, failingClose());
     expect(audit.healthy).toBe(false);
     expect(audit.configured_scope).toMatchObject({ healthy: false });
+    expect(
+      audit.configured_scope?.failing_checks.map(({ name }) => name),
+    ).toEqual(["doctor-resource-cleanup"]);
     const suggested = await runDoctorOwned(undefined, failingClose(), {
       clients: ["cursor"],
       providers: ["ghidra", "hopper"],
