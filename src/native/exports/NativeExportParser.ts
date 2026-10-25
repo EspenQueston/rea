@@ -123,7 +123,7 @@ const parsePeExports = (bytes: Buffer, artifact: Artifact): NativeExports => {
   rowBudget(functionCount, "PE export address table");
   rowBudget(nameCount, "PE export name table");
   const mappingIndex =
-    nameCount > 1 ? createFileMappingIndex(mappings, image.zero_fills) : null;
+    nameCount >= 16 ? createFileMappingIndex(mappings, image.zero_fills) : null;
   const cString = (rva: number): string => {
     const address = base + BigInt(rva);
     const value =
