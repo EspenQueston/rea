@@ -1,7 +1,9 @@
 import { ProcessOutputTokenScanner } from "../process/ProcessOutputTokenScanner.js";
-import { ghidraFailureOutput } from "./GhidraDiagnostics.js";
+import {
+  ghidraFailureOutput,
+  createGhidraDiagnostics,
+} from "./GhidraDiagnostics.js";
 import { expect, it } from "vitest";
-import { createGhidraDiagnostics } from "./GhidraDiagnostics.js";
 
 it("does not reuse historical operation-scoped failure output without a current owner", () => {
   const diagnostics = createGhidraDiagnostics({
@@ -22,6 +24,7 @@ it("does not reuse historical operation-scoped failure output without a current 
 
   expect(diagnostics.stdout).toEqual({ text: "historical OOME" });
   expect(diagnostics).not.toHaveProperty("failure_output");
+  expect(diagnostics).not.toHaveProperty("stop_requested");
 });
 
 it.each([false, true])(
@@ -67,5 +70,32 @@ it.each([false, true])(
         },
       ],
     });
+  },
+);
+
+it.each([
+  [undefined, false],
+  [true, true],
+] as const)(
+  "carries the supervisor's stop request into exit diagnostics (%s)",
+  (stopRequested, expected) => {
+    const stream = { text: "", bytes: 0, observedBytes: 0 };
+    const diagnostics = createGhidraDiagnostics({
+      targetPath: "/tmp/target",
+      targetSha256: "a".repeat(64),
+      transport: "unix-socket",
+      providerVersion: "12.1.4",
+      profileDigest: "b".repeat(64),
+      previous: {},
+      snapshot: {
+        stdout: stream,
+        stderr: stream,
+        exitCode: null,
+        signal: "SIGKILL",
+        ...(stopRequested === undefined ? {} : { stopRequested }),
+      },
+    });
+    expect(diagnostics.exit_signal).toBe("SIGKILL");
+    expect(diagnostics.stop_requested).toBe(expected);
   },
 );

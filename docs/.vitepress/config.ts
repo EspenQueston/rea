@@ -32,6 +32,14 @@ export default defineConfig({
           { text: "IL2CPP metadata", link: "/il2cpp-metadata" },
           { text: "Model artifacts", link: "/model-artifacts" },
           { text: "Rust dependencies", link: "/rust-binaries" },
+          { text: "PE certificates", link: "/pe-certificates" },
+          { text: "PE imports", link: "/pe-imports" },
+          { text: "PE TLS/load config", link: "/pe-load-config" },
+          { text: "ELF notes", link: "/elf-notes" },
+          { text: "Apple IPS crash reports", link: "/apple-ips" },
+          { text: "Linux kernel modules", link: "/kernel-modules" },
+          { text: "CPython pyc files", link: "/python-pyc" },
+          { text: "Erlang BEAM", link: "/erlang-beam" },
           {
             text: "JavaScript and Electron",
             link: "/javascript-artifact-reconstruction",
@@ -74,6 +82,7 @@ export default defineConfig({
           { text: "Ghidra raw binary", link: "/raw-binary" },
           { text: "Ghidra NativeAOT", link: "/ghidra-nativeaot" },
           { text: "Ghidra PowerPC", link: "/ghidra-ppc" },
+          { text: "Ghidra GameCube DOL", link: "/ghidra-dol" },
           { text: "Ghidra semantics", link: "/ghidra-provider" },
         ],
       },
@@ -83,6 +92,10 @@ export default defineConfig({
         items: [
           { text: "MCP contracts", link: "/mcp-contracts" },
           { text: "Tool design", link: "/tool-design" },
+          {
+            text: "Admission limits and recovery",
+            link: "/design/limits-and-recovery",
+          },
           { text: "Testing", link: "/testing" },
           { text: "Client verification", link: "/client-verification" },
           {

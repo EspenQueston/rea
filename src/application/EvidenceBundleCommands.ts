@@ -1,10 +1,10 @@
+import { readArtifactInspectionSources } from "../domain/artifactInspection.js";
 import { dispatchQueuedInterrupts } from "../process/queuedInterrupts.js";
 import { absoluteCallerPath } from "../filesystem/callerPath.js";
 import { requireAuthenticationHeadroom } from "./JsonAuthenticationHeadroom.js";
 
 import {
   EvidenceFileError,
-  EvidenceIntegrityError,
   type PublishedEvidenceFile,
 } from "../domain/evidenceErrors.js";
 import type { AnalysisError } from "../domain/analysisErrorBase.js";
@@ -12,16 +12,21 @@ import {
   AnalysisCancelledError,
   AnalysisInputError,
 } from "../domain/analysisErrorCore.js";
-import type { Evidence } from "../domain/evidence.js";
+import {
+  withEvidenceCallerInputPath,
+  type Evidence,
+} from "../domain/evidence.js";
 import {
   createImmutableEvidenceBundle,
   type EvidenceBundle,
 } from "../domain/evidenceBundle.js";
-import type { InspectAnalysisViewInput } from "../domain/analysisView/analysisView.js";
 import type { JsonValue } from "../domain/jsonValue.js";
 import { jsonValueSchema } from "../domain/jsonValue.js";
 import { err, ok, type Result } from "../domain/result.js";
-import { compareBundles } from "../domain/bundleComparison.js";
+import {
+  compareBundles,
+  type BundleRecordPair,
+} from "../domain/bundleComparison.js";
 import { ArtifactResourceScope } from "../artifacts/ArtifactResourceScope.js";
 import {
   readEvidenceBundle,
@@ -83,7 +88,16 @@ export const deliverAnalysisEvidence = async (
   });
   if (!headroom.ok)
     return err(headroom.error.retainPartialObservation(evidence));
-  const bundle = createImmutableEvidenceBundle([evidence]);
+  const sourceEvidence =
+    evidence.operation === "inspect_artifact"
+      ? readArtifactInspectionSources(evidence.normalized_result)
+      : ok([]);
+  if (!sourceEvidence.ok)
+    return err(sourceEvidence.error.retainPartialObservation(evidence));
+  const bundle = createImmutableEvidenceBundle([
+    ...sourceEvidence.value,
+    evidence,
+  ]);
   const delivered =
     detail === "summary"
       ? inspectAnalysisViewValidated(
@@ -98,10 +112,17 @@ export const deliverAnalysisEvidence = async (
         )
       : ok(evidence);
   if (!delivered.ok) return delivered;
+  // This summary answers the same CLI invocation as its complete parent.
+  // Later inspect_analysis_view requests are separate questions and do not
+  // inherit the parent's selected input path.
+  const selected =
+    detail === "summary" && evidence.caller_input_path !== undefined
+      ? withEvidenceCallerInputPath(delivered.value, evidence.caller_input_path)
+      : delivered.value;
   const published = await publishEvidenceDelivery({
     bundle,
     complete: evidence,
-    delivered: delivered.value,
+    delivered: selected,
     outputPath,
     operation: evidence.operation,
     signal,
@@ -141,8 +162,23 @@ export const publishEvidenceDelivery = async (input: {
   // Deliver interrupts queued during final publication cleanup before the
   // command's signal owner accepts completion and removes its listeners.
   await dispatchQueuedInterrupts();
-  if (!written.ok)
-    return err(written.error.retainPartialObservation(input.complete));
+  if (!written.ok) {
+    const original = written.error;
+    // This publication workflow never overwrites. The standalone export
+    // command retains its own overwrite-capable recovery guidance.
+    const failure =
+      original instanceof EvidenceFileError && original.reason === "exists"
+        ? new EvidenceFileError(original.operation, original.reason, {
+            cause: original,
+            ...(original.path === undefined ? {} : { path: original.path }),
+            userMessage:
+              "Evidence file already exists. Choose another output path.",
+            cleanup: original.cleanup,
+            diagnostics: original.diagnostics,
+          }).bindCleanupDependencies([original])
+        : original;
+    return err(failure.retainPartialObservation(input.complete));
+  }
   if (signal?.aborted)
     return err(
       new AnalysisCancelledError(operation, {
@@ -152,53 +188,6 @@ export const publishEvidenceDelivery = async (input: {
       }),
     );
   return ok({ delivered: input.delivered, evidenceBundle: written.value });
-};
-
-/** Resolve the caller's exact retained parent from an authenticated portable bundle. */
-export const inspectAnalysisViewFromBundle = async (
-  input: InspectAnalysisViewInput,
-  bundlePath: string,
-  resources: ArtifactResourceScope,
-  signal?: AbortSignal,
-): Promise<Result<Evidence, AnalysisError>> => {
-  if (input.source.kind !== "retained-evidence")
-    return err(
-      new AnalysisInputError("inspect_analysis_view", undefined, [
-        {
-          path: ["source", "kind"],
-          reason: "invalid_value",
-          message:
-            "--evidence-bundle requires a retained-evidence source with the exact parent evidence_id; inline Evidence already supplies its source",
-        },
-      ]),
-    );
-  const loaded = await readImmutableEvidenceBundle(
-    bundlePath,
-    signal,
-    resources,
-    "inspect_analysis_view",
-  );
-  // Authentication and projection are synchronous; dispatch queued interrupts before accepting either result.
-  await dispatchQueuedInterrupts();
-  if (!loaded.ok) return loaded;
-  if (signal?.aborted)
-    return err(
-      new AnalysisCancelledError("inspect_analysis_view", {
-        cause: signal.reason,
-      }),
-    );
-  const projected = inspectAnalysisViewValidated(input, (id) =>
-    loaded.value.records.find((record) => record.evidence_id === id),
-  );
-  await dispatchQueuedInterrupts();
-  if (projected.ok && signal?.aborted)
-    return err(
-      new AnalysisCancelledError("inspect_analysis_view", {
-        cause: signal.reason,
-        partialObservation: projected.value,
-      }),
-    );
-  return projected;
 };
 
 /** Publish a completed bundle and retry its exact staged-output cleanup owner. */
@@ -237,6 +226,7 @@ const persistEvidenceBundleCommand = async (
 export const compareEvidenceBundlesCommand = async (input: {
   readonly leftPath: string;
   readonly rightPath: string;
+  readonly recordPairs?: readonly BundleRecordPair[];
 }): Promise<Result<JsonValue, AnalysisError>> => {
   // Sealed snapshots let comparison and its bundle digests reuse this
   // authentication instead of re-validating every record twice more.
@@ -257,13 +247,14 @@ export const compareEvidenceBundlesCommand = async (input: {
   if (!left.ok) return left;
   if (!right.ok) return right;
   try {
-    return ok(jsonValueSchema.parse(compareBundles(left.value, right.value)));
-  } catch (cause: unknown) {
-    return err(
-      new EvidenceIntegrityError("Evidence bundle comparison failed", {
-        cause,
-      }),
+    return ok(
+      jsonValueSchema.parse(
+        compareBundles(left.value, right.value, input.recordPairs),
+      ),
     );
+  } catch (cause: unknown) {
+    if (cause instanceof AnalysisInputError) return err(cause);
+    throw cause;
   }
 };
 
