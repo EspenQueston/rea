@@ -993,6 +993,21 @@ const nativeDecompilerCheck = ({
         remediation: `Point JAVA_HOME at a JDK whose reported operating system matches the host platform (${platform}). REA does not build or install native tools.`,
       });
   }
+  // A decompiler built under this JVM would target its directory, not the
+  // host's, so the missing-file advice must not lead with buildNatives.
+  if (
+    path === null &&
+    coordinates.java !== undefined &&
+    validatedDirectory !== undefined &&
+    selectedDirectory !== validatedDirectory
+  )
+    return installationCheck({
+      name: "native_decompiler",
+      passed: false,
+      code: "executable_missing",
+      detail: `Matching native decompiler for ${platform}/${architecture} was not found; JVM reports os.arch=${osArch}, so Ghidra would select os/${selectedDirectory}, not ${validatedDirectory}`,
+      remediation: `Point JAVA_HOME at a JDK whose architecture matches this host (${validatedDirectory}) first; Ghidra selects its decompiler from the JVM's directory. Then rerun doctor for the decompiler setup steps. REA does not build or install native tools.`,
+    });
   return installationCheck({
     name: "native_decompiler",
     passed: path !== null && compatibility?.status !== "incompatible",

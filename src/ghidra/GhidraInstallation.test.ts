@@ -1716,6 +1716,42 @@ describe("Ghidra JVM native directory admission", () => {
   });
 });
 
+describe("Ghidra JVM native directory remediation", () => {
+  it("names the JVM architecture, not buildNatives, when an emulated JDK meets a missing decompiler", async () => {
+    const result = await inspectGhidraInstallation(
+      {
+        resourceOwner: inspectionResources.owner,
+        environment: {},
+        installDir: INSTALL,
+        platform: "darwin",
+        architecture: "arm64",
+      },
+      host({
+        executable: (path) => path === HEADLESS,
+        probeJava: () =>
+          javaProbeOk<GhidraJavaObservation>({
+            ...JAVA,
+            osArch: "x86_64",
+            osName: "Mac OS X",
+          }),
+      }),
+    );
+    expect(result.status).toBe("unavailable");
+    if (result.status !== "unavailable") return;
+    const check = result.checks.find(
+      ({ name }) => name === "native_decompiler",
+    );
+    expect(check).toMatchObject({
+      status: "failed",
+      code: "executable_missing",
+      detail: expect.stringContaining("JVM reports os.arch=x86_64"),
+      remediation: expect.stringContaining("JAVA_HOME"),
+    });
+    if (check?.status !== "failed") return;
+    expect(check.remediation).not.toContain("buildNatives");
+  });
+});
+
 describe("Ghidra JVM OS admission", () => {
   it("rejects a successful Java probe that omits os.name", async () => {
     const { osName: _observedOsName, ...withoutOsName } = JAVA;
