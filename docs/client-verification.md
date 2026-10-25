@@ -521,9 +521,12 @@ Codex runs in its read-only sandbox with `approval_policy="never"`. Claude Code
 and Gemini CLI receive an explicit allow-list instead. It is a permission
 policy taken from each tool's audited effects: a REA tool that may run foreign
 code, change a device, discard caller state, launch a process, or reach the
-network is refused unless the scenario approves it by name. The MCP hints
-advertised for a tool are display derivations of those same effects and do not
-decide permissions. Claude Code is limited to its read-only built-ins (`Read`,
+network is refused unless the scenario approves it by name. Every scenario
+approves its own contract's tools by name: its explicit approvals, its expected
+first tool and its required tool subsequence, so a JavaScript scenario may run
+`analyze_javascript_application` (which launches an analysis worker) while the
+same tool stays refused elsewhere. The MCP hints advertised for a tool are
+display derivations of those same effects and do not decide permissions. Claude Code is limited to its read-only built-ins (`Read`,
 `Grep`, `Glob`, `Skill`, `ToolSearch` and `WaitForMcpServers`) in `dontAsk`
 mode. Gemini CLI runs headless in its default approval mode, which refuses
 shell and edit tools, with an allow-list policy file. The policy also allows

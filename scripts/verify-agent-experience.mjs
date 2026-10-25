@@ -28,7 +28,11 @@ const { parseAgentTranscript } = await tsImport(
     .href,
   import.meta.url,
 );
-const { MISSING_TARGET_SCENARIO, nativeProviderScenario } = await tsImport(
+const {
+  MISSING_TARGET_SCENARIO,
+  nativeProviderScenario,
+  scenarioApprovedTools,
+} = await tsImport(
   new URL(
     "../tests/evaluation/model-evals/AgentEvaluationScenarios.ts",
     import.meta.url,
@@ -287,7 +291,7 @@ await withVerifierCleanup(
           answerInstructions.length === 0
             ? scenario.prompt
             : `${scenario.prompt}\n\nThis closed factual rubric needs complete producer Evidence in the transcript. Request complete detail on each initial inspection or analysis when supported; summary or view records alone are not accepted by this rubric.\n\n${answerInstructions}`,
-          scenario.approvedTools ?? [],
+          scenarioApprovedTools(scenario),
         ),
         evaluationEnvironment,
       );
