@@ -6,8 +6,9 @@ relation and containing-function outcome, two complete graphs, and one missing
 symbol. Repeat in the same session. Both lanes read all facts, source profiles,
 and source caveats; no completeness advantage is inferred from smaller replies.
 
-The complete control uses `2b0aa212156fe125c60aea8fd73092329e25dd09`
-(the source tree merged as `6381aa0b1dcb7092673db5ac739af57ce220ed37`).
+The final complete control uses `5d428390996498bc4dcca4da934641557f9109bc`,
+after the unrelated input-schema fitting revert. The first control used
+`2b0aa212156fe125c60aea8fd73092329e25dd09` (merged as `6381aa0b1`).
 This already includes request-scoped Ghidra input-error diagnostics, so those
 savings are not attributed to observation views. The candidate uses the
 implementation in this PR. Both discover the entire actual compact SDK catalog,
@@ -64,24 +65,26 @@ server log and completion/cleanup receipts. Failed runs retain their receipt.
 | ------------------------------------------------ | ---------------: | -------------------------: |
 | RPCs                                             |              137 |                        179 |
 | Catalog token estimate                           |          919,115 |                    932,545 |
-| Catalog + arguments + text token estimate        |        1,243,181 |                  1,233,769 |
-| Catalog + arguments + raw replies token estimate |        1,587,886 |                  1,551,951 |
-| All reply text bytes                             |        1,331,368 |                  1,000,772 |
-| Whole-family elapsed seconds                     |            34.55 |                      50.29 |
-| Whole-family CPU seconds                         |            61.46 |                      84.05 |
-| Sampled family peak RSS GiB                      |             1.44 |                       1.83 |
+| Catalog + arguments + text token estimate        |        1,243,161 |                  1,234,768 |
+| Catalog + arguments + raw replies token estimate |        1,587,863 |                  1,554,038 |
+| All reply text bytes                             |        1,331,358 |                  1,006,503 |
+| Whole-family elapsed seconds                     |            39.38 |                      41.06 |
+| Whole-family CPU seconds                         |            69.26 |                       70.4 |
+| Sampled family peak RSS GiB                      |             1.45 |                       1.69 |
 
-The completed-task text estimate decreases 0.76%; raw-reply accounting decreases
-2.26%, and text bytes decrease 24.8%. The large forward graph's first reply is
+The completed-task text estimate decreases 0.68%; raw-reply accounting decreases
+2.13%, and text bytes decrease 24.4%. The large forward graph's first reply is
 63,888 → 5,150 estimated text tokens (283,990 → 15,995 bytes); remaining facts
 and all caveats are included in the completed-task table. A one-address callee
 reply is only 754 → 744 tokens despite 3,104 → 2,326 bytes: bytes alone would
 overstate its token improvement. There is no demonstrated time or memory
 improvement. The complete-read workflow adds 42 RPCs; its warm phase is
-0.885 → 1.278 seconds. Cold phases are 28.977 → 41.278 seconds. This one fresh
+0.762 → 1.005 seconds. Cold phases are 33.151 → 34.804 seconds. This one fresh
 session per final lane cannot separate provider-startup variance from overhead.
-The final candidate implementation is `d7e53cf07`; its only untracked file was
-this measurement note. CPU and RSS stay within the stated guard but are higher.
+The final candidate implementation and experiment driver are `4ac1971864`;
+the final control is `5d428390996`. CPU and RSS remain within the stated guard
+but are higher. An earlier pre-review pair measured 34.55 → 50.29 seconds,
+so elapsed-time variance must not be mistaken for a speed improvement.
 
 Token estimates use `cl100k_base` over one pass of raw catalog JSON plus every
 RPC's arguments and text content. A second accounting counts the full raw RPC
@@ -100,3 +103,11 @@ That result was retained; the final implementation removes repeated coverage
 from the normalized payload (the Evidence envelope owns it), shortens the
 instructions, and the complete-read client requests larger continuation pages.
 Neither failed/development attempt is included in the final paired task table.
+
+Review regressions also cover context-facet partial/unknown relationship
+coverage and actionable overflow continuations through all five native tools
+without another provider read. The latter injects a 32 KiB delivery budget to
+exercise capacity cheaply; it does not establish a real 10 MiB graph failure.
+Actual missing-target and failing-Git commands each publish a failed receipt
+without leaking a temporary HOME. Thirteen deterministic receipt tests also
+cover partially acquired resources and failed cleanup.
