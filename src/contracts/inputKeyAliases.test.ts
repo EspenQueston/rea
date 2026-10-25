@@ -77,6 +77,24 @@ describe("named compatible input contracts", () => {
       ],
     });
   });
+  it("keeps a canonical property description off its alias spelling", () => {
+    const projected = compatibleToolInputSchema(
+      z.strictObject({
+        procedure: z.string().describe("The procedure name or address"),
+      }),
+    )["~standard"].jsonSchema.input({ target: "draft-2020-12" });
+    expect(projected.anyOf).toEqual([
+      expect.objectContaining({
+        properties: {
+          procedure: {
+            type: "string",
+            description: "The procedure name or address",
+          },
+        },
+      }),
+      expect.objectContaining({ properties: { address: { type: "string" } } }),
+    ]);
+  });
   it("retains canonical value checks, defaults and cross-field refinements", () => {
     const search = compatibleToolInputSchema(searchInput);
     expect(search.parse({ query: "ACCESS" })).toEqual({
@@ -95,16 +113,21 @@ describe("named compatible input contracts", () => {
       comment: "exact",
     });
   });
-  it("describes optional compatibility selectors without requiring a filter", () => {
+  it("advertises optional compatibility selectors without requiring a filter", () => {
     const optionalSearch = compatibleToolInputSchema(
       z.strictObject({ pattern: z.string().default("") }),
     );
-    const projected = optionalSearch["~standard"].jsonSchema.input({
-      target: "draft-2020-12",
-    });
-    expect(projected.description).toContain("at most one spelling");
-    expect(projected.description).toContain("both may be omitted");
-    expect(projected.description).not.toContain("Supply one spelling");
+    const validate = new Ajv2020({
+      strict: false,
+      validateFormats: false,
+    }).compile(
+      optionalSearch["~standard"].jsonSchema.input({
+        target: "draft-2020-12",
+      }),
+    );
+    for (const value of [{}, { pattern: "a" }, { query: "a" }])
+      expect(validate(value)).toBe(true);
+    expect(validate({ pattern: "a", query: "b" })).toBe(false);
     expect(optionalSearch.parse({})).toEqual({ pattern: "" });
   });
   it("parses canonical field transforms exactly once for each spelling", () => {

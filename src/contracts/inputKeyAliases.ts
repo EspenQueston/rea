@@ -77,8 +77,11 @@ export const compatibleToolInputSchema = <Schema extends z.ZodObject>(
   );
   return withAdvertisedJsonSchema(canonical, "input", () => (options) => {
     const projected = accepted["~standard"].jsonSchema.input(options);
-    const alternatives = Array.isArray(projected.anyOf) ? projected.anyOf : [];
-    const selectorDescriptions: string[] = [];
+    const alternatives = (
+      Array.isArray(projected.anyOf) ? projected.anyOf : []
+    ).map((branch: unknown) =>
+      withoutAliasDescriptions(branch, Object.keys(aliases)),
+    );
     const invalidSelections = Object.entries(aliases).flatMap(
       ([alias, key]) => {
         const selectorRequired =
@@ -92,11 +95,6 @@ export const compatibleToolInputSchema = <Schema extends z.ZodObject>(
               (branch.required.includes(key) ||
                 branch.required.includes(alias)),
           );
-        selectorDescriptions.push(
-          selectorRequired
-            ? `Supply one spelling for ${key}: ${key} or ${alias}.`
-            : `Supply at most one spelling for ${key}: ${key} or ${alias}; both may be omitted.`,
-        );
         const conflicts: Record<string, unknown>[] = [
           { required: [key, alias] },
         ];
@@ -108,21 +106,56 @@ export const compatibleToolInputSchema = <Schema extends z.ZodObject>(
       },
     );
     // Existing input presentation owns flattening for hosts that prohibit root
-    // unions; keep the exact accepted alternatives here for schema consumers.
+    // unions, and it describes each accepted input group; keep the exact
+    // accepted alternatives here for schema consumers.
     return {
       ...projected,
+      ...(alternatives.length > 0 ? { anyOf: alternatives } : {}),
       type: "object",
       // Shared root-union presentation may flatten alternatives for hosts.
       // These exclusions preserve exactly-one required selector independently
       // of optional/defaulted fields, without a prohibited root combinator.
       not: { anyOf: invalidSelections },
-      description: [
-        schema.description,
-        ...selectorDescriptions,
-        "Supplying both spellings is invalid.",
-      ]
-        .filter((text) => text !== undefined)
-        .join(" "),
+      ...(schema.description === undefined
+        ? {}
+        : { description: schema.description }),
     };
   });
+};
+
+/**
+ * An alias branch repeats its canonical property schema. Its description stays
+ * on the canonical spelling, because every advertised byte counts against the
+ * full catalog's bounded transport frame.
+ */
+const withoutAliasDescriptions = (
+  branch: unknown,
+  aliases: readonly string[],
+): unknown => {
+  if (
+    typeof branch !== "object" ||
+    branch === null ||
+    !("properties" in branch) ||
+    typeof branch.properties !== "object" ||
+    branch.properties === null
+  )
+    return branch;
+  return {
+    ...branch,
+    properties: Object.fromEntries(
+      Object.entries(branch.properties).map(([name, property]) => {
+        if (
+          !aliases.includes(name) ||
+          typeof property !== "object" ||
+          property === null
+        )
+          return [name, property];
+        const { description: _description, ...rest } = property as Record<
+          string,
+          unknown
+        >;
+        return [name, rest];
+      }),
+    ),
+  };
 };
