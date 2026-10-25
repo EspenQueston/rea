@@ -114,11 +114,12 @@ const assertLive = (error: AnalysisError, resources: readonly string[]) => {
   expect([...error.cleanupResources].sort()).toEqual([...resources].sort());
   const projected = projectAnalysisError(error);
   expect(projected.code === "cleanup_incomplete").toBe(resources.length > 0);
-  if (resources.length > 0)
-    expect((projected.details?.resources as string[]).toSorted()).toEqual(
-      [...resources].sort(),
-    );
-  else expect(projected.details?.cleanup).toBeUndefined();
+  if (resources.length > 0) {
+    const projectedResources = projected.details?.resources;
+    if (!Array.isArray(projectedResources))
+      throw new Error("Expected projected cleanup resources");
+    expect(projectedResources.toSorted()).toEqual([...resources].sort());
+  } else expect(projected.details?.cleanup).toBeUndefined();
   for (const child of error.secondaryFailures) {
     if (child.cleanupIncomplete)
       for (const path of child.cleanupResources)
