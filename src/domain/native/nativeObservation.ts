@@ -28,3 +28,9 @@ export type NativeObservation = {
     result: z.output<(typeof nativeObservationSourceSchemas)[Operation]>;
   };
 }[NativeObservationOperation];
+
+/** One operation family shared by view projection and response-budget recovery. */
+export const isNativeObservationOperation = (
+  operation: string,
+): operation is NativeObservationOperation =>
+  NATIVE_OBSERVATION_OPERATIONS.some((supported) => supported === operation);

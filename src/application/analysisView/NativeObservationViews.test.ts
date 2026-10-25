@@ -512,3 +512,32 @@ it("pages recorded empty graph levels without inventing nodes or dropping their 
     coverage: { total: 2, exhausted: true },
   });
 });
+
+it.each([
+  { status: "partial" as const, limitations: ["Unresolved indirect edges"] },
+  { status: "unknown" as const, reason: "Provider did not establish coverage" },
+])(
+  "keeps $status relationship coverage on every context facet",
+  async (coverage) => {
+    const source = createEvidence(undefined, provider, {
+      operation: "procedure_callees",
+      parameters: {},
+      result: [],
+      relationshipCoverage: coverage,
+    });
+    for (const facet of [
+      "overview",
+      "analysis-profile",
+      "limitations",
+      "result-limitations",
+    ] as const) {
+      const result = await project(source, {
+        kind: "native-context",
+        facet,
+        offset: 0,
+        limit: 64,
+      });
+      expect(result.evidence.relationship_coverage).toEqual(coverage);
+    }
+  },
+);

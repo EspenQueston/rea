@@ -1,3 +1,11 @@
+import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
+import { createAnalysisExecution } from "../../../src/application/AnalysisProvider.js";
+import { createTestBinarySession } from "../../fixtures/binarySession.js";
+import { createServer } from "../../../src/server/createServer.js";
+import { createToolResultDelivery } from "../../../src/server/toolResult.js";
+import { parseMcpToolError } from "../../fixtures/mcpToolError.js";
+import { ok } from "../../../src/domain/result.js";
+import { z } from "zod";
 import { afterAll, expect, it } from "vitest";
 import { parseEvidence } from "../../../src/domain/evidence.js";
 import {
@@ -88,6 +96,9 @@ it("delivers native primitive and graph summaries with exact retained parents an
           source,
           view: { kind: "native-context", facet, offset: 0, limit: 1 },
         });
+        expect(context.relationship_coverage).toEqual(
+          complete.relationship_coverage,
+        );
         expect(context.normalized_result).toMatchObject({
           kind: "native-context",
           facet,
@@ -110,5 +121,94 @@ it("delivers native primitive and graph summaries with exact retained parents an
     }
   } finally {
     await harness.close();
+  }
+}, 90_000);
+
+it("follows native overflow continuations through MCP without repeating provider work", async () => {
+  let reads = 0;
+  const provider = { id: "fixture", name: "Fixture", version: "1" };
+  const session = createTestBinarySession(() => ({
+    execute: async (operation) => {
+      reads++;
+      return ok(
+        createAnalysisExecution(
+          operation === "procedure_address"
+            ? "0x1000"
+            : operation === "resolve_containing_procedure"
+              ? {
+                  query_address: "0x9999",
+                  found: false,
+                  procedure: null,
+                  reason: "not_in_procedure",
+                }
+              : [],
+          provider,
+          {
+            limitations: ["Capacity fixture ".repeat(1500)],
+            relationshipCoverage: {
+              status: "partial",
+              limitations: ["Indirect edges unknown"],
+            },
+          },
+        ),
+      );
+    },
+    close: async () => ok(null),
+  }));
+  // Exercise the real delivery/SDK path with a small injected response budget.
+  const server = createServer(
+    { kind: "session", session },
+    { delivery: createToolResultDelivery(32 * 1024) },
+  );
+  const client = new Client({
+    name: "native-observation-capacity",
+    version: "1",
+  });
+  const [clientTransport, serverTransport] =
+    InMemoryTransport.createLinkedPair();
+  try {
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+    const opened = await client.callTool({
+      name: "open_binary",
+      arguments: { path: process.execPath },
+    });
+    expect(opened.isError).not.toBe(true);
+    for (const name of [
+      ...NATIVE_PRIMITIVE_OBSERVATION_OPERATIONS,
+      "get_call_graph",
+    ] as const) {
+      const input =
+        name === "get_call_graph" || name === "resolve_containing_procedure"
+          ? { address: "0x1000" }
+          : { procedure: "fixture_main" };
+      const complete = await client.callTool({ name, arguments: input });
+      const error = parseMcpToolError(complete).error;
+      expect(error.code).toBe("resource_constraint");
+      const continuation = z
+        .object({
+          reported_limits: z.object({
+            continuation: z.object({
+              name: z.literal("inspect_analysis_view"),
+              arguments: inspectAnalysisViewInputSchema,
+            }),
+          }),
+        })
+        .parse(error.details).reported_limits.continuation;
+      expect(continuation.arguments.view.kind).toBe("native-observation");
+      const before = reads;
+      const page = await client.callTool(continuation);
+      expect(page.isError, JSON.stringify(page.content)).not.toBe(true);
+      const evidence = parseEvidence(page.structuredContent);
+      expect(evidence.normalized_result).toMatchObject({
+        kind: "native-observation",
+        parent_operation: name,
+      });
+      expect(reads).toBe(before);
+    }
+  } finally {
+    await Promise.all([client.close(), server.close()]);
+    const closed = await session.close();
+    if (!closed.ok) throw closed.error;
   }
 }, 90_000);

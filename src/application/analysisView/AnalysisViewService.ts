@@ -1,4 +1,4 @@
-import { NATIVE_OBSERVATION_OPERATIONS } from "../../domain/native/nativeObservation.js";
+import { isNativeObservationOperation } from "../../domain/native/nativeObservation.js";
 import { setImmediate } from "node:timers/promises";
 import { dispatchQueuedInterrupts } from "../../process/queuedInterrupts.js";
 import { readImmutableEvidenceBundle } from "../EvidenceBundleFiles.js";
@@ -377,10 +377,9 @@ const createAnalysisViewEvidence = (
       : undefined;
   const nativeObservationView =
     result.kind === "native-observation" ||
+    result.kind === "native-context" ||
     (result.kind === "summary" &&
-      NATIVE_OBSERVATION_OPERATIONS.some(
-        (operation) => operation === result.parent_operation,
-      ));
+      isNativeObservationOperation(result.parent_operation));
   return createEvidence(
     target,
     ANALYSIS_VIEW_PROVIDER,
