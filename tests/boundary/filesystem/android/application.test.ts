@@ -452,6 +452,47 @@ it("does not infer a runtime from library-named directories or their text descen
   expect(graph.coverage.status).toBe("complete-within-inventory");
 });
 
+it("keeps JNI bridge bases for ordinary libraries below runtime-named directories", async () => {
+  const root = await createTestTempDirectory("rea-android-nested-native-");
+  const path = join(root, "Nested.apk");
+  const writer = new ZipWriter(new Uint8ArrayWriter());
+  await writer.add("AndroidManifest.xml", new TextReader("fixture"));
+  await writer.add("classes.dex", new TextReader("inert bytecode fixture"));
+  const paths = [
+    "libflutter.so",
+    "libunity.so",
+    "libreactnative.so",
+    "libhermes.so",
+  ].map((name) => `assets/${name}/lib/arm64-v8a/libordinary.so`);
+  for (const entry of paths)
+    await writer.add(entry, new TextReader("inert native fixture"));
+  await writeFile(path, await writer.close());
+  const inventory = parseEvidence(
+    await runProviderAnalysis(path, "inventory_artifact", {}),
+  );
+  const graph = androidApplicationProjectionResultSchema.parse(
+    requireSuccessfulProjection(
+      projectAndroidApplicationEvidence({ inventory_evidence: [inventory] }),
+    ).normalized_result,
+  );
+  expect(
+    graph.components.native_libraries.map(({ path }) => path).sort(),
+  ).toEqual(paths.sort());
+  expect(graph.runtime_families).toEqual(["dalvik-art"]);
+  expect(graph.bridge_candidates).toEqual(
+    expect.arrayContaining(
+      paths.map((native_path) => ({
+        managed_path: "classes.dex",
+        native_path,
+        basis: "jni-library-convention",
+      })),
+    ),
+  );
+  expect(graph.bridge_candidates).toHaveLength(paths.length);
+  expect(graph.source_evidence_ids).toEqual([inventory.evidence_id]);
+  expect(graph.coverage.status).toBe("complete-within-inventory");
+});
+
 it("retains an encrypted root manifest occurrence without claiming absence", async () => {
   const root = await createTestTempDirectory("rea-android-locked-manifest-");
   const path = join(root, "Locked.apk");
