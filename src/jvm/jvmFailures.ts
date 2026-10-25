@@ -1,4 +1,5 @@
 import { ArtifactReaderFailure } from "../artifacts/ArtifactReader.js";
+import { completedStableArtifact } from "../artifacts/readStableArtifact.js";
 import type { ArtifactLimitBoundary } from "../domain/artifactOperationError.js";
 import {
   ArtifactFileCleanupFailure,
@@ -6,6 +7,7 @@ import {
   bindArtifactFileCleanup,
 } from "../artifacts/ArtifactFileOperation.js";
 import { analysisErrorWithCleanupFailure } from "../domain/analysisErrorCleanup.js";
+import { fileSnapshotPartialObservationSchema } from "../domain/fileSnapshotObservation.js";
 import { ProviderCleanupError } from "../domain/providerCleanupError.js";
 import {
   AnalysisError,
@@ -129,6 +131,19 @@ export const jvmClassFileFailure = (
       : cause instanceof ArtifactFileCleanupFailure && signal?.aborted
         ? new AnalysisCancelledError(OPERATION, { cause: signal.reason })
         : primaryFailure(cause, path, signal);
+  // A loose class file whose stable read and hash completed before its close
+  // failed or was cancelled keeps that digest and size, as the other
+  // stable-read providers do.
+  const snapshot = completedStableArtifact(cause);
+  if (snapshot !== undefined)
+    primary.retainPartialObservation(
+      fileSnapshotPartialObservationSchema.parse({
+        kind: "file-snapshot-hash",
+        path,
+        sha256: snapshot.sha256,
+        bytes: snapshot.bytes.length,
+      }),
+    );
   if (!(cause instanceof ArtifactReaderFailure) || cause.cleanup === undefined)
     return primary;
   const error = analysisErrorWithCleanupFailure(

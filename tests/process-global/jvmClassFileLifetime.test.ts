@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { writeFile, type FileHandle } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -126,10 +127,17 @@ it.each(shapes)(
         normalized_result: { selected_entry: { entry: ENTRY } },
       });
     } else {
-      // The stable read never completed, so the primary is an execution
-      // failure of the read, not caller input.
+      // The stable read completed but its close did not confirm, so the
+      // primary is an execution failure of the read, not caller input; the
+      // completed digest and size are retained.
       expect(projected.details).toMatchObject({
         diagnostics: { primary_error: { code: "execution_failure" } },
+      });
+      expect(error.partialObservation).toEqual({
+        kind: "file-snapshot-hash",
+        path,
+        sha256: createHash("sha256").update(javaClassFile()).digest("hex"),
+        bytes: javaClassFile().length,
       });
     }
 
@@ -178,6 +186,12 @@ it.each(shapes)(
       if (shape === "JAR entry")
         expect(result.error.partialObservation).toMatchObject({
           parameters: { path, entry: ENTRY },
+        });
+      else
+        expect(result.error.partialObservation).toMatchObject({
+          kind: "file-snapshot-hash",
+          path,
+          bytes: javaClassFile().length,
         });
       expect(fault.handles.every((handle) => handle.fd === -1)).toBe(true);
     } finally {
