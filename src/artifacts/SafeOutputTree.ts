@@ -711,9 +711,13 @@ const writeAll = async (
   }
 };
 
-const normalizeDestinationPath = (
+/**
+ * Validate and normalize a logical extraction path using the destination
+ * filesystem's path-safety rules before or during extraction.
+ */
+export const normalizeDestinationPath = (
   relativePath: string,
-  platform: NodeJS.Platform,
+  platform: NodeJS.Platform = process.platform,
 ): string => {
   const path = normalizeArtifactPath(relativePath);
   if (platform === "win32" && path.includes("\\"))

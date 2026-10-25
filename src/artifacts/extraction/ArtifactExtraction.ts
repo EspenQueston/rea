@@ -30,7 +30,7 @@ import {
 import { ArtifactTraversalObservation } from "../ArtifactTraversalObservation.js";
 import { abortIfNeeded } from "../ArtifactHash.js";
 import { DirectoryArtifactReader } from "../DirectoryArtifactReader.js";
-import { SafeOutputTree } from "../SafeOutputTree.js";
+import { SafeOutputTree, normalizeDestinationPath } from "../SafeOutputTree.js";
 import { SafeOutputTreeCreationFailure } from "../SafeOutputTreeCreationFailure.js";
 import { ZipArtifactReader } from "../ZipArtifactReader.js";
 import { isZipPackageFormat } from "../../domain/zipPackageFormat.js";
@@ -41,6 +41,8 @@ import { containsPyInstallerArchive } from "../pyinstaller/CArchiveLayout.js";
 import { locateNodeSea } from "../nodeSea/NodeSeaLocation.js";
 import {
   artifactExtractionResultSchema,
+  type ArtifactExtractionPlan,
+  type ArtifactExtractionPlanEntry,
   type ArtifactExtractionResult,
   type ArtifactGraphManifest,
   type ArtifactCommand,
@@ -60,6 +62,8 @@ export interface ArtifactExtractionInput {
   readonly inputPath: string;
   readonly inputFormat: BinaryTarget["format"];
   readonly outputRoot: string;
+  readonly dryRun?: boolean;
+  readonly platform?: NodeJS.Platform;
   readonly environment: Readonly<NodeJS.ProcessEnv>;
   readonly integrityPolicy: ArtifactIntegrityPolicyName;
   readonly resourceScope: ArtifactResourceScope;
@@ -270,7 +274,7 @@ interface ExtractedOccurrence {
   readonly relative_path: string;
   readonly sha256: string;
   readonly bytes_written: number;
-  readonly created: true;
+  readonly created: boolean;
 }
 
 const materializeSelection = async ({
@@ -310,31 +314,50 @@ const materializeSelection = async ({
     reader,
     resource: `artifact reader for ${sourcePath}`,
   };
+  const dryRun = input.dryRun === true;
   let localReaderOwner: ArtifactResourceOwner | undefined = readerOwner;
   let output: SafeOutputTree | undefined;
   let completed: ArtifactExtractionResult | undefined;
   const extracted: ExtractedOccurrence[] = [];
   try {
     await reader.prepareContainer?.(inventory.manifest.root_sha256, signal);
-    try {
-      output = await SafeOutputTree.create(input.outputRoot);
-    } catch (cause: unknown) {
-      if (cause instanceof SafeOutputTreeCreationFailure) output = cause.tree;
-      throw cause;
+    if (dryRun) {
+      await SafeOutputTree.checkDestination(input.outputRoot);
+    } else {
+      try {
+        output = await SafeOutputTree.create(
+          input.outputRoot,
+          input.platform ?? process.platform,
+        );
+      } catch (cause: unknown) {
+        if (cause instanceof SafeOutputTreeCreationFailure) output = cause.tree;
+        throw cause;
+      }
     }
     const traversal = new ArtifactTraversalObservation();
     traversal.onCoverage({
       status: inventory.coverage.status,
       limitations: inventory.limitations,
     });
-    await writeSelectedEntries({
-      reader,
-      output,
-      byPath,
-      extracted,
-      traversal,
-      signal,
-    });
+    if (dryRun) {
+      await planSelectedEntries({
+        reader,
+        platform: input.platform ?? process.platform,
+        byPath,
+        extracted,
+        traversal,
+        signal,
+      });
+    } else {
+      await writeSelectedEntries({
+        reader,
+        output: output!,
+        byPath,
+        extracted,
+        traversal,
+        signal,
+      });
+    }
     localReaderOwner = undefined;
     const closeAttempt = await input.resourceScope.release(readerOwner);
     if (closeAttempt.kind === "failed")
@@ -365,7 +388,7 @@ const materializeSelection = async ({
       traversal.snapshot(),
       reader.provenance(),
     );
-    await output.commit(signal);
+    if (output !== undefined) await output.commit(signal);
     return completed;
   } catch (cause: unknown) {
     const cleanupFailures = await releaseExtractionOwners(
@@ -387,6 +410,145 @@ const materializeSelection = async ({
     if (output?.published === true && completed !== undefined) return completed;
     throw cause;
   }
+};
+
+const planSelectedEntries = async ({
+  reader,
+  platform,
+  byPath,
+  extracted,
+  traversal,
+  signal,
+}: {
+  readonly reader: ArtifactReader;
+  readonly platform: NodeJS.Platform;
+  readonly byPath: Map<string, SelectedOccurrence>;
+  readonly extracted: ExtractedOccurrence[];
+  readonly traversal: ArtifactTraversalObservation;
+  readonly signal: AbortSignal | undefined;
+}): Promise<void> => {
+  const readerRegistry = new ArtifactPathRegistry();
+  const outputRegistry = new ArtifactPathRegistry();
+  for await (const entry of reader.entries(signal, traversal)) {
+    const path = normalizeArtifactPath(entry.path);
+    readerRegistry.add(path, entry.kind);
+    if (entry.kind !== "file" && entry.kind !== "slice") continue;
+    const selectedItem = byPath.get(path);
+    if (selectedItem === undefined) {
+      throw new ArtifactReaderFailure(
+        "integrity",
+        `Regular artifact entry is missing from inventory: ${path}`,
+      );
+    }
+    preflight(entry);
+    if (
+      !Number.isSafeInteger(selectedItem.node.size) ||
+      selectedItem.node.size < 0
+    )
+      throw new ArtifactReaderFailure(
+        "format",
+        `Invalid expected extraction size for ${path}`,
+      );
+    const destinationPath = normalizeDestinationPath(path, platform);
+    outputRegistry.add(destinationPath, "file");
+    extracted.push({
+      artifact_id: selectedItem.node.artifact_id,
+      relative_path: destinationPath,
+      sha256: selectedItem.node.sha256,
+      bytes_written: 0,
+      created: false,
+    });
+    byPath.delete(path);
+  }
+  if (byPath.size > 0)
+    throw new ArtifactReaderFailure(
+      "integrity",
+      `Inventoried regular artifact entries were not materialized: ${[...byPath.keys()].sort(compareUnicodeCodePoints).join(", ")}`,
+    );
+};
+
+const createDryRunPlan = (
+  inventory: ArtifactInventorySnapshot,
+  selected: readonly SelectedOccurrence[],
+): ArtifactExtractionPlan => {
+  const selectedById = new Map(
+    selected.map((item) => [item.occurrence.occurrence_id, item] as const),
+  );
+  const entries: ArtifactExtractionPlanEntry[] = [];
+  let plannedFiles = 0;
+  let unsupportedEntries = 0;
+  let unresolvedEntries = 0;
+  let observedBytesEstimate = 0;
+  let declaredBytesEstimate: number | null = 0;
+  for (const occurrence of inventory.occurrences) {
+    if (occurrence.logical_path === ".") continue;
+    const selectedItem = selectedById.get(occurrence.occurrence_id);
+    if (selectedItem !== undefined) {
+      plannedFiles += 1;
+      observedBytesEstimate += selectedItem.node.size;
+      if (occurrence.declared_size === null) declaredBytesEstimate = null;
+      else if (declaredBytesEstimate !== null)
+        declaredBytesEstimate += occurrence.declared_size;
+      entries.push({
+        occurrence_id: occurrence.occurrence_id,
+        logical_path: occurrence.logical_path,
+        entry_kind: occurrence.entry_kind,
+        status: "planned",
+        reason: null,
+        observed_bytes: selectedItem.node.size,
+        declared_bytes: occurrence.declared_size,
+      });
+      continue;
+    }
+    if (occurrence.entry_kind === "symlink") {
+      unresolvedEntries += 1;
+      entries.push({
+        occurrence_id: occurrence.occurrence_id,
+        logical_path: occurrence.logical_path,
+        entry_kind: occurrence.entry_kind,
+        status: "unresolved",
+        reason:
+          "Symlink entries are not materialized during extraction; target remains unresolved.",
+        observed_bytes: null,
+        declared_bytes: occurrence.declared_size,
+      });
+      continue;
+    }
+    unsupportedEntries += 1;
+    const reason =
+      occurrence.entry_kind === "directory"
+        ? "Directory entries are not materialized directly; parent directories are created only as needed for planned regular files."
+        : occurrence.entry_kind === "metadata"
+          ? "Logical metadata declarations do not claim a destination file path."
+          : "Nested archive member remains inside its containing regular file and is not expanded during single-container extraction.";
+    entries.push({
+      occurrence_id: occurrence.occurrence_id,
+      logical_path: occurrence.logical_path,
+      entry_kind: occurrence.entry_kind,
+      status: "unsupported",
+      reason,
+      observed_bytes: null,
+      declared_bytes: occurrence.declared_size,
+    });
+  }
+  entries.sort(
+    (left, right) =>
+      compareUnicodeCodePoints(left.logical_path, right.logical_path) ||
+      compareUnicodeCodePoints(left.occurrence_id, right.occurrence_id),
+  );
+  return {
+    entries,
+    totals: {
+      planned_files: plannedFiles,
+      unsupported_entries: unsupportedEntries,
+      unresolved_entries: unresolvedEntries,
+      observed_bytes_estimate: observedBytesEstimate,
+      declared_bytes_estimate: declaredBytesEstimate,
+      byte_totals_basis: "declared-and-observed-content-estimates",
+      byte_totals_note:
+        "Declared and observed byte totals are content-byte estimates from archive metadata and inventory hashing, not guaranteed filesystem or disk-block usage.",
+    },
+  };
 };
 
 const writeSelectedEntries = async ({
@@ -493,6 +655,7 @@ const createExtractionResult = (
     files_sha256: digestCanonicalValue(extracted, "Artifact"),
     output_root_alias: "$OUTPUT_ROOT" as const,
   };
+  const dryRun = input.dryRun === true;
   return artifactExtractionResultSchema.parse({
     manifest: inventory.manifest,
     extraction_manifest: {
@@ -500,6 +663,12 @@ const createExtractionResult = (
       extraction_id: `aex_${digestCanonicalValue(extractionSemantic, "Artifact")}`,
     },
     output_root: input.outputRoot,
+    ...(dryRun
+      ? {
+          dry_run: true,
+          plan: createDryRunPlan(inventory, selected),
+        }
+      : {}),
     artifacts: extracted,
     containment_verified: true,
     cleanup: { attempted: false, verified: true, residual_paths: [] },
@@ -516,14 +685,18 @@ const createExtractionResult = (
           (limitation) => `${occurrence.logical_path}: ${limitation}`,
         ),
       ),
-      traversal.status === "complete"
-        ? "All regular files exposed by the active artifact reader were materialized."
-        : "All inventoried regular files exposed by the active reader were materialized; source traversal coverage is unknown, so the output is not established as a complete source copy.",
-      "Publication verifies the selected inventoried regular files; it does not establish complete content decoding.",
+      dryRun
+        ? "Dry-run extraction validated destination admission, path collisions, and reader entries without creating destination files or directories."
+        : traversal.status === "complete"
+          ? "All regular files exposed by the active artifact reader were materialized."
+          : "All inventoried regular files exposed by the active reader were materialized; source traversal coverage is unknown, so the output is not established as a complete source copy.",
+      dryRun
+        ? "Dry-run byte totals are declared and observed content-byte estimates, not guaranteed disk usage."
+        : "Publication verifies the selected inventoried regular files; it does not establish complete content decoding.",
       ...(integrityContradictions.length === 0
         ? []
         : [
-            `${String(integrityContradictions.length)} extracted file(s) contradict declared integrity metadata; their bytes are observed-untrusted.`,
+            `${String(integrityContradictions.length)} ${dryRun ? "planned" : "extracted"} file(s) contradict declared integrity metadata; their bytes are observed-untrusted.`,
           ]),
     ],
   });

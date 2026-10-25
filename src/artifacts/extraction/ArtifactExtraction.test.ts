@@ -1,4 +1,12 @@
-import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  readFile,
+  readdir,
+  rename,
+  stat,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 
@@ -420,5 +428,176 @@ it("keeps the detection error primary and reports a failed detection close", asy
   } finally {
     close.mockRestore();
     await resourceScope.close().catch(() => undefined);
+  }
+});
+
+it("plans dry-run extraction with unresolved/unsupported entries and labeled byte estimates without writing to disk", async () => {
+  const directory = await createTestTempDirectory("rea-extraction-dry-run-");
+  const source = join(directory, "source");
+  await mkdir(join(source, "sub"), { recursive: true });
+  await writeFile(join(source, "alpha.txt"), "alpha");
+  await writeFile(join(source, "sub", "beta.txt"), "beta-bytes");
+  await symlink("alpha.txt", join(source, "alias.txt"));
+  const dryOutput = join(directory, "dry-out");
+  const realOutput = join(directory, "real-out");
+  const resourceScope = new ArtifactResourceScope();
+  try {
+    const planned = await extractArtifact({
+      inputPath: source,
+      inputFormat: "asar",
+      outputRoot: dryOutput,
+      dryRun: true,
+      environment: {},
+      integrityPolicy: "fail",
+      resourceScope,
+    });
+    await expect(stat(dryOutput)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readdir(directory)).toEqual(["source"]);
+    expect(planned.dry_run).toBe(true);
+    expect(planned.artifacts).toEqual([
+      {
+        artifact_id: expect.stringMatching(/^art_[a-f0-9]{64}$/u),
+        relative_path: "alpha.txt",
+        sha256: createHash("sha256").update("alpha").digest("hex"),
+        bytes_written: 0,
+        created: false,
+      },
+      {
+        artifact_id: expect.stringMatching(/^art_[a-f0-9]{64}$/u),
+        relative_path: "sub/beta.txt",
+        sha256: createHash("sha256").update("beta-bytes").digest("hex"),
+        bytes_written: 0,
+        created: false,
+      },
+    ]);
+    expect(planned.plan).toMatchObject({
+      entries: [
+        {
+          logical_path: "alias.txt",
+          entry_kind: "symlink",
+          status: "unresolved",
+          observed_bytes: null,
+        },
+        {
+          logical_path: "alpha.txt",
+          entry_kind: "file",
+          status: "planned",
+          reason: null,
+          observed_bytes: 5,
+          declared_bytes: 5,
+        },
+        {
+          logical_path: "sub",
+          entry_kind: "directory",
+          status: "unsupported",
+          observed_bytes: null,
+        },
+        {
+          logical_path: "sub/beta.txt",
+          entry_kind: "file",
+          status: "planned",
+          reason: null,
+          observed_bytes: 10,
+          declared_bytes: 10,
+        },
+      ],
+      totals: {
+        planned_files: 2,
+        unsupported_entries: 1,
+        unresolved_entries: 1,
+        observed_bytes_estimate: 15,
+        declared_bytes_estimate: 15,
+        byte_totals_basis: "declared-and-observed-content-estimates",
+      },
+    });
+
+    const materialized = await extractArtifact({
+      inputPath: source,
+      inputFormat: "asar",
+      outputRoot: realOutput,
+      environment: {},
+      integrityPolicy: "fail",
+      resourceScope,
+    });
+    expect(materialized.dry_run).toBeUndefined();
+    expect(materialized.plan).toBeUndefined();
+    expect(
+      planned.artifacts.map(({ artifact_id, relative_path, sha256 }) => ({
+        artifact_id,
+        relative_path,
+        sha256,
+      })),
+    ).toEqual(
+      materialized.artifacts.map(({ artifact_id, relative_path, sha256 }) => ({
+        artifact_id,
+        relative_path,
+        sha256,
+      })),
+    );
+    expect(planned.extraction_manifest.selected_occurrence_ids).toEqual(
+      materialized.extraction_manifest.selected_occurrence_ids,
+    );
+  } finally {
+    await resourceScope.close();
+  }
+});
+
+it("matches real extraction refusal on NFC path collisions and Windows invalid names in dry-run mode", async () => {
+  const directory = await createTestTempDirectory(
+    "rea-extraction-dry-run-collisions-",
+  );
+  const collisionZip = join(directory, "collision.zip");
+  const writer = new ZipWriter(new Uint8ArrayWriter());
+  await writer.add("cafe\u0301.txt", new TextReader("nfd"));
+  await writer.add("caf\u00e9.txt", new TextReader("nfc"));
+  await writeFile(collisionZip, Buffer.from(await writer.close()));
+
+  const winInvalidZip = join(directory, "win-invalid.zip");
+  const winWriter = new ZipWriter(new Uint8ArrayWriter());
+  await winWriter.add("stream:data.txt", new TextReader("ads"));
+  await writeFile(winInvalidZip, Buffer.from(await winWriter.close()));
+
+  const resourceScope = new ArtifactResourceScope();
+  try {
+    const dryCollisionOut = join(directory, "dry-collision-out");
+    const realCollisionOut = join(directory, "real-collision-out");
+    const dryCollisionError = await extractArtifact({
+      ...zipInput(collisionZip, dryCollisionOut, resourceScope),
+      dryRun: true,
+    }).catch((cause: unknown) => cause);
+    const realCollisionError = await extractArtifact(
+      zipInput(collisionZip, realCollisionOut, resourceScope),
+    ).catch((cause: unknown) => cause);
+    expect(dryCollisionError).toBeInstanceOf(ArtifactReaderFailure);
+    expect(realCollisionError).toBeInstanceOf(ArtifactReaderFailure);
+    expect((dryCollisionError as ArtifactReaderFailure).reason).toBe("path");
+    expect((dryCollisionError as ArtifactReaderFailure).message).toBe(
+      (realCollisionError as ArtifactReaderFailure).message,
+    );
+    await expect(stat(dryCollisionOut)).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+
+    const dryWinOut = join(directory, "dry-win-out");
+    const realWinOut = join(directory, "real-win-out");
+    const dryWinError = await extractArtifact({
+      ...zipInput(winInvalidZip, dryWinOut, resourceScope),
+      dryRun: true,
+      platform: "win32",
+    }).catch((cause: unknown) => cause);
+    const realWinError = await extractArtifact({
+      ...zipInput(winInvalidZip, realWinOut, resourceScope),
+      platform: "win32",
+    }).catch((cause: unknown) => cause);
+    expect(dryWinError).toBeInstanceOf(ArtifactReaderFailure);
+    expect(realWinError).toBeInstanceOf(ArtifactReaderFailure);
+    expect((dryWinError as ArtifactReaderFailure).reason).toBe("path");
+    expect((dryWinError as ArtifactReaderFailure).message).toBe(
+      (realWinError as ArtifactReaderFailure).message,
+    );
+    await expect(stat(dryWinOut)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(stat(realWinOut)).rejects.toMatchObject({ code: "ENOENT" });
+  } finally {
+    await resourceScope.close();
   }
 });
