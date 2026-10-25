@@ -4,6 +4,7 @@ import {
 } from "../domain/runtimeVersion.js";
 import { providerStartupTimeoutSchema } from "../config/providerStartupTimeout.js";
 import { hopperLauncherDiscovery } from "./HopperLauncherDiscovery.js";
+import type { HopperReleaseError } from "./HopperReleaseFeed.js";
 import { LINUX_HOPPER_SETUP_HOSTS, supportsReaHost } from "./LinuxHopper.js";
 import type {
   DoctorCheck,
@@ -256,9 +257,12 @@ const optionalHopperVersionCheck = async (
   if (host.platform !== "linux" || hopperPath === undefined) return undefined;
   const inspected = await host.inspectLinuxHopper(hopperPath);
   const buildCheck = check("hopper-version", inspected.ok, hopperPath, {
-    remediation: unsupportedHopperRemediation(
-      host.configuredHopperPath === hopperPath,
-    ),
+    remediation: inspected.ok
+      ? ""
+      : hopperVerificationRemediation(
+          inspected.error,
+          host.configuredHopperPath === hopperPath,
+        ),
     classification:
       !inspected.ok &&
       [
@@ -361,6 +365,14 @@ const unsupportedHopperRemediation = (configured: boolean): string =>
   configured
     ? "The configured HOPPER_LAUNCHER_PATH binary does not match the current official Linux demo or any retained authenticated package. If this build was extracted from an older official .deb, run rea setup --yes --install-hopper to install and retain the current authenticated build. Otherwise check HOPPER_LAUNCHER_PATH and its publisher verification evidence."
     : "Run rea setup --yes --install-hopper to install and retain an authenticated official Hopper package for offline use.";
+
+const hopperVerificationRemediation = (
+  error: HopperReleaseError,
+  configured: boolean,
+): string =>
+  error.reason === "unsupported_hopper_build"
+    ? unsupportedHopperRemediation(configured)
+    : `Hopper publisher verification could not complete: ${error.message} Resolve the reported verification failure, then rerun rea doctor.`;
 
 const parseMajor = (version: string | undefined): number =>
   Number.parseInt(version?.split(".")[0] ?? "0", 10);
