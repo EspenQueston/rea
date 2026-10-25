@@ -235,18 +235,26 @@ const skippedMembersNote = (
     ...skipped.map((name) => canonical.display(name)),
     ...(more === 0 ? [] : [`${String(more)} more canonical DEX member(s)`]),
   ].join(", ");
-  // Advise entry only for members it would select: stored once, as a file
-  // REA reads (unnamed ones may be either).
-  const selectable =
-    skipped.filter((name) => canonical.isSelectable(name)).length + more;
+  // Advise entry only for members it could select: a kept name stored once,
+  // as a file REA reads, or an unnamed member first seen as such. Encrypted
+  // and symbolic-link members are never counted as selectable.
+  const named = skipped.filter((name) => canonical.isSelectable(name)).length;
+  const unnamed = Math.min(more, canonical.unnamedReadable);
+  const selectable = named + unnamed;
   const pick = (): string => {
     if (selectable === skipped.length + more)
       return selectable === 1 ? "it" : "one";
-    return selectable === 1 && more === 0
+    return selectable === 1 && unnamed === 0
       ? "the unmarked one"
       : "an unmarked one";
   };
-  const advice = selectable === 0 ? "" : ` Select ${pick()} with entry.`;
+  // Whether an unnamed member is stored only once was not retained.
+  const caveat =
+    unnamed === 0
+      ? ""
+      : " Whether an unnamed member is stored only once was not retained, so selecting one may still be refused.";
+  const advice =
+    selectable === 0 ? "" : ` Select ${pick()} with entry.${caveat}`;
   return `${path} also holds ${names}, which Android does not auto-load: it loads classes.dex, classes2.dex, ... only while each is present under its exact stored name.${advice}`;
 };
 

@@ -454,3 +454,38 @@ describe("DexFileProvider partial results", () => {
     expect(result.error.partialObservation).toBeUndefined();
   });
 });
+
+describe("DexFileProvider skipped-member advice", () => {
+  const noteOf = async (name: string, password?: string) => {
+    const path = await write(
+      name,
+      await zipArchive([
+        { name: "classes.dex", bytes: debuggableDex() },
+        ...Array.from({ length: 130 }, (_, i) => ({
+          name: `classes${String(i + 3)}.dex`,
+          bytes: debuggableDex(),
+          ...(password === undefined ? {} : { password }),
+        })),
+      ]),
+    );
+    const result = await provider.inspect({ path });
+    if (!result.ok) throw result.error;
+    return (result.value.result as { limitations: string[] }).limitations.join(
+      " ",
+    );
+  };
+
+  it("does not advise entry when every member past the gap is encrypted", async () => {
+    const note = await noteOf("gap-encrypted.apk", "secret");
+    expect(note).toContain("more canonical DEX member(s)");
+    expect(note).not.toContain("with entry");
+  });
+
+  it("advises entry for unnamed plain members, saying it may still be refused", async () => {
+    const note = await noteOf("gap-plain.apk");
+    expect(note).toContain("with entry.");
+    expect(note).toContain(
+      "Whether an unnamed member is stored only once was not retained",
+    );
+  });
+});

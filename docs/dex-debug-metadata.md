@@ -127,7 +127,10 @@ Limits and refusals a caller can meet:
   `entry` would refuse is marked: a name stored more than once ("stored N
   times; ambiguous"), a symbolic-link member, or an encrypted one ("encrypted;
   REA does not read it"); the note advises `entry` only while a member it
-  would select remains. Named members and spellings stop at 128 names or
+  could select remains. Members counted but not named are taken as
+  selectable only if they were plain files when seen; whether each is stored
+  only once was not retained, so the note then says a selection may still be
+  refused. Named members and spellings stop at 128 names or
   4 KiB, marks included, and the rest are counted as members; a name (or
   caller `class_descriptor`) longer than 160 UTF-16 code units is shortened
   in that prose by its two ends, with a marker counting characters,

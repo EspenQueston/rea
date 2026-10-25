@@ -113,6 +113,8 @@ export class NamedMembers {
   readonly #quoted: boolean;
   #bytes = 0;
   #unnamed = 0;
+  /** Unnamed members first seen as a plain file REA reads (not marked). */
+  #unnamedReadable = 0;
   /** Set once a name is left out; no name is admitted after it. */
   #closed = false;
 
@@ -143,6 +145,7 @@ export class NamedMembers {
       } else {
         this.#closed = true;
         this.#unnamed += 1;
+        if (!symlink && !encrypted) this.#unnamedReadable += 1;
       }
       return;
     }
@@ -158,6 +161,8 @@ export class NamedMembers {
     this.#names.delete(name);
     this.#bytes -= this.#cost(name) + before;
     this.#unnamed += kept.occurrences;
+    // A dropped name grew its mark (a repeat or a refusal flag), so it is
+    // never selectable and adds nothing to `unnamedReadable`.
     this.#closed = true;
   }
 
@@ -169,6 +174,15 @@ export class NamedMembers {
   /** Members whose name was not kept (each occurrence counts once). */
   get unnamed(): number {
     return this.#unnamed;
+  }
+
+  /**
+   * Unnamed members that were plain files when seen: an upper bound on those
+   * `entry` could select. Whether each is stored only once was not retained,
+   * so a selection among them is possible, never promised.
+   */
+  get unnamedReadable(): number {
+    return this.#unnamedReadable;
   }
 
   /**
