@@ -180,12 +180,9 @@ it.each([
   ["set inferior-tty /tmp/output", true],
   ["show inferior-t; set inferior-tty /tmp/output", true],
   ["show inferior-tty; define redirect = run > /tmp/output", true],
-] as const)(
-  "classifies inferior TTY commands: %s",
-  (command, expected) => {
-    expect(commandMayChangeInferiorOutput(command)).toBe(expected);
-  },
-);
+] as const)("classifies inferior TTY commands: %s", (command, expected) => {
+  expect(commandMayChangeInferiorOutput(command)).toBe(expected);
+});
 
 it.each([
   [new Error("provider failure"), "provider failure"],
@@ -2771,9 +2768,9 @@ it("keeps the verified sink across the read-only show inferior-tty inspection", 
   );
 
   expect(inspectedMi.ok).toBe(true);
-  expect(
-    manager.status(started.value.session_id)?.inferior_tty_verified,
-  ).toBe(true);
+  expect(manager.status(started.value.session_id)?.inferior_tty_verified).toBe(
+    true,
+  );
 
   const closed = await manager.close(started.value.session_id);
 
