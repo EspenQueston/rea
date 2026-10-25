@@ -58,6 +58,31 @@ const NATIVE_PLATFORMS: Readonly<
   win32: { x64: "win_x86_64" },
 };
 
+/**
+ * Native directories absent from official Ghidra release archives; Ghidra's
+ * own `buildNatives` Gradle task writes them under `build/os/`.
+ */
+const USER_BUILT_NATIVE_PLATFORMS: ReadonlySet<string> = new Set([
+  "linux_arm_64",
+  "mac_x86_64",
+  "mac_arm_64",
+]);
+
+/** Remediation for a missing or foreign native decompiler on the host. */
+const nativeDecompilerRemediation = (
+  platform: NodeJS.Platform,
+  architecture: NodeJS.Architecture,
+  builtFor?: string,
+): string => {
+  const directory = NATIVE_PLATFORMS[platform]?.[architecture];
+  const executable = platform === "win32" ? "decompile.exe" : "decompile";
+  const build =
+    directory !== undefined && USER_BUILT_NATIVE_PLATFORMS.has(directory)
+      ? ` Official Ghidra release archives do not include it; build it once from <GhidraInstallDir>/support/gradle/ with ./gradlew buildNatives (or gradle buildNatives), which writes build/os/${directory}/${executable}.`
+      : "";
+  return `Provide an executable Ghidra/Features/Decompiler/os/${directory ?? "<platform>"}/${executable}${builtFor === undefined ? "" : ` built for ${builtFor}`}, or its build/os equivalent.${build} REA does not build or install native tools.`;
+};
+
 /** Executable format each supported host runs its own Ghidra native tools as. */
 const NATIVE_TOOL_FORMATS: Readonly<
   Partial<Record<NodeJS.Platform, ExecutableMetadata["format"]>>
@@ -146,12 +171,10 @@ const assessNativeDecompiler = (
       status: "compatible",
       detail: `${path} reports ${observed}, which matches ${platform}/${architecture}`,
     };
-  const nativeDirectory = NATIVE_PLATFORMS[platform]?.[architecture];
-  const executable = platform === "win32" ? "decompile.exe" : "decompile";
   return {
     status: "incompatible",
     detail: `${path} reports ${observed}, but ${platform}/${architecture} requires ${expected}`,
-    remediation: `Provide an executable Ghidra/Features/Decompiler/os/${nativeDirectory ?? "<platform>"}/${executable} built for ${expected}, or its build/os equivalent. REA does not build or install native tools.`,
+    remediation: nativeDecompilerRemediation(platform, architecture, expected),
   };
 };
 
@@ -938,7 +961,7 @@ const nativeDecompilerCheck = ({
     remediation:
       compatibility?.status === "incompatible"
         ? compatibility.remediation
-        : `Provide an executable Ghidra/Features/Decompiler/os/${NATIVE_PLATFORMS[platform]?.[architecture] ?? "<platform>"}/${platform === "win32" ? "decompile.exe" : "decompile"}, or its build/os equivalent. REA does not build or install native tools.`,
+        : nativeDecompilerRemediation(platform, architecture),
   });
 };
 

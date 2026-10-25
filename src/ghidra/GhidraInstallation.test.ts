@@ -1465,6 +1465,81 @@ describe("Ghidra native decompiler compatibility", () => {
   });
 });
 
+describe("Ghidra native decompiler remediation", () => {
+  it.each([
+    {
+      platform: "darwin" as const,
+      architecture: "arm64" as const,
+      osArch: "aarch64",
+      osName: "Mac OS X",
+      directory: "mac_arm_64",
+    },
+    {
+      platform: "darwin" as const,
+      architecture: "x64" as const,
+      osArch: "x86_64",
+      osName: "Mac OS X",
+      directory: "mac_x86_64",
+    },
+    {
+      platform: "linux" as const,
+      architecture: "arm64" as const,
+      osArch: "aarch64",
+      osName: "Linux",
+      directory: "linux_arm_64",
+    },
+  ])(
+    "names Ghidra's buildNatives task when $platform/$architecture lacks a release decompiler",
+    async ({ platform, architecture, osArch, osName, directory }) => {
+      const result = await inspectGhidraInstallation(
+        {
+          resourceOwner: inspectionResources.owner,
+          environment: {},
+          installDir: INSTALL,
+          platform,
+          architecture,
+        },
+        host({
+          executable: (path) => path === HEADLESS,
+          probeJava: () =>
+            javaProbeOk<GhidraJavaObservation>({ ...JAVA, osArch, osName }),
+        }),
+      );
+      expect(result.status).toBe("unavailable");
+      if (result.status !== "unavailable") return;
+      expect(
+        result.checks.find(({ name }) => name === "native_decompiler"),
+      ).toMatchObject({
+        status: "failed",
+        detail: `Matching native decompiler for ${platform}/${architecture} was not found`,
+        remediation: `Provide an executable Ghidra/Features/Decompiler/os/${directory}/decompile, or its build/os equivalent. Official Ghidra release archives do not include it; build it once from <GhidraInstallDir>/support/gradle/ with ./gradlew buildNatives (or gradle buildNatives), which writes build/os/${directory}/decompile. REA does not build or install native tools.`,
+      });
+    },
+  );
+
+  it("omits the buildNatives hint where release archives ship the decompiler", async () => {
+    const result = await inspectGhidraInstallation(
+      {
+        resourceOwner: inspectionResources.owner,
+        environment: {},
+        installDir: INSTALL,
+        platform: "linux",
+        architecture: "x64",
+      },
+      host({ executable: (path) => path === HEADLESS }),
+    );
+    expect(result.status).toBe("unavailable");
+    if (result.status !== "unavailable") return;
+    expect(
+      result.checks.find(({ name }) => name === "native_decompiler"),
+    ).toMatchObject({
+      status: "failed",
+      remediation:
+        "Provide an executable Ghidra/Features/Decompiler/os/linux_x86_64/decompile, or its build/os equivalent. REA does not build or install native tools.",
+    });
+  });
+});
+
 describe("Ghidra JVM native directory admission", () => {
   it("rejects a JDK whose os.arch selects a different native decompiler directory", async () => {
     const result = await inspectGhidraInstallation(
