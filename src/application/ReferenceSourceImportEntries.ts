@@ -1,9 +1,12 @@
+import { err, ok, type Result } from "../domain/result.js";
 import { createHash } from "node:crypto";
 import { posix } from "node:path";
 
+import type { JavaScriptPackageType } from "../domain/javascript/javascriptSourceParser.js";
 import { logicalPathEscapesRoot } from "../domain/artifactIdentity.js";
 import {
   createReferenceSourcePathLookup,
+  decodeReferenceSourceModuleUrlPath,
   isPortableAbsoluteReferenceTarget,
   type ReferenceSourcePathLookup,
 } from "../domain/referenceSourcePathIdentity.js";
@@ -58,6 +61,10 @@ const failedEntry = (
 ): HistoricalSourceGraphInput["entries"][number] => {
   const classifications = classifyReferenceSourcePath(entry.path);
   const limitation = projectReferenceSourceEntryFailure(entry);
+  const local =
+    entry.localDiagnostic === undefined
+      ? {}
+      : { local_diagnostics: [entry.localDiagnostic] };
   if (entry.kind === "directory")
     return {
       path: entry.path,
@@ -65,6 +72,7 @@ const failedEntry = (
       classifications,
       tree_state: "unreadable",
       limitations: [limitation],
+      ...local,
     };
   if (entry.kind === "symlink")
     return {
@@ -74,6 +82,7 @@ const failedEntry = (
       target_state: "unreadable",
       classifications,
       limitations: [limitation],
+      ...local,
     };
   if (entry.kind === "unknown" || entry.kind === "other")
     return {
@@ -81,6 +90,7 @@ const failedEntry = (
       kind: "unknown",
       classifications: ["unknown"],
       limitations: [limitation],
+      ...local,
     };
   return {
     path: entry.path,
@@ -91,6 +101,7 @@ const failedEntry = (
     classifications: entry.kind === "file" ? classifications : ["unknown"],
     content_state: "unreadable",
     limitations: [limitation],
+    ...local,
   };
 };
 
@@ -100,41 +111,75 @@ type PackageMain =
   | { readonly state: "none" }
   | { readonly state: "unknown" };
 
-/**
- * Read each inventoried `package.json` once. Node selects a non-empty string
- * `main` before a directory index; an unreadable or invalid manifest leaves
- * that selection unknown.
- */
-const readPackageMains = (
+interface PackageMetadata {
+  readonly main: PackageMain;
+  readonly type: JavaScriptPackageType;
+}
+const UNKNOWN_PACKAGE: PackageMetadata = {
+  main: { state: "unknown" },
+  type: "unknown",
+};
+
+/** Parse each manifest once; both entry selection and loader scope consume its facts. */
+const readPackageMetadata = (
   read: ReferenceSourceRead,
-): ReadonlyMap<string, PackageMain> => {
-  const mains = new Map<string, PackageMain>();
+  exclusions: HistoricalSourceGraphInput["exclusions"],
+): {
+  readonly packages: ReadonlyMap<string, PackageMetadata>;
+  readonly pathLookup: ReferenceSourcePathLookup;
+} => {
+  const packages = new Map<string, PackageMetadata>();
+  const manifestPaths: string[] = [];
+  for (const exclusion of exclusions) {
+    if (posix.basename(exclusion.path) !== "package.json") continue;
+    manifestPaths.push(exclusion.path);
+    packages.set(posix.dirname(exclusion.path), UNKNOWN_PACKAGE);
+  }
   for (const entry of read.entries) {
     if (posix.basename(entry.path) !== "package.json") continue;
+    manifestPaths.push(entry.path);
     const directory = posix.dirname(entry.path);
-    if (entry.status !== "read" || entry.kind !== "file") {
-      mains.set(directory, { state: "unknown" });
+    if (
+      packages.has(directory) ||
+      entry.status !== "read" ||
+      entry.kind !== "file"
+    ) {
+      packages.set(directory, UNKNOWN_PACKAGE);
       continue;
     }
     try {
       const manifest: unknown = JSON.parse(
         new TextDecoder("utf-8", { fatal: true }).decode(entry.bytes),
       );
-      const main =
-        typeof manifest === "object" && manifest !== null
-          ? Reflect.get(manifest, "main")
-          : undefined;
-      mains.set(
-        directory,
-        typeof main === "string" && main !== ""
-          ? { state: "declared", main }
-          : { state: "none" },
-      );
+      if (
+        typeof manifest !== "object" ||
+        manifest === null ||
+        Array.isArray(manifest)
+      ) {
+        packages.set(directory, UNKNOWN_PACKAGE);
+        continue;
+      }
+      const type: unknown = Object.hasOwn(manifest, "type")
+        ? Reflect.get(manifest, "type")
+        : undefined;
+      const main: unknown = Object.hasOwn(manifest, "main")
+        ? Reflect.get(manifest, "main")
+        : undefined;
+      packages.set(directory, {
+        type: type === "module" || type === "commonjs" ? type : "unspecified",
+        main:
+          typeof main === "string" && main !== ""
+            ? { state: "declared", main }
+            : { state: "none" },
+      });
     } catch {
-      mains.set(directory, { state: "unknown" });
+      packages.set(directory, UNKNOWN_PACKAGE);
     }
   }
-  return mains;
+  return {
+    packages,
+    pathLookup: createReferenceSourcePathLookup(manifestPaths),
+  };
 };
 
 /**
@@ -145,6 +190,8 @@ const readPackageMains = (
 const RESOLUTION_SUFFIXES: readonly (readonly string[])[] = [
   [""],
   [".ts"],
+  [".mts"],
+  [".cts"],
   [".js"],
   [".mjs"],
   [".cjs"],
@@ -154,75 +201,187 @@ const RESOLUTION_SUFFIXES: readonly (readonly string[])[] = [
 const REQUIRE_RESOLUTION_SUFFIXES = RESOLUTION_SUFFIXES.map((slot) =>
   slot.includes(".js") ? [...slot, ".json"] : slot,
 );
+const NODE_REQUIRE_SUFFIXES = ["", ".js", ".json", ".node"] as const;
+
+type InternalSpecifierResolutionMode =
+  | "source-import"
+  | "source-require"
+  | "runtime-require";
+
+const resolutionSuffixes = (
+  mode: InternalSpecifierResolutionMode,
+): readonly (readonly string[])[] =>
+  mode === "source-require" ? REQUIRE_RESOLUTION_SUFFIXES : RESOLUTION_SUFFIXES;
+
+const nodeRequireFileCandidates = (path: string): string[] =>
+  NODE_REQUIRE_SUFFIXES.map((suffix) => `${path}${suffix}`);
+
+const nodeRequireIndexCandidates = (directory: string): string[] =>
+  NODE_REQUIRE_SUFFIXES.filter((suffix) => suffix !== "").map((suffix) =>
+    posix.join(directory, `index${suffix}`),
+  );
 
 /** Inventory facts an internal specifier resolves against. */
 interface SpecifierContext {
   readonly lookupPath: ReferenceSourcePathLookup;
-  readonly packageMains: ReadonlyMap<string, PackageMain>;
+  readonly packages: ReadonlyMap<string, PackageMetadata>;
+  readonly packageManifestPathLookup: ReferenceSourcePathLookup;
 }
 
-/**
- * Apply a package `main` to a directory resolved through its index. Node loads
- * the declared entry as a file, then as a directory index, and falls back to
- * the package's own index only when neither exists.
- */
-const selectPackageMain = (
-  index: string,
+const packageMainForDirectory = (
+  directory: string,
   context: SpecifierContext,
-  slots: readonly (readonly string[])[],
+): { readonly directory: string; readonly main: PackageMain } | undefined => {
+  const manifestPath = context.packageManifestPathLookup.resolve(
+    posix.join(directory, "package.json"),
+  );
+  if (manifestPath !== undefined) {
+    const manifestDirectory = posix.dirname(manifestPath);
+    const main = context.packages.get(manifestDirectory)?.main;
+    return main === undefined
+      ? undefined
+      : { directory: manifestDirectory, main };
+  }
+  return context.packageManifestPathLookup.has(
+    posix.join(directory, "package.json"),
+  )
+    ? { directory, main: { state: "unknown" } }
+    : undefined;
+};
+
+/** Apply a package main, retaining an existing index as the fallback target. */
+const selectPackageMain = (
+  directory: string,
+  indexFallback: string | undefined,
+  context: SpecifierContext,
+  mode: InternalSpecifierResolutionMode,
 ): { to: string; resolution: "internal" | "unresolved" } => {
-  const directory = posix.dirname(index);
-  const manifest = context.packageMains.get(directory);
+  const packageSelection = packageMainForDirectory(directory, context);
+  const packageDirectory = packageSelection?.directory ?? directory;
+  const manifest = packageSelection?.main;
   if (manifest === undefined || manifest.state === "none")
-    return { to: index, resolution: "internal" };
+    return indexFallback === undefined
+      ? { to: directory, resolution: "unresolved" }
+      : { to: indexFallback, resolution: "internal" };
   if (manifest.state === "unknown")
-    return { to: directory, resolution: "unresolved" };
+    return { to: packageDirectory, resolution: "unresolved" };
   // Node resolves `main` with path.resolve: an absolute main leaves the
   // package, and a trailing separator does not make the entry a directory.
   if (posix.isAbsolute(manifest.main))
     return { to: posix.normalize(manifest.main), resolution: "unresolved" };
-  const target = posix
-    .normalize(posix.join(directory, manifest.main))
-    .replace(/(?<=.)\/+$/u, "");
+  // Joining "." strips the trailing separator run with path semantics; a
+  // lookbehind regex kept separators behind line terminators (main "lib\n/").
+  const target = posix.join(posix.join(packageDirectory, manifest.main), ".");
   // Node would load a declared entry outside the imported root.
   if (logicalPathEscapesRoot(target))
     return { to: target, resolution: "unresolved" };
-  const suffixes = slots.flat();
-  const selected = context.lookupPath.resolveCandidates([
-    ...suffixes.map((suffix) => `${target}${suffix}`),
-    ...suffixes
-      .filter((suffix) => suffix !== "")
-      .map((suffix) => posix.join(target, `index${suffix}`)),
-  ]);
-  return { to: selected ?? index, resolution: "internal" };
+  const slots = resolutionSuffixes(mode);
+  const candidates =
+    mode === "runtime-require"
+      ? [
+          ...nodeRequireFileCandidates(target),
+          ...nodeRequireIndexCandidates(target),
+        ]
+      : [
+          ...slots.flatMap((slot) =>
+            slot.map((suffix) => `${target}${suffix}`),
+          ),
+          ...slots
+            .flat()
+            .filter((suffix) => suffix !== "")
+            .map((suffix) => posix.join(target, `index${suffix}`)),
+        ];
+  const selected = context.lookupPath.resolveCandidates(candidates);
+  return selected === undefined
+    ? indexFallback === undefined
+      ? { to: packageDirectory, resolution: "unresolved" }
+      : { to: indexFallback, resolution: "internal" }
+    : { to: selected, resolution: "internal" };
+};
+
+/** Parse URL syntax before inventory lookup; require filenames remain literal. */
+const importLookupPath = (
+  fromPath: string,
+  specifier: string,
+): Result<{ readonly path: string; readonly directory: boolean }, string> => {
+  // A private origin is only a logical pathname base, never a filesystem access.
+  let source: URL;
+  try {
+    source = new URL(
+      fromPath.split("/").map(encodeURIComponent).join("/"),
+      "file:///rea-reference/",
+    );
+  } catch (cause: unknown) {
+    if (!(cause instanceof URIError)) throw cause;
+    return err("The source path cannot be represented as a module URL.");
+  }
+  const target = URL.parse(specifier, source);
+  if (target === null || target.protocol !== "file:" || target.host !== "")
+    return err(
+      "The module URL cannot be resolved within the source inventory.",
+    );
+  if (!target.pathname.startsWith("/rea-reference/"))
+    return err("The module URL escapes the selected source inventory.");
+  const decoded = decodeReferenceSourceModuleUrlPath(
+    target.pathname.slice("/rea-reference/".length),
+  );
+  return decoded.ok
+    ? ok({ path: decoded.value, directory: target.pathname.endsWith("/") })
+    : decoded;
 };
 
 const resolveInternalSpecifier = (
   fromPath: string,
   specifier: string,
   context: SpecifierContext,
-  slots: readonly (readonly string[])[],
-): { to: string; resolution: "internal" | "unresolved" } => {
+  mode: InternalSpecifierResolutionMode,
+): {
+  to: string;
+  resolution: "internal" | "unresolved";
+  limitation?: string;
+} => {
   if (posix.isAbsolute(specifier))
     return { to: specifier, resolution: "unresolved" };
-  const normalized = posix.normalize(
-    posix.join(posix.dirname(fromPath), specifier),
-  );
+  const imported =
+    mode === "source-import"
+      ? importLookupPath(fromPath, specifier)
+      : undefined;
+  if (imported !== undefined && !imported.ok)
+    return {
+      to: specifier,
+      resolution: "unresolved",
+      limitation: imported.error,
+    };
+  const normalizedPath =
+    imported?.ok === true
+      ? imported.value.path
+      : posix.normalize(posix.join(posix.dirname(fromPath), specifier));
+  const normalized = normalizedPath.replace(/(?<=.)\/+$/u, "") || ".";
   if (logicalPathEscapesRoot(normalized))
     return { to: normalized, resolution: "unresolved" };
   // Preserve directory intent before normalization removes terminal dot segments.
   const directoryReference =
-    specifier.endsWith("/") || [".", ".."].includes(posix.basename(specifier));
+    imported?.ok === true
+      ? imported.value.directory
+      : specifier.endsWith("/") ||
+        [".", ".."].includes(posix.basename(specifier));
   // A directory resolves only to an index with an extension; neither Node nor
   // TypeScript selects an extensionless `index` file.
-  const candidates = slots.flatMap((slot) => [
-    ...(directoryReference
-      ? []
-      : slot.map((suffix) => `${normalized}${suffix}`)),
-    ...slot
-      .filter((suffix) => suffix !== "")
-      .map((suffix) => posix.join(normalized, `index${suffix}`)),
-  ]);
+  const slots = resolutionSuffixes(mode);
+  const candidates =
+    mode === "runtime-require"
+      ? [
+          ...(directoryReference ? [] : nodeRequireFileCandidates(normalized)),
+          ...nodeRequireIndexCandidates(normalized),
+        ]
+      : slots.flatMap((slot) => [
+          ...(directoryReference
+            ? []
+            : slot.map((suffix) => `${normalized}${suffix}`)),
+          ...slot
+            .filter((suffix) => suffix !== "")
+            .map((suffix) => posix.join(normalized, `index${suffix}`)),
+        ]);
   // Retain present runtime files first; substitute only a missing counterpart.
   // Counterparts cover explicit filenames, not directory/index resolution.
   if (!directoryReference)
@@ -232,16 +391,45 @@ const resolveInternalSpecifier = (
       ),
     );
   const match = context.lookupPath.resolveCandidates(candidates);
-  if (match === undefined) return { to: normalized, resolution: "unresolved" };
+  if (match === undefined)
+    return packageMainForDirectory(normalized, context) !== undefined
+      ? selectPackageMain(normalized, undefined, context, mode)
+      : { to: normalized, resolution: "unresolved" };
+  // posix.normalize preserves the specifier's trailing slash while
+  // dirname(match) never carries one; derive the directory identity with path
+  // semantics (joining "." collapses trailing slashes, including ones a regex
+  // would keep behind a line terminator) so a trailing-slash reference still
+  // reaches package-main selection the same way the plain spelling does.
+  const directory = posix.join(normalized, ".");
   const resolvedThroughIndex =
     posix.basename(match).startsWith("index.") &&
-    posix.dirname(match).normalize("NFC") === normalized.normalize("NFC");
+    posix.dirname(match).normalize("NFC") === directory.normalize("NFC");
   return resolvedThroughIndex
-    ? selectPackageMain(match, context, slots)
+    ? selectPackageMain(posix.dirname(match), match, context, mode)
     : { to: match, resolution: "internal" };
 };
 
 type ReadFile = Extract<ReferenceSourceEntry, { status: "read"; kind: "file" }>;
+
+/** The nearest inventoried manifest owns package type, even when it omits type. */
+const packageTypeForFile = (
+  path: string,
+  context: SpecifierContext,
+): JavaScriptPackageType => {
+  let directory = posix.dirname(path);
+  while (true) {
+    const manifest = packageMainForDirectory(directory, context);
+    if (manifest !== undefined)
+      return context.packages.get(manifest.directory)?.type ?? "unknown";
+    if (
+      directory === "." ||
+      directory === "/" ||
+      posix.basename(directory) === "node_modules"
+    )
+      return "unknown";
+    directory = posix.dirname(directory);
+  }
+};
 
 const appendFile = (
   entry: ReadFile,
@@ -252,7 +440,12 @@ const appendFile = (
   const parsed =
     language === null || !PARSEABLE_REFERENCE_SOURCE_LANGUAGES.has(language)
       ? undefined
-      : parseReferenceSourceImports(entry.path, entry.bytes, language);
+      : parseReferenceSourceImports(
+          entry.path,
+          entry.bytes,
+          language,
+          packageTypeForFile(entry.path, context),
+        );
   output.entries.push({
     path: entry.path,
     kind: "file",
@@ -264,21 +457,36 @@ const appendFile = (
     limitations: [...(parsed?.limitations ?? [])],
   });
   if (parsed === undefined) return;
+  output.limitations.push(...parsed.limitations);
   for (const relationship of parsed.relationships) {
-    if (relationship.resolution !== "internal") {
-      output.relationships.push(relationship);
+    const { resolutionStrategy, resolutionBasePath, ...graphRelationship } =
+      relationship;
+    if (graphRelationship.resolution !== "internal") {
+      output.relationships.push(graphRelationship);
       continue;
     }
+    const mode: InternalSpecifierResolutionMode =
+      resolutionStrategy === "runtime-require"
+        ? "runtime-require"
+        : graphRelationship.kind === "requires"
+          ? "source-require"
+          : "source-import";
     const resolved = resolveInternalSpecifier(
-      relationship.from_path,
-      relationship.to,
+      resolutionBasePath ?? graphRelationship.from_path,
+      graphRelationship.to,
       context,
-      relationship.kind === "requires"
-        ? REQUIRE_RESOLUTION_SUFFIXES
-        : RESOLUTION_SUFFIXES,
+      mode,
     );
+    if (resolved.limitation !== undefined) {
+      const limitation = `${entry.path}: ${JSON.stringify(graphRelationship.to)}: ${resolved.limitation}`;
+      output.limitations.push(limitation);
+      output.entries.at(-1)?.limitations.push(limitation);
+    }
     output.relationships.push({
-      ...relationship,
+      ...graphRelationship,
+      ...(mode === "source-import" && /[?%#]/u.test(graphRelationship.to)
+        ? { source_specifier: graphRelationship.to }
+        : {}),
       to: resolved.to,
       resolution: resolved.resolution,
     });
@@ -327,6 +535,7 @@ const appendReadEntry = (
 export const parseReferenceSourceEntries = (
   read: ReferenceSourceRead,
   filePaths: ReadonlySet<string>,
+  exclusions: HistoricalSourceGraphInput["exclusions"],
   signal?: AbortSignal,
 ): ParsedReferenceSourceEntries => {
   const output: ParsedReferenceSourceEntries = {
@@ -335,9 +544,15 @@ export const parseReferenceSourceEntries = (
     parseFailures: [],
     limitations: [...read.limitations],
   };
+  if (read.rootFailure !== undefined)
+    output.limitations.push(
+      `Reference root enumeration is incomplete: ${read.rootFailure.message}`,
+    );
+  const packageInventory = readPackageMetadata(read, exclusions);
   const context: SpecifierContext = {
     lookupPath: createReferenceSourcePathLookup(filePaths),
-    packageMains: readPackageMains(read),
+    packages: packageInventory.packages,
+    packageManifestPathLookup: packageInventory.pathLookup,
   };
   for (const entry of read.entries) {
     if (signal?.aborted === true) break;
