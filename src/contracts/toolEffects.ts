@@ -139,6 +139,10 @@ export const TOOL_EFFECTS: Readonly<Record<string, ToolEffects>> = {
     writesFilesystem: true,
     launchesProcess: true,
   }),
+  inspect_postgres_database: effects({
+    mutatesSession: true,
+    accessesNetwork: true,
+  }),
   inspect_packet_fields: effects({
     mutatesSession: true,
     launchesProcess: true,

@@ -12,6 +12,7 @@ import { RUST_TOOL_CONTRACTS } from "./rust/rustToolContracts.js";
 import { PYTHON_PYC_TOOL_CONTRACTS } from "./python/pythonPycToolContracts.js";
 import { ERLANG_BEAM_TOOL_CONTRACTS } from "./erlang/beamToolContracts.js";
 import { SQLITE_TOOL_CONTRACTS } from "./sqlite/sqliteToolContracts.js";
+import { POSTGRES_TOOL_CONTRACTS } from "./postgres/postgresToolContracts.js";
 import { ANALYSIS_VIEW_TOOL_CONTRACTS } from "./analysisViewToolContracts.js";
 import { BINARY_DIAGNOSTICS_TOOL_CONTRACTS } from "./native/binaryDiagnosticsToolContracts.js";
 import { NATIVE_TOOL_CONTRACTS } from "./native/nativeToolContracts.js";
@@ -62,6 +63,7 @@ export const TOOL_CONTRACTS = [
   ...WASM_TOOL_CONTRACTS,
   ...APK_SIGNATURE_TOOL_CONTRACTS,
   ...SQLITE_TOOL_CONTRACTS,
+  ...POSTGRES_TOOL_CONTRACTS,
   ...CAPTURE_TOOL_CONTRACTS,
   ...SIGNAL_TOOL_CONTRACTS,
   ...MANAGED_TOOL_CONTRACTS,

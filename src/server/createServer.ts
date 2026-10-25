@@ -52,6 +52,9 @@ import { registerEvmTools } from "./registerEvmTools.js";
 import type { SqliteDatabaseService } from "../application/sqlite/SqliteDatabaseService.js";
 import { createSqliteDatabaseService } from "../composition/sqlite.js";
 import { registerSqliteTools } from "./registerSqliteTools.js";
+import type { PostgresDatabaseService } from "../application/postgres/PostgresDatabaseService.js";
+import { createPostgresDatabaseService } from "../composition/postgres.js";
+import { registerPostgresTools } from "./registerPostgresTools.js";
 import { registerRecordedCrashTools } from "./registerRecordedCrashTools.js";
 import { createRecordedCrashService } from "../composition/binaryDiagnostics.js";
 import { createDesktopApplicationService } from "../composition/desktop.js";
@@ -224,6 +227,7 @@ export interface CreateServerOptions {
   readonly providerEnvironment?: Readonly<NodeJS.ProcessEnv>;
   readonly evmInterface?: EvmInterfaceService;
   readonly sqliteDatabase?: SqliteDatabaseService;
+  readonly postgresDatabase?: PostgresDatabaseService;
   readonly logger?: Logger;
   readonly binaryLayout?: BinaryLayoutService;
   readonly goBinary?: GoBinaryService;
@@ -1052,6 +1056,13 @@ const registerConfiguredAnalysisTools = (
   registerSqliteTools(
     server,
     options.sqliteDatabase ?? createSqliteDatabaseService(environment),
+    toolLogger,
+    recordEvidence,
+    withAdmittedAnalysis,
+  );
+  registerPostgresTools(
+    server,
+    options.postgresDatabase ?? createPostgresDatabaseService(environment),
     toolLogger,
     recordEvidence,
     withAdmittedAnalysis,

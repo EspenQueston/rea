@@ -15,6 +15,7 @@ import { registerRustCommands } from "./cli/rustCommands.js";
 import { registerPythonPycCommands } from "./cli/pythonPycCommands.js";
 import { registerErlangCommands } from "./cli/erlangCommands.js";
 import { registerSqliteCommands } from "./cli/sqliteCommands.js";
+import { registerPostgresCommands } from "./cli/postgresCommands.js";
 import { registerAnalysisViewCommands } from "./cli/analysisViewCommands.js";
 import { registerBinaryDiagnosticsCommands } from "./cli/binaryDiagnosticsCommands.js";
 import { registerFridaCommands } from "./cli/fridaCommands.js";
@@ -136,6 +137,7 @@ export const createCli = (
   registerPythonPycCommands(cli, logger);
   registerErlangCommands(cli, logger);
   registerSqliteCommands(cli, logger, environment);
+  registerPostgresCommands(cli, logger, environment);
   registerArtifactCommands(cli, logger, analysis.runProviderAnalysis);
   registerManagedCommands(cli, logger, analysis.runProviderAnalysis);
   registerAndroidCommands(cli, logger, environment);
