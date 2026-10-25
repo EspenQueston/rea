@@ -232,6 +232,18 @@ const sameReport = (left: AgentToolCall, right: AgentToolCall): boolean =>
   sameValue(left.resultContent, right.resultContent);
 
 /**
+ * Conflicting reports of one call establish neither a delivered result nor a
+ * certain error code: the call failed, and no report's code can be trusted.
+ */
+const ambiguousCall = (call: AgentToolCall): AgentToolCall => ({
+  ...call,
+  delivered: false,
+  error: true,
+  errorCode: null,
+  resultContent: undefined,
+});
+
+/**
  * Clients may report one call more than once. The first report is retained;
  * conflicting reports of one call cannot establish which result was delivered.
  */
@@ -255,11 +267,7 @@ const uniqueCalls = (calls: readonly AgentToolCall[]): AgentToolCall[] => {
       !sameRequestIdentity(previous, call) ||
       !sameReport(previous, call)
     )
-      unique[previousIndex] = {
-        ...previous,
-        delivered: false,
-        resultContent: undefined,
-      };
+      unique[previousIndex] = ambiguousCall(previous);
   }
   return unique;
 };
@@ -561,17 +569,15 @@ export const parseClaudeCodeEvents = (
       undefined,
     );
     const delivered =
-      reported !== undefined &&
-      !reported.isError &&
-      !state.conflicts.has(request.id) &&
-      facts.retained;
-    return {
+      reported !== undefined && !reported.isError && facts.retained;
+    const call = {
       ...request,
       delivered,
       error: facts.failed,
       errorCode: facts.errorCode,
       resultContent: delivered ? facts.content : undefined,
     };
+    return state.conflicts.has(request.id) ? ambiguousCall(call) : call;
   });
   return {
     calls: uniqueCalls(calls),
@@ -610,7 +616,6 @@ const geminiClientFailure = (
 const geminiCall = (
   request: McpRequest,
   reported: GeminiReport | undefined,
-  conflicting: boolean,
 ): AgentToolCall => {
   const failed = reported !== undefined && reported.status !== "success";
   // Gemini retains only the joined MCP text content, not structured content.
@@ -621,8 +626,7 @@ const geminiCall = (
     failed,
     reported?.error,
   );
-  const delivered =
-    reported !== undefined && !failed && !conflicting && facts.retained;
+  const delivered = reported !== undefined && !failed && facts.retained;
   return {
     ...request,
     delivered,
@@ -689,9 +693,10 @@ export const parseGeminiCliEvents = (
   }
   return {
     calls: uniqueCalls(
-      requests.map((request) =>
-        geminiCall(request, results.get(request.id), conflicts.has(request.id)),
-      ),
+      requests.map((request) => {
+        const call = geminiCall(request, results.get(request.id));
+        return conflicts.has(request.id) ? ambiguousCall(call) : call;
+      }),
     ),
     finalMessage:
       segments.filter((segment) => segment.trim().length > 0).at(-1) ?? "",

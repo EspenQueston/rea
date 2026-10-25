@@ -7,6 +7,7 @@ import {
   parseCodexEvents,
   parseGeminiCliEvents,
 } from "./AgentTranscript.js";
+import { nativeProviderScenario } from "./AgentEvaluationScenarios.js";
 
 const evidence = createEvidence(
   { path: "/tmp/app.asar", sha256: "1".repeat(64), format: "asar" },
@@ -476,6 +477,66 @@ it.each(["codex", "claude-code"] as const)(
     );
     expect(metrics.requiredToolSubsequenceMet).toBe(false);
     expect(metrics.evidenceIds).toEqual([]);
+  },
+);
+
+it.each(["claude-code", "gemini-cli"])(
+  "%s keeps no error code when reports of one call conflict",
+  (client) => {
+    // First an expected refusal, then a different outcome for the same call:
+    // the refusal cannot be trusted as the scenario's provider-unavailable path.
+    const refusal = JSON.stringify({ error: { code: "provider_unavailable" } });
+    const transcript =
+      client === "claude-code"
+        ? parseClaudeCodeEvents([
+            claudeToolUse("call", "mcp__rea__open_binary", {
+              path: "/bin/true",
+            }),
+            claudeToolResult(
+              "call",
+              { content: [{ type: "text", text: refusal }], isError: true },
+              true,
+            ),
+            claudeToolResult("call", { structuredContent: { opened: true } }),
+          ])
+        : parseGeminiCliEvents([
+            {
+              type: "tool_use",
+              tool_id: "call",
+              tool_name: "mcp_rea_open_binary",
+              parameters: { path: "/bin/true" },
+            },
+            {
+              type: "tool_result",
+              tool_id: "call",
+              status: "error",
+              output: refusal,
+              error: { type: "MCP_TOOL_ERROR", message: "failed" },
+            },
+            {
+              type: "tool_result",
+              tool_id: "call",
+              status: "success",
+              output: "{}",
+            },
+          ]);
+    expect(transcript.calls).toEqual([
+      expect.objectContaining({
+        delivered: false,
+        error: true,
+        errorCode: null,
+      }),
+    ]);
+    const scenario = nativeProviderScenario("/bin/true");
+    expect(
+      scenario.assess(
+        evaluateAgentTranscript(
+          transcript,
+          scenario.expectedFirstTool,
+          scenario,
+        ),
+      ),
+    ).toBe("failed");
   },
 );
 
