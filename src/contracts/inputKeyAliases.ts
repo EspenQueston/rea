@@ -37,7 +37,8 @@ export const canonicalInputKeys = (
 /**
  * One contract owns both accepted input spellings and canonical parsed output.
  * Strict alternatives reject a request containing both spellings. JSON Schema
- * input projection advertises those same alternatives to validating MCP hosts.
+ * input projection advertises one strict object that accepts exactly those
+ * alternatives to validating MCP hosts.
  */
 export const compatibleToolInputSchema = <Schema extends z.ZodObject>(
   schema: Schema,
@@ -76,22 +77,20 @@ export const compatibleToolInputSchema = <Schema extends z.ZodObject>(
     }, schema),
   );
   return withAdvertisedJsonSchema(canonical, "input", () => (options) => {
-    const projected = accepted["~standard"].jsonSchema.input(options);
-    const alternatives = (
-      Array.isArray(projected.anyOf) ? projected.anyOf : []
-    ).map((branch: unknown) => describeAliasesByCanonical(branch, aliases));
+    const { anyOf, ...projected } =
+      accepted["~standard"].jsonSchema.input(options);
+    const alternatives: unknown[] = Array.isArray(anyOf) ? anyOf : [];
+    const required = requiredIn(alternatives[0]).filter((name) =>
+      alternatives.every((branch) => requiredIn(branch).includes(name)),
+    );
     const invalidSelections = Object.entries(aliases).flatMap(
       ([alias, key]) => {
         const selectorRequired =
           alternatives.length > 0 &&
           alternatives.every(
-            (branch: unknown) =>
-              typeof branch === "object" &&
-              branch !== null &&
-              "required" in branch &&
-              Array.isArray(branch.required) &&
-              (branch.required.includes(key) ||
-                branch.required.includes(alias)),
+            (branch) =>
+              requiredIn(branch).includes(key) ||
+              requiredIn(branch).includes(alias),
           );
         const conflicts: Record<string, unknown>[] = [
           { required: [key, alias] },
@@ -103,16 +102,28 @@ export const compatibleToolInputSchema = <Schema extends z.ZodObject>(
         return conflicts;
       },
     );
-    // Existing input presentation owns flattening for hosts that prohibit root
-    // unions, and it describes each accepted input group; keep the exact
-    // accepted alternatives here for schema consumers.
+    // One strict object with these exclusions accepts exactly the alternatives:
+    // their properties, the keys every alternative requires, and one spelling
+    // per selector. Advertising it flat, rather than leaving the root union to
+    // the shared presentation, avoids an input-group sentence per tool; the
+    // full catalog has a bounded transport frame. The exclusion is not a
+    // prohibited root combinator for hosts that reject root unions.
     return {
       ...projected,
-      ...(alternatives.length > 0 ? { anyOf: alternatives } : {}),
       type: "object",
-      // Shared root-union presentation may flatten alternatives for hosts.
-      // These exclusions preserve exactly-one required selector independently
-      // of optional/defaulted fields, without a prohibited root combinator.
+      properties: Object.fromEntries(
+        alternatives.flatMap((branch) =>
+          Object.entries(propertiesIn(branch)).map(([name, property]) => [
+            name,
+            describeAliasByCanonical(
+              property,
+              Object.hasOwn(aliases, name) ? aliases[name] : undefined,
+            ),
+          ]),
+        ),
+      ),
+      ...(required.length > 0 ? { required } : {}),
+      additionalProperties: false,
       not: { anyOf: invalidSelections },
       ...(schema.description === undefined
         ? {}
@@ -121,40 +132,34 @@ export const compatibleToolInputSchema = <Schema extends z.ZodObject>(
   });
 };
 
+const requiredIn = (branch: unknown): readonly unknown[] =>
+  typeof branch === "object" &&
+  branch !== null &&
+  "required" in branch &&
+  Array.isArray(branch.required)
+    ? branch.required
+    : [];
+
+const propertiesIn = (branch: unknown): object =>
+  typeof branch === "object" &&
+  branch !== null &&
+  "properties" in branch &&
+  typeof branch.properties === "object" &&
+  branch.properties !== null
+    ? branch.properties
+    : {};
+
 /**
- * An alias branch repeats its canonical property schema. The alias names its
- * canonical spelling instead of copying the description: every advertised byte
- * counts against the full catalog's bounded transport frame, and an alias left
- * without a description would receive the key-based fallback, whose meaning
- * can differ from the canonical property (`query` on `search_bytes`).
+ * An alias names its canonical spelling instead of copying the description:
+ * every advertised byte counts against the full catalog's bounded transport
+ * frame, and an alias left without a description would receive the key-based
+ * fallback, whose meaning can differ from the canonical property (`query` on
+ * `search_bytes`).
  */
-const describeAliasesByCanonical = (
-  branch: unknown,
-  aliases: Readonly<Record<string, string>>,
-): unknown => {
-  if (
-    typeof branch !== "object" ||
-    branch === null ||
-    !("properties" in branch) ||
-    typeof branch.properties !== "object" ||
-    branch.properties === null
-  )
-    return branch;
-  return {
-    ...branch,
-    properties: Object.fromEntries(
-      Object.entries(branch.properties).map(([name, property]) => {
-        const canonical = Object.hasOwn(aliases, name)
-          ? aliases[name]
-          : undefined;
-        if (
-          canonical === undefined ||
-          typeof property !== "object" ||
-          property === null
-        )
-          return [name, property];
-        return [name, { ...property, description: `Same as ${canonical}.` }];
-      }),
-    ),
-  };
-};
+const describeAliasByCanonical = (
+  property: unknown,
+  canonical: string | undefined,
+): unknown =>
+  canonical === undefined || typeof property !== "object" || property === null
+    ? property
+    : { ...property, description: `Same as ${canonical}.` };

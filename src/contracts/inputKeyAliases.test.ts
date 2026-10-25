@@ -58,23 +58,22 @@ describe("named compatible input contracts", () => {
     for (const value of [
       { procedure: "main", address: "main" },
       { address: 1 },
+      { document: "x" },
+      { procedure: "main", other: "x" },
       ["address"],
     ]) {
       expect(validate(value)).toBe(false);
       expect(schema.safeParse(value).success).toBe(false);
     }
+    expect(projected).not.toHaveProperty("anyOf");
     expect(projected).toMatchObject({
       type: "object",
-      anyOf: [
-        expect.objectContaining({
-          properties: expect.objectContaining({
-            procedure: expect.any(Object),
-          }),
-        }),
-        expect.objectContaining({
-          properties: expect.objectContaining({ address: expect.any(Object) }),
-        }),
-      ],
+      properties: {
+        procedure: expect.any(Object),
+        document: expect.any(Object),
+        address: expect.any(Object),
+      },
+      additionalProperties: false,
     });
   });
   it("describes an alias by its canonical spelling instead of a copy", () => {
@@ -83,21 +82,13 @@ describe("named compatible input contracts", () => {
         procedure: z.string().describe("The procedure name or address"),
       }),
     )["~standard"].jsonSchema.input({ target: "draft-2020-12" });
-    expect(projected.anyOf).toEqual([
-      expect.objectContaining({
-        properties: {
-          procedure: {
-            type: "string",
-            description: "The procedure name or address",
-          },
-        },
-      }),
-      expect.objectContaining({
-        properties: {
-          address: { type: "string", description: "Same as procedure." },
-        },
-      }),
-    ]);
+    expect(projected.properties).toEqual({
+      procedure: {
+        type: "string",
+        description: "The procedure name or address",
+      },
+      address: { type: "string", description: "Same as procedure." },
+    });
   });
   it("retains canonical value checks, defaults and cross-field refinements", () => {
     const search = compatibleToolInputSchema(searchInput);
