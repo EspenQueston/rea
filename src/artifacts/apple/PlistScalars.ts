@@ -279,15 +279,17 @@ export const scanBinaryPlistScalars = (
   const safeMaximum = BigInt(Number.MAX_SAFE_INTEGER);
   if (countRaw === 0n || countRaw > safeMaximum || tableRaw > safeMaximum)
     return result(true);
-  if (tableRaw < 8n || tableRaw >= BigInt(trailer)) return result(true);
+  // Decoder bounds admit an offset table that runs into the trailer. Dates
+  // still end before the table, so observe them whenever the decoder can.
+  if (tableRaw < 8n || tableRaw >= BigInt(bytes.length)) return result(true);
   const offsetTable = Number(tableRaw);
-  const capacity = Math.floor((trailer - offsetTable) / offsetWidth);
+  const capacity = Math.floor((bytes.length - offsetTable) / offsetWidth);
   if (countRaw > BigInt(capacity)) return result(true);
   const count = Number(countRaw);
   const referenceWidth = bytes[trailer + 7] ?? 0;
   if (referenceWidth < 1) return result(true);
   const unsigned = (offset: number): number | undefined => {
-    if (offset < offsetTable || offset + offsetWidth > trailer)
+    if (offset < offsetTable || offset + offsetWidth > bytes.length)
       return undefined;
     let value = 0n;
     for (let index = 0; index < offsetWidth; index += 1)

@@ -4,7 +4,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
-import { build, buildBinary, type PlistValue } from "plist";
+import { build, buildBinary, parseBinary, type PlistValue } from "plist";
 import { estimateBinaryPlistExpansion } from "./PropertyListDecodeBudget.js";
 import {
   decodeKeyedArchiveBytes,
@@ -757,6 +757,35 @@ describe("binary plist date object region", () => {
     expect(() =>
       decodeKeyedArchiveBytes(bytes, { offset: 0, limit: 1 }),
     ).toThrow(new TypeError("binary plist date object is truncated"));
+  });
+
+  it("keeps a sub-millisecond instant unknown when the offset table runs into the trailer", () => {
+    const submillisecond = mutateCanonicalDate((offset, copy) => {
+      copy.writeDoubleBE(0.1005, offset + 1);
+    });
+    // Move the last offset-table entry into the trailer's unused first byte.
+    // Decoder bounds admit this table, and plist@5 reads the same graph.
+    const trailer = submillisecond.length - 32;
+    const overlapping = Buffer.concat([
+      submillisecond.subarray(0, trailer - 1),
+      submillisecond.subarray(trailer),
+    ]);
+    overlapping[overlapping.length - 32] = submillisecond[trailer - 1] ?? 0;
+    const decoded = parseBinary(overlapping) as { $objects: unknown[] };
+    expect(decoded.$objects[1]).toBeInstanceOf(Date);
+    const original = Buffer.from(overlapping);
+
+    const graph = decodeKeyedArchiveBytes(overlapping, {
+      offset: 0,
+      limit: 10,
+    });
+
+    expect(graph.objects[1]).toMatchObject(dateScalar(null));
+    expect(graph.limitations).toContain(unknownDateLimitation(1));
+    expect(graph.limitations.join("\n")).not.toContain(
+      "number metadata could not be completely observed",
+    );
+    expect(Buffer.compare(overlapping, original)).toBe(0);
   });
 });
 
