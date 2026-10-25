@@ -73,6 +73,7 @@ import { completeProviderEvidence } from "./ProviderOperationExecution.js";
 import { BUNDLE_RESOURCE_OPERATIONS } from "./binary/BundleResourceSession.js";
 
 type DirectAnalysisTool =
+  | "slice_native_register"
   | "annotate_native_function"
   | "inspect_native_load_image"
   | "read_bytes"

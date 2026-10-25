@@ -1,4 +1,9 @@
 import {
+  nativeRegisterSliceViewRequestSchema,
+  nativeRegisterSliceSummarySchema,
+  projectNativeRegisterSliceView,
+} from "./nativeRegisterSliceView.js";
+import {
   nativeObservationViewRequestSchema,
   nativeContextViewRequestSchema,
   nativeObservationItemsSchemas,
@@ -409,6 +414,7 @@ export const analysisViewRequestSchema = z.discriminatedUnion("kind", [
   nativeViewSchema,
   nativeInventoryViewRequestSchema,
   nativeLoadImageViewRequestSchema,
+  nativeRegisterSliceViewRequestSchema,
   artifactInventoryViewRequestSchema,
   wasmViewRequestSchema,
   machoViewRequestSchema,
@@ -942,6 +948,14 @@ export const nativeInventorySummaryViewResultSchema = z.strictObject({
 });
 
 /** Compact provider load observations retain the independent verification state. */
+export const nativeRegisterSliceSummaryViewResultSchema = z.strictObject({
+  ...summaryViewResultBase,
+  ...nativeViewSourceContext,
+  artifact: artifactSchema.nullable(),
+  parent_operation: z.literal("slice_native_register"),
+  summary: nativeRegisterSliceSummarySchema,
+});
+
 export const nativeLoadImageSummaryViewResultSchema = z.strictObject({
   ...summaryViewResultBase,
   ...nativeViewSourceContext,
@@ -1156,6 +1170,7 @@ export const analysisViewResultSchema = z.discriminatedUnion("kind", [
     gpuCodeObjectsSummaryViewResultSchema,
     nativeInventorySummaryViewResultSchema,
     nativeLoadImageSummaryViewResultSchema,
+    nativeRegisterSliceSummaryViewResultSchema,
     nativeFunctionMatchingSummaryViewResultSchema,
     nativeFunctionSummaryViewResultSchema,
     sourceToBundleSummaryViewResultSchema,
@@ -1167,6 +1182,15 @@ export const analysisViewResultSchema = z.discriminatedUnion("kind", [
     view: devicetreeViewRequestSchema,
     devicetree: devicetreePageContextSchema,
     items: devicetreeViewItemsSchema,
+  }),
+  z.strictObject({
+    ...viewResultBase,
+    ...nativeViewSourceContext,
+    kind: z.literal("native-register-slice"),
+    parent_operation: z.literal("slice_native_register"),
+    artifact: artifactSchema.nullable(),
+    view: nativeRegisterSliceViewRequestSchema,
+    items: z.array(jsonValueSchema),
   }),
   erlangBeamTableViewResultSchema,
   pythonPycCodeObjectsViewResultSchema,
@@ -1463,6 +1487,7 @@ const retainedViewProjectors = new Map<string, typeof projectWasmArtifactView>([
   ["inspect_devicetree", projectDevicetreeView],
   ["inspect_native_exports", projectNativeExportsView],
   ["inspect_native_load_image", projectNativeLoadImageView],
+  ["slice_native_register", projectNativeRegisterSliceView],
   ["inspect_python_pyc", projectPythonPycView],
   ["frida_session_status", projectFridaSessionStatusView],
   ["gdb_console", projectCommandObservationView],

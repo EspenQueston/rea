@@ -1,3 +1,4 @@
+import { nativeRegisterSliceInputSchema } from "../domain/native/nativeRegisterSlice.js";
 import { analysisDetailSchema } from "./analysisDetail.js";
 import { z } from "zod";
 import { nativeFunctionAnnotationsInputSchema } from "../domain/native/nativeFunctionAnnotations.js";
@@ -42,6 +43,13 @@ const official = <Name extends string, Schema extends z.ZodObject>(
 
 /** Bridge operations exposed without additional application composition. */
 export const OFFICIAL_TOOL_CONTRACTS = [
+  official(
+    "slice_native_register",
+    "Find possible origins of a physical ARM32 register immediately before an exact instruction. Intraprocedural raw p-code traversal preserves joins, predicates and cycles. Memory and call effects remain unknown. Explicit decoding and graph budgets report partial results. Ghidra ARM:LE:32:v7 in ARM mode only.",
+    nativeRegisterSliceInputSchema.extend({
+      detail: analysisDetailSchema.default("summary"),
+    }),
+  ),
   official(
     "annotate_native_function",
     "Atomically update one function name and/or entry comments, read them back, and return a refreshed complete function dossier. Ghidra changes its ephemeral session analysis database only; original executable bytes remain unchanged. Empty comment text clears that comment. Edits remain available to subsequent MCP calls until close; CLI returns the updated dossier before discarding its session. Invalid edits roll back the entire operation. Windows P0 and providers without this capability are unsupported.",

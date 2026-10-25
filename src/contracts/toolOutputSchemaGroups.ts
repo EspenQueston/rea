@@ -1,3 +1,5 @@
+import { nativeRegisterSliceSummaryViewResultSchema } from "../domain/analysisView/analysisView.js";
+import { nativeRegisterSliceSchema } from "../domain/native/nativeRegisterSlice.js";
 import {
   nativeAddressListSchema,
   nativeObservationSourceSchemas,
@@ -139,6 +141,10 @@ export const officialOutputSchemas: Readonly<Record<string, z.ZodObject>> = {
     nativeLoadImageSummaryViewResultSchema,
   ),
   inspect_native_data_type: evidenceResultOf(nativeDataTypeSchema),
+  slice_native_register: analysisDetailOutputSchemaOf(
+    nativeRegisterSliceSchema,
+    nativeRegisterSliceSummaryViewResultSchema,
+  ),
   inspect_native_instruction: evidenceResultOf(nativeInstructionSchema),
   resolve_native_call_targets: evidenceResultOf(nativeCallTargetsSchema),
   address_name: evidenceResultOf(nullableText),

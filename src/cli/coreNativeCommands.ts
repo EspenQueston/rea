@@ -1,3 +1,4 @@
+import { nativeRegisterSliceInputSchema } from "../domain/native/nativeRegisterSlice.js";
 import { nativeDispatchMetadataInputSchema } from "../domain/native/objcSwiftMetadata.js";
 import { z } from "incur";
 import {
@@ -31,6 +32,55 @@ export const registerCoreNativeCommands = (
   runDirectAnalysis: DirectAnalysis["runDirectAnalysis"],
 ): void => {
   registerAnnotationCommand(cli, logger, runDirectAnalysis);
+  cli.command(CLI_COMMANDS.sliceNativeRegister, {
+    description:
+      "Trace possible physical register origins before an exact ARM instruction",
+    args: z.object({
+      path: z.string(),
+      procedure: z.string(),
+      instruction: z.string(),
+      register: z.string(),
+    }),
+    options: z.object({
+      ...nativeRegisterSliceInputSchema.omit({
+        procedure: true,
+        instruction: true,
+        value: true,
+      }).shape,
+      ...nativeOpenOptionFields,
+      ...analysisEvidenceDeliveryOptions,
+    }),
+    run: ({ args, options }) =>
+      withCommandCancellation((signal) =>
+        logCliCommand(logger, CLI_COMMANDS.sliceNativeRegister, async () => {
+          const delivery = {
+            providerId: "auto",
+            operation: "slice_native_register",
+            signal,
+            detail: options.detail,
+            evidenceOutput: options.evidence_output,
+          };
+          const invalid = cliEvidenceDeliveryInputError(delivery);
+          if (invalid) return projectAnalysisError(invalid);
+          const result = await runDirectAnalysis(
+            args.path,
+            "slice_native_register",
+            {
+              procedure: args.procedure,
+              instruction: args.instruction,
+              value: { register: args.register },
+              when: options.when,
+              max_instructions: options.max_instructions,
+              max_operations: options.max_operations,
+              max_nodes: options.max_nodes,
+              max_edges: options.max_edges,
+            },
+            { ...directAnalysisOptionsFromCli(logger, options), signal },
+          );
+          return publishCliAnalysisEvidence(result, delivery);
+        }),
+      ),
+  });
   cli.command(CLI_COMMANDS.searchBytes, {
     description: "Find masked byte patterns in initialized provider memory",
     args: z.object({

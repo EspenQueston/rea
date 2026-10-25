@@ -1,3 +1,8 @@
+import {
+  nativeRegisterSliceInputSchema,
+  nativeRegisterProgramSchema,
+} from "../domain/native/nativeRegisterSlice.js";
+import { sliceNativeRegister } from "../domain/native/nativeRegisterSlicing.js";
 import { nativeAddressObservationSchema } from "../domain/native/nativeAddress.js";
 import { procedureInfoSchema } from "../domain/native/procedureInfo.js";
 import { z } from "zod";
@@ -46,6 +51,7 @@ import {
 
 /** Function analysis and annotation operations admitted by the Ghidra adapter. */
 export const GHIDRA_FUNCTION_OPERATIONS = [
+  "slice_native_register",
   "annotate_native_function",
   "inspect_native_data_type",
   "inspect_native_instruction",
@@ -77,6 +83,7 @@ const procedure = ghidraIdentifierSchema;
 const directProcedure = { document, procedure };
 
 const inputSchemas = {
+  slice_native_register: nativeRegisterSliceInputSchema,
   annotate_native_function: nativeFunctionAnnotationsInputSchema,
   inspect_native_data_type: z
     .object({
@@ -377,6 +384,8 @@ const ghidraFunctionInstructionWindow = functionInstructionWindowSchema
   .strict();
 
 const resultSchemas = {
+  slice_native_register:
+    nativeRegisterProgramSchema.transform(sliceNativeRegister),
   annotate_native_function: nativeFunctionAnnotationsSchema.safeExtend({
     dossier: ghidraFunctionDossier,
   }),
@@ -471,6 +480,7 @@ export const parseGhidraFunctionResult = (
   return parsed.success
     ? ok({
         value: jsonValueSchema.parse(parsed.data),
+        ...(operation === "slice_native_register" ? { rawResult: value } : {}),
         limitations: observation.limitations,
         ...(observation.cache_policy === undefined
           ? {}

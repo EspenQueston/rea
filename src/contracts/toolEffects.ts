@@ -504,6 +504,7 @@ export const TOOL_EFFECTS: Readonly<Record<string, ToolEffects>> = {
   inspect_native_load_image: evidence,
   inspect_native_dispatch_metadata: evidence,
   trace_native_ui_action: evidence,
+  slice_native_register: evidence,
   trace_native_values: evidence,
   address_name: evidence,
   comment: evidence,

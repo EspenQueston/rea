@@ -140,6 +140,7 @@ public final class ReaGhidraBridge extends HeadlessScript {
         "params"
     );
     private static final String[] CAPABILITIES = {
+        "slice_native_register",
         "read_binary_inventory_summary",
         "annotate_native_function",
         "set_address_name",
@@ -458,6 +459,7 @@ public final class ReaGhidraBridge extends HeadlessScript {
             case "search_procedures" -> search(request.params, true);
             case "search_strings" -> search(request.params, false);
             case "inspect_native_data_type" -> inspectNativeDataType(request.params);
+            case "slice_native_register" -> captureRegisterSlice(request.params);
             case "inspect_native_instruction" -> inspectNativeInstruction(request.params, true);
             case "resolve_native_call_targets" -> resolveNativeCallTargets(request.params);
             case "xrefs" -> xrefs(request.params);
@@ -1267,6 +1269,156 @@ public final class ReaGhidraBridge extends HeadlessScript {
             item.add(field, kind.get(field));
         item.addProperty("source", normalizedSource(reference.getSource()));
         return item;
+    }
+
+    private JsonObject sliceStorage(Varnode value) {
+        JsonObject result = new JsonObject();
+        result.addProperty("space", value.isConstant() ? "const" : value.isRegister() ? "register" : value.isUnique() ? "unique" : value.getAddress().getAddressSpace().getName());
+        result.addProperty("offset", "0x" + Long.toUnsignedString(value.getOffset(), 16));
+        result.addProperty("size", value.getSize());
+        return result;
+    }
+
+    private String sliceOriginalBytes(Instruction instruction) throws Exception {
+        byte[] bytes = new byte[instruction.getLength()];
+        for (int i = 0; i < bytes.length; i++) {
+            Address address = instruction.getAddress().add(i);
+            MemoryBlock block = currentProgram.getMemory().getBlock(address);
+            int matches = 0;
+            if (block != null) for (MemoryBlockSourceInfo source : block.getSourceInfos()) {
+                if (!source.contains(address) || source.getFileBytes().isEmpty()) continue;
+                var file = source.getFileBytes().get();
+                if (!isTargetSource(file)) continue;
+                long offset = source.getFileBytesOffset(address);
+                if (offset < 0) continue;
+                bytes[i] = file.getOriginalByte(offset);
+                matches++;
+            }
+            if (matches != 1) throw new RequestFailure("method_unavailable", "Slice requires unambiguous original file bytes");
+        }
+        if (!java.util.Arrays.equals(bytes, instruction.getBytes()))
+            throw new RequestFailure("method_unavailable", "Slice requires original and analyzed instruction bytes to agree");
+        return java.util.HexFormat.of().formatHex(bytes);
+    }
+
+    private void sliceEdge(JsonArray edges, String target, String predicate) {
+        JsonObject edge = new JsonObject();
+        edge.addProperty("target", target);
+        edge.add("predicate", predicate == null ? JsonNull.INSTANCE : GSON.toJsonTree(predicate));
+        edges.add(edge);
+    }
+
+    /** Capture machine p-code, including instruction-local branch targets, before any high-p-code rewriting. */
+    private JsonObject captureRegisterSlice(JsonObject params) throws Exception {
+        requireKeys(params, Set.of("procedure", "instruction", "value", "when", "max_instructions", "max_operations", "max_nodes", "max_edges"));
+        Function function = resolveProcedure(requireString(params, "procedure"));
+        Address seed = requireAddress(params, "instruction");
+        Instruction seedInstruction = currentProgram.getListing().getInstructionAt(seed);
+        if (seedInstruction == null || !function.getBody().contains(seed))
+            throw new RequestFailure("invalid_request", "Seed must be an exact instruction in the explicit function");
+        String language = currentProgram.getLanguageID().getIdAsString();
+        if (!language.equals("ARM:LE:32:v7")) throw new RequestFailure("method_unavailable", "Slice supports ARM:LE:32:v7 in ARM mode only");
+        Register mode = currentProgram.getRegister("TMode");
+        var seedMode = mode == null ? null : currentProgram.getProgramContext().getValue(mode, seed, false);
+        if (seedMode == null || seedMode.signum() != 0 || seedInstruction.getLength() != 4)
+            throw new RequestFailure("method_unavailable", "Seed requires known four-byte ARM mode");
+        String registerName = params.getAsJsonObject("value").get("register").getAsString();
+        if (!registerName.matches("r([0-9]|1[0-2])|sp|lr") || !requireString(params, "when").equals("before"))
+            throw new RequestFailure("invalid_request", "Expected a general-purpose ARM register and before boundary");
+        Register register = currentProgram.getRegister(registerName);
+        if (register == null || register.getBitLength() != 32) throw new RequestFailure("method_unavailable", "Register storage unavailable");
+        int instructionBudget = params.get("max_instructions").getAsInt();
+        int operationBudget = params.get("max_operations").getAsInt();
+        JsonArray operations = new JsonArray();
+        JsonArray stops = new JsonArray();
+        List<String> limitations = new ArrayList<>();
+        int instructionCount = 0;
+        long capturedBytes = 0;
+        Set<String> supported = Set.of("COPY", "LOAD", "STORE", "BRANCH", "CBRANCH", "BRANCHIND", "CALL", "CALLIND", "RETURN", "INT_EQUAL", "INT_NOTEQUAL", "INT_SLESS", "INT_SLESSEQUAL", "INT_LESS", "INT_LESSEQUAL", "INT_ZEXT", "INT_SEXT", "INT_ADD", "INT_SUB", "INT_CARRY", "INT_SCARRY", "INT_SBORROW", "INT_2COMP", "INT_NEGATE", "INT_XOR", "INT_AND", "INT_OR", "INT_LEFT", "INT_RIGHT", "INT_SRIGHT", "INT_MULT", "INT_DIV", "INT_SDIV", "INT_REM", "INT_SREM", "BOOL_NEGATE", "BOOL_XOR", "BOOL_AND", "BOOL_OR", "PIECE", "SUBPIECE", "POPCOUNT", "LZCOUNT");
+        InstructionIterator instructions = currentProgram.getListing().getInstructions(function.getBody(), true);
+        while (instructions.hasNext()) {
+            monitor.checkCancelled();
+            if (instructionCount >= instructionBudget) { stops.add("max_instructions"); break; }
+            Instruction instruction = instructions.next();
+            String boundaryLimitation = terminalCallLimitation(instruction);
+            if (boundaryLimitation != null) limitations.add(boundaryLimitation);
+            instructionCount++;
+            Address address = instruction.getAddress();
+            var modeValue = mode == null ? null : currentProgram.getProgramContext().getValue(mode, address, false);
+            if (modeValue == null || modeValue.signum() != 0 || instruction.getLength() != 4 || instruction.getDelaySlotDepth() != 0)
+                throw new RequestFailure("method_unavailable", "Slice requires known ARM mode, four-byte instructions and no delay slots throughout the captured body");
+            String bytes = sliceOriginalBytes(instruction);
+            capturedBytes += instruction.getLength();
+            PcodeOp[] pcode = instruction.getPcode();
+            // Include an instruction-end position so relative branches to the end retain exact semantics.
+            if ((long)operations.size() + pcode.length + 1 > operationBudget) { stops.add("max_operations"); break; }
+            String prefix = canonicalAddress(address) + ":";
+            for (int i = 0; i <= pcode.length; i++) {
+                monitor.checkCancelled();
+                PcodeOp op = i < pcode.length ? pcode[i] : null;
+                String opcode = op == null ? "END" : op.getMnemonic();
+                JsonObject item = new JsonObject();
+                item.addProperty("id", prefix + i);
+                item.addProperty("instruction", canonicalAddress(address));
+                item.addProperty("bytes", bytes);
+                item.addProperty("opcode", opcode);
+                item.add("output", op == null || op.getOutput() == null ? JsonNull.INSTANCE : sliceStorage(op.getOutput()));
+                JsonArray inputs = new JsonArray();
+                if (op != null) for (Varnode input : op.getInputs()) inputs.add(sliceStorage(input));
+                item.add("inputs", inputs);
+                String unknown = op != null && !supported.contains(opcode) ? "Unsupported p-code operation: " + opcode : null;
+                if (opcode.equals("CALL") || opcode.equals("CALLIND")) unknown = "Unknown call effects; no ABI preservation assumed";
+                if (opcode.equals("BRANCHIND")) limitations.add("Unresolved computed control-flow destination at " + canonicalAddress(address));
+                if (pcode.length == 0) unknown = "Instruction has no p-code semantics";
+                item.add("unknown", unknown == null ? JsonNull.INSTANCE : GSON.toJsonTree(unknown));
+                JsonArray edges = new JsonArray();
+                if (op == null) {
+                    Address next = instruction.getFallThrough();
+                    if (next != null && function.getBody().contains(next)) sliceEdge(edges, canonicalAddress(next) + ":0", null);
+                    else if (next != null) limitations.add("Fallthrough leaves analyzed function at " + canonicalAddress(address));
+                } else if (opcode.equals("BRANCH") || opcode.equals("CBRANCH")) {
+                    Varnode target = op.getInput(0);
+                    String destination = null;
+                    if (target.isConstant()) {
+                        long relative = target.getOffset();
+                        int bits = target.getSize() * 8;
+                        if (bits < 64) relative = (relative << (64 - bits)) >> (64 - bits);
+                        long index = i + relative;
+                        if (index >= 0 && index <= pcode.length) destination = prefix + index;
+                    } else if (function.getBody().contains(target.getAddress())) destination = canonicalAddress(target.getAddress()) + ":0";
+                    String predicate = opcode.equals("CBRANCH") ? sliceStorage(op.getInput(1)).toString() : null;
+                    if (destination != null) sliceEdge(edges, destination, predicate == null ? null : predicate + " != 0");
+                    else limitations.add("Control-flow destination unavailable or outside function at " + prefix + i);
+                    if (opcode.equals("CBRANCH")) sliceEdge(edges, prefix + (i + 1), predicate + " == 0");
+                } else if (!opcode.equals("RETURN") && !opcode.equals("BRANCHIND")) sliceEdge(edges, prefix + (i + 1), null);
+                item.add("successors", edges);
+                operations.add(item);
+            }
+        }
+        // Body byte coverage does not establish that every CFG destination is an
+        // instruction boundary. Preserve missing edges even when all bytes decoded.
+        if (stops.size() == 0) {
+            Set<String> capturedPositions = new HashSet<>();
+            for (var operation : operations) capturedPositions.add(operation.getAsJsonObject().get("id").getAsString());
+            for (var operation : operations) for (var edge : operation.getAsJsonObject().getAsJsonArray("successors")) {
+                String destination = edge.getAsJsonObject().get("target").getAsString();
+                if (!capturedPositions.contains(destination)) limitations.add("Control-flow destination has no captured operation: " + destination);
+            }
+        }
+        JsonObject result = new JsonObject();
+        result.add("query", params.deepCopy());
+        result.addProperty("procedure", canonicalAddress(function.getEntryPoint()));
+        result.addProperty("instruction", canonicalAddress(seed));
+        result.addProperty("architecture", language);
+        result.add("register", sliceStorage(new Varnode(register.getAddress(), register.getMinimumByteSize())));
+        result.addProperty("seed", canonicalAddress(seed) + ":0");
+        result.addProperty("entry", canonicalAddress(function.getEntryPoint()) + ":0");
+        result.addProperty("seed_bytes", sliceOriginalBytes(seedInstruction));
+        if (stops.size() == 0 && capturedBytes != function.getBody().getNumAddresses()) limitations.add("Analyzed function body contains bytes without captured instructions");
+        result.add("operations", operations);
+        result.add("stop_reasons", stops);
+        result.add("limitations", GSON.toJsonTree(limitations));
+        return result;
     }
 
     private JsonObject inspectNativeInstruction(JsonObject params, boolean includeIncoming) throws Exception {

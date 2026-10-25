@@ -13,6 +13,7 @@ const SUMMARY_OPERATIONS: ReadonlySet<string> = new Set([
   ...NATIVE_INVENTORY_OPERATIONS,
   ...NATIVE_PRIMITIVE_OBSERVATION_OPERATIONS,
   "inspect_native_load_image",
+  "slice_native_register",
 ]);
 const withoutDetail = withoutDeliveryDetail(SUMMARY_OPERATIONS);
 
