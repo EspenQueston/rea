@@ -41,6 +41,31 @@ export type LinuxEnvironmentRestriction =
   | "non-dumpable"
   | "user-namespace";
 
+/** Different readable UID maps prove distinct namespaces; equal maps do not prove sameness. */
+export const linuxUidMapsDiffer = (
+  target: string | undefined,
+  caller: string | undefined,
+): boolean | undefined => {
+  const normalized = (value: string | undefined): string | undefined => {
+    if (value === undefined || value.trim() === "") return undefined;
+    const rows: string[] = [];
+    for (const line of value.trim().split("\n")) {
+      const match = /^\s*([0-9]+)\s+([0-9]+)\s+([0-9]+)\s*$/u.exec(line);
+      if (match === null) return undefined;
+      const numbers = match.slice(1).map(Number);
+      if (numbers.some((number) => !Number.isSafeInteger(number)))
+        return undefined;
+      rows.push(numbers.join(" "));
+    }
+    return rows.join("\n");
+  };
+  const targetMap = normalized(target);
+  const callerMap = normalized(caller);
+  return targetMap === undefined || callerMap === undefined
+    ? undefined
+    : targetMap !== callerMap;
+};
+
 /** Derive the kernel's environment restriction from one generation's procfs facts. */
 export const linuxEnvironmentRestriction = (facts: {
   readonly uids: LinuxProcessIds;
@@ -48,8 +73,7 @@ export const linuxEnvironmentRestriction = (facts: {
   readonly procfsOwnerUid: number | undefined;
   readonly callerUid: number | undefined;
   readonly callerGid: number | undefined;
-  readonly callerUserNamespace?: string | undefined;
-  readonly targetUserNamespace?: string | undefined;
+  readonly userNamespaceDiffers?: boolean | undefined;
 }): LinuxEnvironmentRestriction | undefined => {
   const {
     uids,
@@ -57,8 +81,7 @@ export const linuxEnvironmentRestriction = (facts: {
     procfsOwnerUid,
     callerUid,
     callerGid,
-    callerUserNamespace,
-    targetUserNamespace,
+    userNamespaceDiffers,
   } = facts;
   if (
     (callerUid !== undefined &&
@@ -70,9 +93,5 @@ export const linuxEnvironmentRestriction = (facts: {
     return "credentials";
   if (procfsOwnerUid !== undefined && procfsOwnerUid !== uids[1])
     return "non-dumpable";
-  return callerUserNamespace !== undefined &&
-    targetUserNamespace !== undefined &&
-    callerUserNamespace !== targetUserNamespace
-    ? "user-namespace"
-    : undefined;
+  return userNamespaceDiffers === true ? "user-namespace" : undefined;
 };

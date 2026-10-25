@@ -11,6 +11,7 @@ import {
 import { parseLinuxProcessStat } from "./LinuxProcessStat.js";
 import {
   linuxEnvironmentRestriction,
+  linuxUidMapsDiffer,
   parseLinuxProcessIds,
   type LinuxEnvironmentRestriction,
 } from "./LinuxProcessStatus.js";
@@ -1025,6 +1026,18 @@ export const createSystemProcessOwnershipHost = (
         credentialPids !== undefined && credentialPids.size > 0
           ? readlink("/proc/self/ns/user").catch(() => undefined)
           : undefined;
+      let callerUidMap: Promise<string | undefined> | undefined;
+      const readUidMap = async (path: string): Promise<string | undefined> => {
+        try {
+          return await readFile(path, {
+            encoding: "utf8",
+            ...(signal === undefined ? {} : { signal }),
+          });
+        } catch (cause: unknown) {
+          if (isExpectedAbort(cause, signal)) throw cause;
+          return undefined;
+        }
+      };
       return new Map<number, ProcessIdentityObservation>(
         await Promise.all(
           processes.map(async ({ pid }) => {
@@ -1119,18 +1132,37 @@ export const createSystemProcessOwnershipHost = (
               let environmentRestriction =
                 linuxEnvironmentRestriction(restrictionFacts);
               if (environmentRestriction === undefined) {
+                let userNamespaceDiffers: boolean | undefined;
                 try {
                   const targetUserNamespace = await readlink(
                     `/proc/${String(pid)}/ns/user`,
                   );
-                  environmentRestriction = linuxEnvironmentRestriction({
-                    ...restrictionFacts,
-                    callerUserNamespace: await callerUserNamespace,
-                    targetUserNamespace,
-                  });
+                  const callerNamespace = await callerUserNamespace;
+                  if (callerNamespace !== undefined)
+                    userNamespaceDiffers =
+                      callerNamespace !== targetUserNamespace;
                 } catch (cause: unknown) {
                   void cause;
                 }
+                signal?.throwIfAborted();
+                if (userNamespaceDiffers === undefined) {
+                  // ns/user readlink shares environ's ptrace check. A differing
+                  // readable UID map can still establish distinct namespaces.
+                  const targetUidMap = await readUidMap(
+                    `/proc/${String(pid)}/uid_map`,
+                  );
+                  if (targetUidMap !== undefined) {
+                    callerUidMap ??= readUidMap("/proc/self/uid_map");
+                    userNamespaceDiffers = linuxUidMapsDiffer(
+                      targetUidMap,
+                      await callerUidMap,
+                    );
+                  }
+                }
+                environmentRestriction = linuxEnvironmentRestriction({
+                  ...restrictionFacts,
+                  userNamespaceDiffers,
+                });
               }
               signal?.throwIfAborted();
 
