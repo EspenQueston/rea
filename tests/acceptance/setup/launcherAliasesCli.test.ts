@@ -1,5 +1,12 @@
-import { mkdir, readFile, symlink, writeFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import {
+  access,
+  constants,
+  mkdir,
+  readFile,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
+import { delimiter, isAbsolute, join, resolve } from "node:path";
 
 import { Client } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
@@ -9,6 +16,25 @@ import { z } from "zod";
 import { createTestTempDirectory } from "../../fixtures/temporaryDirectory.js";
 import { cliTest } from "../../support/cli/cliFixture.js";
 
+/** A PATH directory that exposes only the runner's `ps`. */
+const psOnlyDirectory = async (root: string): Promise<string> => {
+  for (const directory of (process.env.PATH ?? "").split(delimiter)) {
+    if (!isAbsolute(directory)) continue;
+    const candidate = join(directory, "ps");
+    try {
+      await access(candidate, constants.X_OK);
+    } catch {
+      // Keep searching the runner's PATH for an executable ps.
+      continue;
+    }
+    const tools = join(root, "ps-only");
+    await mkdir(tools);
+    await symlink(candidate, join(tools, "ps"));
+    return tools;
+  }
+  throw new Error("Linux setup acceptance requires ps on the runner's PATH");
+};
+
 cliTest.skipIf(process.platform === "win32")(
   "migrates an owned shebang registration and starts its generated MCP command without PATH tools",
   async ({ cli }) => {
@@ -16,7 +42,15 @@ cliTest.skipIf(process.platform === "win32")(
     const profile = join(home, ".qwen");
     const config = join(profile, "settings.json");
     const entrypoint = resolve("scripts/rea.mjs");
-    const retainedEnvironment = { PATH: "", CALLER_SETTING: "keep exactly" };
+    // Linux process ownership deliberately requires ps on REA's own PATH
+    // before it launches a child, including binary_session's provider
+    // probes. Expose only ps there; no node, rea or other tools.
+    const toolPath =
+      process.platform === "linux" ? await psOnlyDirectory(home) : "";
+    const retainedEnvironment = {
+      PATH: toolPath,
+      CALLER_SETTING: "keep exactly",
+    };
     const unrelated = { command: "other-server", args: ["keep"] };
     const original = JSON.stringify({
       mcpServers: {
@@ -34,7 +68,7 @@ cliTest.skipIf(process.platform === "win32")(
       HOME: home,
       USERPROFILE: home,
       QWEN_HOME: profile,
-      PATH: "",
+      PATH: toolPath,
       HOPPER_LAUNCHER_PATH: join(home, "missing-hopper"),
       GHIDRA_INSTALL_DIR: join(home, "missing-ghidra"),
       JAVA_HOME: join(home, "missing-java"),
@@ -109,7 +143,7 @@ cliTest.skipIf(process.platform === "win32")(
         name: "binary_session",
         arguments: {},
       });
-      expect(session.isError).not.toBe(true);
+      expect(session.isError, JSON.stringify(session.content)).not.toBe(true);
       expect(session.structuredContent).toMatchObject({
         result: { open: false },
       });
