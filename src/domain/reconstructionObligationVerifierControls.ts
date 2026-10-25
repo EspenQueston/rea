@@ -86,26 +86,18 @@ const evaluateControl = (
       ? { fixtureId: control.candidate.fixture_id }
       : { candidateSha256: control.candidate.sha256 }),
   };
+  const passes = evidenceAuthoritySupportsProof(result, verifier.authority, {
+    ...expected,
+    passed: true,
+  });
   if (
-    evidenceAuthoritySupportsProof(result, verifier.authority, {
-      ...expected,
-      passed: true,
-    })
-  ) {
-    addDiagnostic(
-      diagnostics,
-      "vacuous-verifier",
-      `Verifier also passes the deliberately wrong ${control.candidate.kind} candidate.`,
-    );
-    return "unverified";
-  }
-  if (
-    control.status !== "fail" ||
-    !evidenceAuthoritySupportsProof(result, verifier.authority, {
-      ...expected,
-      passed: false,
-      failureKind: "behavior-mismatch",
-    })
+    !passes &&
+    (control.status !== "fail" ||
+      !evidenceAuthoritySupportsProof(result, verifier.authority, {
+        ...expected,
+        passed: false,
+        failureKind: "behavior-mismatch",
+      }))
   ) {
     addDiagnostic(
       diagnostics,
@@ -124,6 +116,14 @@ const evaluateControl = (
       addDiagnostic(diagnostics, "invalid-control-candidate", issue);
       return "unverified";
     }
+  }
+  if (passes) {
+    addDiagnostic(
+      diagnostics,
+      "vacuous-verifier",
+      `Verifier also passes the deliberately wrong ${control.candidate.kind} candidate.`,
+    );
+    return "unverified";
   }
   return "failed";
 };

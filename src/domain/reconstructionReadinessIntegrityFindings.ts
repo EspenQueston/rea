@@ -169,8 +169,45 @@ const closureFindings = (
   const evidence = new Map(
     input.evidence_bundle.records.map((record) => [record.evidence_id, record]),
   );
-  for (const obligation of input.obligation_ledger.obligations) {
-    if (!obligation.required || obligation.status !== "verified") continue;
+  const obligations = new Map(
+    input.obligation_ledger.obligations.map((obligation) => [
+      obligation.obligation_id,
+      obligation,
+    ]),
+  );
+  const pending = input.obligation_ledger.obligations
+    .filter(({ required }) => required)
+    .map(({ obligation_id }) => obligation_id);
+  const visited = new Set<string>();
+  // A required obligation's proof includes its transitive dependencies.
+  for (const id of pending) {
+    if (visited.has(id)) continue;
+    visited.add(id);
+    const obligation = obligations.get(id);
+    if (obligation === undefined) {
+      findings.push(
+        finding(
+          "reconstruction-dependency-missing",
+          "verify-reconstruction-closure",
+          "unknown",
+          `Required reconstruction proof depends on missing obligation ${id}.`,
+        ),
+      );
+      continue;
+    }
+    pending.push(...obligation.dependency_obligation_ids);
+    if (obligation.status !== "verified") {
+      if (!obligation.required)
+        findings.push(
+          finding(
+            "reconstruction-dependency-open",
+            "verify-reconstruction-closure",
+            "unknown",
+            `Required reconstruction proof depends on ${id}, which is ${obligation.status}.`,
+          ),
+        );
+      continue;
+    }
     const verifier = obligation.binding?.verifier;
     const diagnostics = reconstructionObligationVerifierDiagnostics(
       obligation,

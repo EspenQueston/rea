@@ -141,6 +141,23 @@ describe("readiness bundle authentication", () => {
 });
 
 describe("reconstruction readiness report", () => {
+  it("does not blame a verifier for accepting an identical renamed fixture", () => {
+    const value = input();
+    replaceNegativeControlEvidence(value, {
+      passed: true,
+      fixture_sha256s: { "fixture.deliberate-defect": "a".repeat(64) },
+    });
+    committedReadyLedger(value);
+    const report = createReconstructionReadinessReport(value);
+    expect(report.status).toBe("unknown");
+    expect(report.findings.map(({ code }) => code)).toContain(
+      "reconstruction-invalid-control-candidate",
+    );
+    expect(report.findings.map(({ code }) => code)).not.toContain(
+      "reconstruction-vacuous-verifier",
+    );
+  });
+
   it("accepts every caller supplied capability", () => {
     const capability = RECONSTRUCTION_READINESS_EXAMPLE.capabilities[0];
     if (capability === undefined) throw new TypeError("Missing capability");

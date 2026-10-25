@@ -66,7 +66,9 @@ describe("reconstruction obligation ledger", () => {
       ]),
     );
   });
+});
 
+describe("reconstruction obligation dependencies", () => {
   it("propagates an open dependency through the full obligation chain", () => {
     const ids = ["obl.chain.a", "obl.chain.b", "obl.chain.c"] as const;
     const evidence = boundProofEvidence(
@@ -79,6 +81,27 @@ describe("reconstruction obligation ledger", () => {
         claim_ids: ids.map((id) => `claim.${id}`),
       },
       "shipped-artifact",
+      { control: { verifier_sha256: "3".repeat(64) } },
+    );
+    const control = boundProofEvidence(
+      "fixture-chain-control",
+      {
+        obligation_ids: ids,
+        fixture_ids: ["fixture.chain.corrupted"],
+        case_kinds: ["negative"],
+        verifier_ids: ids.map((id) => `verifier.${id}`),
+        claim_ids: ids.map((id) => `claim.${id}`),
+      },
+      "shipped-artifact",
+      {
+        passed: false,
+        fixtureSha256: "4".repeat(64),
+        control: {
+          verifier_sha256: "3".repeat(64),
+          defect: "Recorded output is corrupted.",
+          failure_kind: "behavior-mismatch",
+        },
+      },
     );
     const reviewed = ids.map((id, index) => ({
       ...reviewedObligation(id, evidence.evidence_id),
@@ -112,18 +135,44 @@ describe("reconstruction obligation ledger", () => {
         verifier_id: `verifier.${obligation.obligation_id}`,
         claim_id: `claim.${obligation.obligation_id}`,
         command: "npm test -- fixture-chain",
+        implementation_sha256: "3".repeat(64),
         authority: "unit" as const,
         status: "pass" as const,
         result_evidence_id: evidence.evidence_id,
         enumerated_obligation_ids: [obligation.obligation_id],
+        negative_controls: [
+          {
+            candidate: {
+              kind: "fixture" as const,
+              fixture_id: "fixture.chain.corrupted",
+            },
+            defect: "Recorded output is corrupted.",
+            status: "fail" as const,
+            result_evidence_id: control.evidence_id,
+          },
+        ],
         nondeterminism: {
           mode: "total-order" as const,
           specification: "Fixture execution is ordered.",
         },
       },
     }));
+    const independent = build(
+      request([evidence, control], {
+        reviewed_obligations: reviewed.map((obligation) => ({
+          ...obligation,
+          dependency_obligation_ids: [],
+        })),
+        manifest: { bindings, contradictions: [] },
+      }),
+    );
+    expect(independent.obligations.map(({ status }) => status)).toEqual([
+      "verified",
+      "verified",
+      "verified",
+    ]);
     const result = build(
-      request([evidence], {
+      request([evidence, control], {
         reviewed_obligations: reviewed,
         manifest: { bindings, contradictions: [] },
       }),
@@ -139,9 +188,9 @@ describe("reconstruction obligation ledger", () => {
         diagnostics.map(({ code }) => code),
       ),
     ).toEqual([
-      ["dependency-open", "unchallenged-verifier"],
-      ["dependency-open", "unchallenged-verifier"],
-      ["dependency-missing", "unchallenged-verifier"],
+      ["dependency-open"],
+      ["dependency-open"],
+      ["dependency-missing"],
     ]);
   });
 });
