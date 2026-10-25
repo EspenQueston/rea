@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import { decodeDebugInfo } from "./dexDebugInfo.js";
+import {
+  DEX_DEBUG_PAUSED,
+  type DexDebugInfoWalk,
+  type DexMethodDebug,
+  type DexParameterLayout,
+  startDebugInfo,
+} from "./dexDebugInfo.js";
 import {
   dexParameterList,
   sleb,
@@ -17,6 +23,25 @@ const RESTART_LOCAL = 0x06;
 const SET_FILE = 0x09;
 const ADVANCE_PC = 0x01;
 const EMIT_HERE = 0x0e; // special opcode: line += 0, address += 0, emit a position
+
+/** Decode a whole stream in one call, passing over any due pause. */
+const decodeDebugInfo = (
+  bytes: Uint8Array,
+  offset: number,
+  insnsSize: number,
+  layout?: DexParameterLayout,
+): DexMethodDebug => {
+  const walk: DexMethodDebug | DexDebugInfoWalk = startDebugInfo(
+    bytes,
+    offset,
+    insnsSize,
+    layout,
+  );
+  if (!("resume" in walk)) return walk;
+  let result = walk.resume();
+  while (result === DEX_DEBUG_PAUSED) result = walk.resume();
+  return result;
+};
 
 /** Assemble a debug_info_item at offset 1 (offset 0 is reserved for "absent"). */
 const stream = (...body: number[]): Uint8Array =>

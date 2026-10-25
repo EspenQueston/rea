@@ -369,8 +369,7 @@ export class DexDebugInfoWalk {
       return false;
     // A register past the method's frame is malformed; refusing it also caps
     // the live-register maps at registers_size (<= 65,535).
-    const registersSize = this.layout?.registersSize;
-    if (registersSize !== undefined && reg.value >= registersSize) return false;
+    if (!this.inFrame(reg.value)) return false;
     const existing = this.live.get(reg.value);
     if (existing) this.pushLocal(reg.value, existing, this.address); // implicit end
     const local: LiveLocal = {
@@ -540,20 +539,4 @@ export const startDebugInfo = (
   if (offset <= 0 || offset >= bytes.length)
     return { ...absentMethodDebug(), present: true, malformed: true };
   return new DexDebugInfoWalk(bytes, offset, insnsSize, layout, options);
-};
-
-/** Decode a whole `debug_info_item` without pausing (see {@link startDebugInfo}). */
-export const decodeDebugInfo = (
-  bytes: Uint8Array,
-  offset: number,
-  insnsSize: number,
-  layout?: DexParameterLayout,
-  options: DexDecodeOptions = {},
-): DexMethodDebug => {
-  const walk = startDebugInfo(bytes, offset, insnsSize, layout, options);
-  if (!(walk instanceof DexDebugInfoWalk)) return walk;
-  // A due pause is passed over: this decode runs to the end in one call.
-  let result = walk.resume();
-  while (result === DEX_DEBUG_PAUSED) result = walk.resume();
-  return result;
 };
