@@ -349,7 +349,17 @@ export class PlaywrightScenarioServiceWorkers {
       try {
         failure = await frame.evaluate(`(async () => {
           if (!("serviceWorker" in navigator)) return null;
-          const serviceWorker = navigator.serviceWorker;
+          let serviceWorker;
+          try {
+            serviceWorker = navigator.serviceWorker;
+          } catch (error) {
+            // Chromium denies the API to opaque-origin documents, such as
+            // sandboxed frames without allow-same-origin. They can neither
+            // register nor be controlled by a service worker.
+            if (error instanceof DOMException && error.name === "SecurityError" &&
+                globalThis.origin === "null") return null;
+            throw error;
+          }
           if (${this.#session !== undefined} &&
               (!Object.hasOwn(serviceWorker.register, Symbol.for(${this.marker})) ||
                typeof globalThis[${this.restoreKey}] !== "function")) return "policy_unprotected";
@@ -360,7 +370,15 @@ export class PlaywrightScenarioServiceWorkers {
         })()`);
       } catch (cause: unknown) {
         if (frame.isDetached()) continue;
-        throw cause;
+        // Chromium rejects an evaluation whose document is being replaced
+        // before Playwright observes the replacement, so an immediate retry
+        // would reuse the old realm.
+        throw new BrowserObservationError(OPERATION, "target_changed", {
+          cause,
+          detail: `${OPERATION} could not complete the blocked service-worker policy check because a frame of the selected page changed document or rejected the check, so REA cannot confirm that no service worker controls the page.`,
+          remediationAction:
+            "Retry after the page's navigation settles, or select the settled URL as start_url. Set environment.service_workers to allow if service workers may run during capture.",
+        });
       }
       if (failure === "policy_unprotected")
         throw new BrowserObservationError(OPERATION, "target_not_allowed");

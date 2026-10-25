@@ -23,7 +23,12 @@ primary diagnostic when socket cleanup also fails; later policy cleanup retries
 that retained transport and clears cleanup uncertainty only after close succeeds.
 For attached browsers, `block` rejects captures when the selected page or its
 frames are controlled by a service worker or already have a registration,
-including after navigation. Policy checks bracket each artifact capture, including
+including after navigation. Opaque-origin frames, such as sandboxed frames
+without `allow-same-origin`, cannot use service workers and do not violate the
+policy. If a frame changes document while it is being checked, REA cannot
+confirm the policy and rejects the capture with `target_changed`; retry after
+navigation settles, select the settled URL as `start_url`, or set
+`environment.service_workers` to `allow`. Policy checks bracket each artifact capture, including
 the final step. If an external worker takes control while artifacts are being
 captured, REA rejects the capture and retains the completed artifacts in
 `details.diagnostics.collected_artifacts`; they do not establish policy-compliant

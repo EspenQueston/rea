@@ -55,6 +55,22 @@ const startSite = async () => {
       response.end(
         '<!doctype html><iframe id="pending-frame" src="/pending-child"></iframe>',
       );
+    } else if (path === "/sandboxed-frame") {
+      // Chromium denies navigator.serviceWorker to this opaque-origin frame.
+      response.setHeader("content-type", "text/html");
+      response.end(
+        '<!doctype html><p id="state">ready</p><iframe sandbox="allow-scripts" src="/"></iframe>',
+      );
+    } else if (path === "/navigate-during-check") {
+      // The policy check's own registration lookup replaces this document
+      // while that evaluation is still pending in the old realm.
+      response.setHeader("content-type", "text/html");
+      response.end(`<!doctype html><script>
+        ServiceWorkerContainer.prototype.getRegistrations = function () {
+          location.replace("/");
+          return new Promise(() => undefined);
+        };
+      </script>`);
     } else {
       response.setHeader("content-type", "text/html");
       response.end(`<!doctype html><p id="state">ready</p>
@@ -265,6 +281,39 @@ export async function verifyScenarioServiceWorkers(endpoint, targetId) {
       "service_worker_blocked",
     );
 
+    // An opaque-origin frame cannot use service workers, so it does not
+    // violate the policy. A check that loses its document fails closed with
+    // a typed public reason.
+    await page.goto("about:blank");
+    const sandboxed = await provider.captureScenario(
+      scenarioFor(`${first.origin}/sandboxed-frame`),
+    );
+    if (!sandboxed.ok) throw sandboxed.error;
+    assert.ok(
+      sandboxed.value.steps.every(({ status }) => status === "completed"),
+    );
+    assert.equal(sandboxed.value.browser.cleanup, "disconnected-external");
+    await assertRestored();
+    await page.goto("about:blank");
+    let unsettled;
+    try {
+      await runScenarioCli(
+        scenarioFor(`${first.origin}/navigate-during-check`),
+      );
+      assert.fail("A check that loses its document must fail closed");
+    } catch (cause) {
+      assert.equal(typeof cause.stdout, "string", String(cause));
+      unsettled = JSON.parse(cause.stdout);
+    }
+    assert.equal(unsettled.code, "target_unavailable");
+    assert.equal(unsettled.details.reason, "target_changed");
+    assert.match(unsettled.remediation.action, /environment\.service_workers/);
+    assert.equal(
+      unsettled.details.partial_observation.capture.browser.cleanup,
+      "disconnected-external",
+    );
+    await assertRestored();
+
     const allowed = await provider.captureScenario(
       scenarioFor(second.origin, [], "allow"),
     );
@@ -395,6 +444,8 @@ export async function verifyScenarioServiceWorkers(endpoint, targetId) {
       initial_navigation: true,
       action_navigation: true,
       cross_origin_frame: true,
+      opaque_origin_frame_allowed: true,
+      replaced_document_check_fails_closed: true,
       allow_preserves_existing_worker: true,
       registration_blocked: true,
       live_document_and_reload_restored: true,
