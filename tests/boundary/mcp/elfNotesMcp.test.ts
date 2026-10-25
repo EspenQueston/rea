@@ -1,11 +1,16 @@
-import { writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { expect } from "vitest";
 import { toolContract } from "../../../src/contracts/toolContracts.js";
 import { createServer } from "../../../src/server/createServer.js";
 import { createTestBinarySession } from "../../fixtures/binarySession.js";
 import { parseMcpToolError } from "../../fixtures/mcpToolError.js";
-import { elfNoteFixture } from "../../../src/native/elf/ElfNotes.fixture.js";
+import {
+  elfExtendedSectionCountFixture,
+  compressedElfNoteSectionFixture,
+  elfNoteFixture,
+  elfNoteWithUnreadableSectionNameFixture,
+} from "../../../src/native/elf/ElfNotes.fixture.js";
 import { createTestTempDirectory } from "../../fixtures/temporaryDirectory.js";
 import { mcpTest, type TestMcp } from "../../support/mcp/mcpFixture.js";
 
@@ -68,3 +73,93 @@ mcpTest("requires an absolute path for inspect_elf_notes", async ({ mcp }) => {
     await session.close();
   }
 });
+
+mcpTest(
+  "keeps GNU notes when a section name is not NUL-terminated",
+  async ({ mcp }) => {
+    const { client, session } = await connect(mcp);
+    try {
+      const root = await createTestTempDirectory("rea-elf-notes-name-mcp-");
+      const path = join(root, "program");
+      const bytes = elfNoteWithUnreadableSectionNameFixture("unterminated");
+      await writeFile(path, bytes);
+      const response = await client.callTool({
+        name: "inspect_elf_notes",
+        arguments: { path },
+      });
+      expect(response.isError, JSON.stringify(response.content)).not.toBe(true);
+      const evidence = toolContract("inspect_elf_notes").outputSchema.parse(
+        response.structuredContent,
+      );
+      expect(evidence.normalized_result.tables[0]?.name).toBeNull();
+      expect(evidence.normalized_result.limitations).toContain(
+        "ELF section names are incomplete because a name is not NUL-terminated.",
+      );
+      expect(evidence.normalized_result.entries[0]?.gnu?.build_id_hex).toBe(
+        "0123456789abcdef0123456789abcdef01234567",
+      );
+      expect(evidence.normalized_result.coverage).toMatchObject({
+        status: "complete",
+        examined_tables: 1,
+        examined_entries: 1,
+      });
+      expect(Buffer.compare(await readFile(path), bytes)).toBe(0);
+    } finally {
+      await session.close();
+    }
+  },
+);
+
+mcpTest(
+  "reports compressed note storage as unsupported without mutation",
+  async ({ mcp }) => {
+    const { client, session } = await connect(mcp);
+    try {
+      const root = await createTestTempDirectory("rea-elf-notes-storage-mcp-");
+      const path = join(root, "debug-notes.o");
+      const bytes = compressedElfNoteSectionFixture();
+      await writeFile(path, bytes);
+      const response = await client.callTool({
+        name: "inspect_elf_notes",
+        arguments: { path },
+      });
+      expect(response.isError).toBe(true);
+      expect(parseMcpToolError(response).error).toMatchObject({
+        code: "unsupported_target",
+        message: expect.stringContaining(
+          "Compressed ELF note sections are unsupported",
+        ),
+      });
+      expect(Buffer.compare(await readFile(path), bytes)).toBe(0);
+    } finally {
+      await session.close();
+    }
+  },
+);
+
+mcpTest(
+  "reports valid extended numbering as unsupported without mutation",
+  async ({ mcp }) => {
+    const { client, session } = await connect(mcp);
+    try {
+      const root = await createTestTempDirectory("rea-elf-notes-extended-mcp-");
+      const path = join(root, "extended-count.elf");
+      await writeFile(path, elfExtendedSectionCountFixture());
+      const before = await readFile(path);
+      const response = await client.callTool({
+        name: "inspect_elf_notes",
+        arguments: { path },
+      });
+      expect(response.isError).toBe(true);
+      expect(parseMcpToolError(response).error).toMatchObject({
+        code: "unsupported_target",
+        message: expect.stringContaining(
+          "ELF extended numbering is unsupported",
+        ),
+      });
+      expect((await readFile(path)).equals(before)).toBe(true);
+    } finally {
+      await session.close();
+    }
+  },
+);

@@ -5,15 +5,15 @@ import { parseMcpToolError } from "../fixtures/mcpToolError.js";
 import { loadNativeMatchingBundleSources } from "../../src/application/native/NativeMatchingBundleSources.js";
 import { NativeMatchingAdmission } from "../../src/application/native/NativeMatchingAdmission.js";
 import { matchNativeFunctionsInputSchema } from "../../src/contracts/native/functionMatchingContracts.js";
-import { createEvidence } from "../../src/domain/evidence.js";
-import { runProviderAnalysis } from "../../src/application/DirectAnalysis.js";
-import type { DirectAnalysisDependencies } from "../../src/application/DirectAnalysisDependencies.js";
-import { parseConfig } from "../../src/config/parseConfig.js";
 import {
+  createEvidence,
   isImmutableEvidence,
   parseEvidence,
   type Evidence,
 } from "../../src/domain/evidence.js";
+import { runProviderAnalysis } from "../../src/application/DirectAnalysis.js";
+import type { DirectAnalysisDependencies } from "../../src/application/DirectAnalysisDependencies.js";
+import { parseConfig } from "../../src/config/parseConfig.js";
 import { ok } from "../../src/domain/result.js";
 import { observed } from "../fixtures/analysisExecution.js";
 import {
@@ -25,7 +25,7 @@ import { join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import {
   createImmutableEvidenceBundle,
-  parseImmutableEvidenceBundle,
+  safeParseImmutableEvidenceBundle,
 } from "../../src/domain/evidenceBundle.js";
 import { ArtifactResourceScope } from "../../src/artifacts/ArtifactResourceScope.js";
 import { deliverAnalysisEvidence } from "../../src/application/EvidenceBundleCommands.js";
@@ -190,7 +190,7 @@ it("admits bundle authentication before cloning and hashing retained records", a
         availableBytes: 0,
       }),
   );
-  vi.mocked(parseImmutableEvidenceBundle).mockClear();
+  vi.mocked(safeParseImmutableEvidenceBundle).mockClear();
   const resources = new ArtifactResourceScope();
   try {
     expect(
@@ -199,7 +199,7 @@ it("admits bundle authentication before cloning and hashing retained records", a
       ok: false,
       error: { _tag: "AnalysisResourceConstraintError", resource: "memory" },
     });
-    expect(parseImmutableEvidenceBundle).not.toHaveBeenCalled();
+    expect(safeParseImmutableEvidenceBundle).not.toHaveBeenCalled();
   } finally {
     await resources.close();
   }

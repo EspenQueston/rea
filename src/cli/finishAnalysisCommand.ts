@@ -21,8 +21,10 @@ export const finishAnalysisCommand = async <
   canonicalOperation: string,
   signal: AbortSignal,
   fallbackResource?: string,
+  options: { readonly failureProjection?: "initial" | "final" } = {},
 ): Promise<Value | ReturnType<typeof projectAnalysisError>> => {
   let result: Result<Value, AnalysisError>;
+  let cleanup: AnalysisError | undefined;
   try {
     result = await run();
   } catch (cause) {
@@ -34,12 +36,17 @@ export const finishAnalysisCommand = async <
           : new ProviderAdapterError(providerId, canonicalOperation, { cause }),
     };
   }
+  // Some one-shot commands promise the original failure snapshot even when
+  // close retries and mutates the producer's live cleanup status.
+  const initialFailure =
+    !result.ok && options.failureProjection === "initial"
+      ? projectAnalysisError(result.error)
+      : undefined;
   try {
     // Resource owners may resolve their retained errors during close. This
     // adapter cannot infer resolution of a producer's earlier cleanup failure.
     await service.close();
   } catch (cause) {
-    let cleanup: AnalysisError;
     if (cause instanceof AnalysisError) cleanup = cause;
     else {
       const observation =
@@ -59,6 +66,18 @@ export const finishAnalysisCommand = async <
         { cause, operation: canonicalOperation },
       );
     }
+  }
+  await dispatchQueuedInterrupts();
+  if (initialFailure !== undefined) return initialFailure;
+  if (result.ok && signal.aborted)
+    result = {
+      ok: false,
+      error: new AnalysisCancelledError(canonicalOperation, {
+        cause: signal.reason,
+        partialObservation: result.value,
+      }),
+    };
+  if (cleanup !== undefined) {
     if (result.ok) cleanup.retainPartialObservation(result.value);
     result = {
       ok: false,
@@ -68,16 +87,8 @@ export const finishAnalysisCommand = async <
             result.error,
             cleanup,
             canonicalOperation,
-          ),
+          ).bindCleanupDependencies([result.error, cleanup]),
     };
   }
-  await dispatchQueuedInterrupts();
-  if (result.ok && signal.aborted)
-    return projectAnalysisError(
-      new AnalysisCancelledError(canonicalOperation, {
-        cause: signal.reason,
-        partialObservation: result.value,
-      }),
-    );
   return result.ok ? result.value : projectAnalysisError(result.error);
 };

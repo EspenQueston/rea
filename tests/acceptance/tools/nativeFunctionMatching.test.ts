@@ -6,12 +6,12 @@ import { createTestTempDirectory } from "../../fixtures/temporaryDirectory.js";
 import { connectLocalToolsMcp } from "../../fixtures/localToolsMcp.js";
 import { parseMcpToolError } from "../../fixtures/mcpToolError.js";
 import {
-  nativeMatchingInventory,
+  nativeMatchingNamedInventory as nativeMatchingInventory,
   nativeMatchingDetails,
   nativeMatchingTarget,
+  nativeMatchingProvider,
 } from "../../fixtures/nativeFunctionMatching.js";
 import { createEvidence, parseEvidence } from "../../../src/domain/evidence.js";
-import { nativeMatchingProvider } from "../../fixtures/nativeFunctionMatching.js";
 import { procedureInfoSchema } from "../../../src/domain/native/procedureInfo.js";
 import {
   createEvidenceBundle,
@@ -162,7 +162,7 @@ const verifyPortableCli = async (
   expect(ids.has(dependency.evidence_id)).toBe(true);
   expect(ids.has(unrelated.evidence_id)).toBe(false);
   expect(ids.has(evidenceId)).toBe(true);
-  expect(await readFile(bundlePath)).toEqual(original);
+  expect(Buffer.compare(await readFile(bundlePath), original)).toBe(0);
   const incomplete = await cli.run({
     arguments: [
       "match-native-functions",
@@ -388,6 +388,76 @@ cliTest(
     );
   },
   60000,
+);
+
+cliTest(
+  "native matching retains malformed inline field paths through MCP and CLI source admission",
+  async ({ cli }) => {
+    const left = nativeMatchingInventory("1", [
+      { address: "0x10", value: "main" },
+    ]);
+    const right = nativeMatchingInventory("2", [
+      { address: "0x20", value: "main" },
+    ]);
+    const root = await createTestTempDirectory("rea-matching-input-");
+    const bundlePath = join(root, "sources.json");
+    await writeFile(
+      bundlePath,
+      JSON.stringify(createEvidenceBundle([left, right])),
+    );
+    const { call } = await connectLocalToolsMcp();
+    for (const field of [
+      "left",
+      "right",
+      "left_observations",
+      "right_observations",
+    ] as const) {
+      const observation = field.endsWith("observations");
+      const request = {
+        left,
+        right,
+        detail: "complete",
+        [field]: observation ? ["not-evidence"] : "not-evidence",
+      };
+      const expected = {
+        code: "invalid_request",
+        details: {
+          issues: [
+            expect.objectContaining({
+              path: observation ? [field, 0] : [field],
+              reason: "invalid_type",
+            }),
+          ],
+        },
+      };
+      expect(
+        parseMcpToolError(await call("match_native_functions", request)).error,
+      ).toMatchObject(expected);
+      const requestPath = join(root, "request.json");
+      await writeFile(requestPath, JSON.stringify(request));
+      for (const sourceArguments of [[], ["--source_bundle", bundlePath]]) {
+        const rejected = await cli.run({
+          arguments: [
+            "match-native-functions",
+            requestPath,
+            ...sourceArguments,
+            "--json",
+          ],
+        });
+        expect(rejected.exitCode).not.toBe(0);
+        expect(rejected.json).toMatchObject(expected);
+      }
+    }
+    const corrected = await call("match_native_functions", {
+      left,
+      right,
+      detail: "complete",
+    });
+    expect(corrected.isError).not.toBe(true);
+    expect(
+      parseEvidence(corrected.structuredContent).normalized_result,
+    ).toMatchObject({ summary: { matched: 1 } });
+  },
 );
 
 cliTest(

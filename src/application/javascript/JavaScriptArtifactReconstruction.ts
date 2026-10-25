@@ -1,8 +1,9 @@
+import type { AnalysisSettingValues } from "../../domain/analysisSettings.js";
 import {
   DEFAULT_ASAR_HEADER_ADMISSION,
   type AsarHeaderAdmission,
 } from "../../config/asarHeaderAdmission.js";
-import { constants } from "node:fs";
+import { constants, type Stats } from "node:fs";
 import {
   buildJavaScriptRouteInventorySteps,
   type JavaScriptRouteInventory,
@@ -20,9 +21,13 @@ import { createJavaScriptArtifactReader as createReader } from "../../artifacts/
 import type { JavaScriptApplicationGraph } from "../../domain/javascript/javascriptApplicationGraph.js";
 import type { JavaScriptSemanticGraph } from "../../domain/javascript/javascriptSemanticGraph.js";
 import type { JavaScriptSourceSelection } from "../../domain/javascript/javascriptSourceSelection.js";
-import type { ElectronBoundarySummary } from "../../domain/javascript/javascriptApplicationAnalysis.js";
-import { parseOwnedJavaScriptApplicationAnalysisSteps } from "../../domain/javascript/javascriptApplicationAnalysis.js";
+import {
+  parseOwnedJavaScriptApplicationAnalysisSteps,
+  type AnalyzeJavaScriptApplicationInput,
+  type ElectronBoundarySummary,
+} from "../../domain/javascript/javascriptApplicationAnalysis.js";
 import { AnalysisError } from "../../domain/analysisErrorBase.js";
+import { analysisErrorWithCleanupFailure } from "../../domain/analysisErrorCleanup.js";
 import { ArtifactOperationError } from "../../domain/artifactOperationError.js";
 import type { ArtifactInventorySnapshot } from "../../domain/artifactInventorySnapshot.js";
 import type { ArtifactInventoryPartialObservation } from "../../domain/artifactPartialObservation.js";
@@ -37,11 +42,8 @@ import { JAVASCRIPT_ANALYSIS_RESOURCE_DEFAULTS } from "../../domain/javascript/j
 import { createOwnedJavaScriptApplicationEvidenceCooperatively } from "./JavaScriptApplicationEvidence.js";
 import { readJavaScriptArtifactFiles } from "../../artifacts/javascript/JavaScriptArtifactFiles.js";
 import { buildImmutableJavaScriptArtifactGraphSteps } from "./JavaScriptArtifactGraphBuilder.js";
-import {
-  javascriptArtifactReconstructionInputSchema,
-  type JavaScriptArtifactReconstructionInput,
-} from "./JavaScriptArtifactReconstructionInput.js";
 import { scanCanonicalArtifactInventoryInScope } from "../../artifacts/inventory/scanCanonical.js";
+import { createJavaScriptNextAppContext } from "./JavaScriptNextAppContext.js";
 import { summarizeElectronBoundaries } from "./ElectronBoundaryAnalysis.js";
 import { createJavaScriptSemanticGraphProjection } from "./JavaScriptSemanticGraphBuilder.js";
 import type { ProgressReporter } from "../ProgressReporter.js";
@@ -78,13 +80,14 @@ export interface JavaScriptArtifactReconstructionResult {
   readonly limitations: readonly string[];
 }
 
-/** Reconstruct one local ASAR or extracted directory without executing code. */
+/** Reconstruct a parsed local ASAR/directory request without executing code. */
 export const reconstructJavaScriptArtifact = async (
-  rawInput: unknown,
+  input: AnalyzeJavaScriptApplicationInput,
   scope: ArtifactResourceScope,
   signal?: AbortSignal,
   progress?: ProgressReporter,
   asarHeaderAdmission: AsarHeaderAdmission = DEFAULT_ASAR_HEADER_ADMISSION,
+  overrides?: Readonly<Partial<AnalysisSettingValues>>,
 ): Promise<JavaScriptArtifactReconstructionResult> =>
   scope.run(async () => {
     const reportPhase = async (
@@ -99,10 +102,9 @@ export const reconstructJavaScriptArtifact = async (
       });
       await checkpointJavaScriptAnalysis(signal);
     };
-    const input = javascriptArtifactReconstructionInputSchema.parse(rawInput);
     abortIfNeeded(signal);
-    const path = await resolveSelectedInput(input.input_path);
-    const format = await resolveFormat(path, input);
+    const { path, metadata } = await resolveSelectedInput(input.input_path);
+    const format = resolveFormat(path, metadata, input);
     const snapshot = await scanCanonicalArtifactInventoryInScope(path, {
       resourceScope: scope,
       signal,
@@ -173,9 +175,12 @@ export const reconstructJavaScriptArtifact = async (
       const worker = await createJavaScriptSourceAnalysis(
         {
           heapMb:
-            input.max_heap_mb ?? JAVASCRIPT_ANALYSIS_RESOURCE_DEFAULTS.heapMb,
+            input.max_heap_mb ??
+            overrides?.["javascript.max_heap_mb"] ??
+            JAVASCRIPT_ANALYSIS_RESOURCE_DEFAULTS.heapMb,
           timeoutMs:
             input.analysis_timeout_ms ??
+            overrides?.["javascript.analysis_timeout_ms"] ??
             JAVASCRIPT_ANALYSIS_RESOURCE_DEFAULTS.timeoutMs,
         },
         files.files.filter(
@@ -206,6 +211,16 @@ export const reconstructJavaScriptArtifact = async (
             abortIfNeeded(signal);
           },
           signal,
+          async (file, phase) => {
+            abortIfNeeded(signal);
+            await progress?.report({
+              phase: `javascript_worker_${phase}`,
+              completed: 0,
+              total: 1,
+              message: `JavaScript worker ${phase}: ${file.path}`,
+            });
+            abortIfNeeded(signal);
+          },
         );
       } finally {
         try {
@@ -221,7 +236,7 @@ export const reconstructJavaScriptArtifact = async (
         }
       }
       const analysis = outcome.analysis;
-      let interruption = cleanupFailure ?? outcome.interruption;
+      let interruption = outcome.interruption;
       // Source facts are owned now. Finish their projection cooperatively so a
       // later cancellation can retain Evidence instead of discarding those facts.
       const checkpointCompletedAnalysis = async (): Promise<void> => {
@@ -240,7 +255,7 @@ export const reconstructJavaScriptArtifact = async (
         message: string,
       ): Promise<void> => {
         await checkpointCompletedAnalysis();
-        if (interruption == null)
+        if (interruption == null && cleanupFailure === undefined)
           await progress?.report({ phase, completed: 0, total: 1, message });
         await checkpointCompletedAnalysis();
       };
@@ -275,6 +290,16 @@ export const reconstructJavaScriptArtifact = async (
       const semanticGraph =
         await completeJavaScriptAnalysisSteps(semanticGraphSteps);
       await checkpointCompletedAnalysis();
+      const directoryPaths = new Set(
+        snapshot.occurrences
+          .filter(({ entry_kind }) => entry_kind === "directory")
+          .map(({ logical_path }) => logical_path),
+      );
+      const nextAppContext = createJavaScriptNextAppContext(
+        files.files,
+        analysis.jsonDocuments,
+        directoryPaths,
+      );
       const completed = {
         route_inventory: await completeJavaScriptAnalysisSteps(
           buildJavaScriptRouteInventorySteps([
@@ -282,6 +307,7 @@ export const reconstructJavaScriptArtifact = async (
               .filter(({ file }) => file.kind === "javascript")
               .map(({ file, javascript, analysis_failure }) => ({
                 key: file.path,
+                next_app_context: nextAppContext(file),
                 path: file.path,
                 url: null,
                 sha256: file.sha256,
@@ -308,6 +334,7 @@ export const reconstructJavaScriptArtifact = async (
               .filter((file) => file.kind === "javascript")
               .map((file) => ({
                 key: file.path,
+                next_app_context: nextAppContext(file),
                 path: file.path,
                 url: null,
                 sha256: file.sha256,
@@ -329,14 +356,7 @@ export const reconstructJavaScriptArtifact = async (
           : { source_selection: files.source_selection }),
         graph,
         semantic_graph: semanticGraph,
-        electron_summary: summarizeElectronBoundaries(
-          analysis,
-          new Set(
-            snapshot.occurrences
-              .filter(({ entry_kind }) => entry_kind === "directory")
-              .map(({ logical_path }) => logical_path),
-          ),
-        ),
+        electron_summary: summarizeElectronBoundaries(analysis, directoryPaths),
         statistics: {
           relevant_files:
             files.files.length + files.unavailable_relevant_files.length,
@@ -357,7 +377,17 @@ export const reconstructJavaScriptArtifact = async (
         limitations: analysis.limitations,
       };
       await checkpointCompletedAnalysis();
-      if (interruption !== null && interruption !== undefined) {
+      const failure =
+        cleanupFailure === undefined
+          ? interruption
+          : interruption === null
+            ? cleanupFailure
+            : analysisErrorWithCleanupFailure(
+                interruption,
+                cleanupFailure,
+                OPERATION,
+              ).bindCleanupDependencies([interruption, cleanupFailure]);
+      if (failure !== null) {
         const { electron_summary: summary, ...application } = completed;
         const partial = await completeJavaScriptAnalysisSteps(
           parseOwnedJavaScriptApplicationAnalysisSteps({
@@ -371,7 +401,7 @@ export const reconstructJavaScriptArtifact = async (
             input,
             partial,
           );
-        throw interruption.retainPartialObservation(evidence);
+        throw failure.retainPartialObservation(evidence);
       }
       reconstructionOutcome = { kind: "completed", result: completed };
     } catch (cause: unknown) {
@@ -409,11 +439,18 @@ const OPERATION = "analyze_javascript_application";
  * unreadable selection is a caller or host-resolution failure, not a damaged
  * artifact.
  */
-const resolveSelectedInput = async (inputPath: string): Promise<string> => {
+const resolveSelectedInput = async (
+  inputPath: string,
+): Promise<{ readonly path: string; readonly metadata: Stats }> => {
   try {
     const path = await realpath(inputPath);
-    await access(path, constants.R_OK);
-    return path;
+    const metadata = await lstat(path);
+    // Directory enumeration needs read access; resolving its entries also needs search access.
+    await access(
+      path,
+      metadata.isDirectory() ? constants.R_OK | constants.X_OK : constants.R_OK,
+    );
+    return { path, metadata };
   } catch (cause: unknown) {
     const code =
       cause instanceof Error && "code" in cause ? String(cause.code) : "";
@@ -450,11 +487,11 @@ const selectedInputResolutionMessage = (
     : `Selected input path could not be resolved because symbolic-link traversal looped or exceeded the host limit (ELOOP): ${inputPath}`;
 
 /** The selected input's kind, checked against the caller's requested format. */
-const resolveFormat = async (
+const resolveFormat = (
   path: string,
-  input: JavaScriptArtifactReconstructionInput,
-): Promise<"asar" | "directory"> => {
-  const metadata = await lstat(path);
+  metadata: Stats,
+  input: AnalyzeJavaScriptApplicationInput,
+): "asar" | "directory" => {
   const observed = metadata.isDirectory()
     ? "directory"
     : metadata.isFile() && path.toLowerCase().endsWith(".asar")

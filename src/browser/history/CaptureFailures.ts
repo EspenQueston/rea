@@ -1,8 +1,11 @@
+import { analysisSettingLimit } from "../../domain/analysisSettingDefinitions.js";
 import type { ExecutionOptions } from "../../application/AnalysisProvider.js";
 import { ArtifactReaderFailure } from "../../artifacts/ArtifactReader.js";
 import { analysisErrorWithCleanupFailure } from "../../domain/analysisErrorCleanup.js";
-import { bindArtifactFileCleanup } from "../../artifacts/ArtifactFileOperation.js";
-import { artifactFileCancellationCause } from "../../artifacts/ArtifactFileOperation.js";
+import {
+  bindArtifactFileCleanup,
+  artifactFileCancellationCause,
+} from "../../artifacts/ArtifactFileOperation.js";
 import { AnalysisError } from "../../domain/analysisErrorBase.js";
 import {
   AnalysisAccessDeniedError,
@@ -134,11 +137,7 @@ export const historicalCaptureFailure = (
       cause.message,
       { cause },
     );
-  if (
-    phase !== "decoder" &&
-    cause instanceof ArtifactReaderFailure &&
-    cause.reason === "cancelled"
-  )
+  if (cause instanceof ArtifactReaderFailure && cause.reason === "cancelled")
     return new AnalysisCancelledError(OPERATION, {
       cause: artifactFileCancellationCause(cause),
     });
@@ -269,6 +268,16 @@ export const captureMemoryFailure = (
     },
     {
       cause,
+      ...(input.format !== "mitmproxy" &&
+      (NODE_CAPTURE_HEAP_ENFORCED || processMemoryLimitBytes !== null)
+        ? {
+            limit: analysisSettingLimit(
+              "capture.decoder_old_generation_mib",
+              heap.oldGenerationMiB,
+              heap.source,
+            ),
+          }
+        : {}),
       remediationAction: `Use a smaller capture exported by its producer, or another decoder with sufficient capacity for the original capture. Preserve the original for provenance; a subset does not establish complete-capture coverage.${input.format !== "mitmproxy" ? ` ${recovery}` : ""}${input.format !== "mitmproxy" && processMemoryLimitBytes !== null ? ` The Windows Job Object commit limit for this decoder is ${String(processMemoryLimitBytes)} bytes, ${String(heap.oldGenerationMiB)} MiB plus a 512 MiB Bun reserve.` : ""}`,
       ...(cause instanceof OwnedCommandFailure && cause.snapshot !== null
         ? {
@@ -290,16 +299,6 @@ export const withCaptureReaderCleanup = (
 ): AnalysisError => {
   if (!(cause instanceof ArtifactReaderFailure) || cause.cleanup === undefined)
     return primary;
-  if (cause.reason === "unavailable") {
-    const cleanup = new ProviderCleanupError(
-      "web-network-capture",
-      cause.cleanup.resources,
-      { reason: cause.cleanup.reason },
-      { operation: OPERATION, cause },
-    );
-    bindArtifactFileCleanup(cause, cleanup);
-    return cleanup;
-  }
   const cleanup = new ProviderCleanupError(
     "web-network-capture",
     cause.cleanup.resources,
@@ -307,6 +306,15 @@ export const withCaptureReaderCleanup = (
     { operation: OPERATION, cause },
   );
   bindArtifactFileCleanup(cause, cleanup);
+  if (
+    cause.reason === "unavailable" &&
+    primary instanceof ProviderAdapterError &&
+    primary.cause === cause
+  ) {
+    if (primary.partialObservation !== undefined)
+      cleanup.retainPartialObservation(primary.partialObservation);
+    return cleanup;
+  }
   const composed = analysisErrorWithCleanupFailure(
     primary,
     cleanup,

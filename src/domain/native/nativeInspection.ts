@@ -27,6 +27,7 @@ const nativeCommandInvocationSchema = z.object({
 
 const architectureSchema = z.object({
   name: z.string(),
+  hidden: z.boolean().exactOptional(),
   cpu_type: z.string().nullable(),
   cpu_subtype: z.string().nullable(),
   file_offset: z
@@ -70,8 +71,32 @@ const segmentSchema = z.object({
   initial_permissions: permissionSchema,
   sections: coverage(sectionSchema),
 });
+/** Derived from `name` by the shared Mach-O symbol-name owner. */
+const runtimeNameSchema = z
+  .string()
+  .nullable()
+  .default(null)
+  .describe(
+    "Symbol-table `name` without the one leading underscore Darwin adds to language-level symbols (`_main` is `main`, `__ZN3rea3addEii` is `_ZN3rea3addEii`), as LLDB and dlsym name it and observe_native_calls function breakpoints accept; a name without that underscore, such as `-[Class selector]`, is unchanged. Null when `name` is null, nothing remains, or the Evidence predates this field.",
+  );
 const symbolSchema = z.object({
+  /** Exact Mach-O symbol-table name, the source fact. */
   name: z.string(),
+  runtime_name: runtimeNameSchema,
+  address: hexAddress.nullable(),
+  weak: z.boolean().nullable(),
+  reexport: z.boolean().nullable(),
+  source: z.string().nullable(),
+});
+const importSymbolSchema = z.object({
+  /** Resolved symbol identity; null when the textual row has multiple parses. */
+  name: z.string().nullable(),
+  runtime_name: runtimeNameSchema,
+  /** Exact import text retained when a chained suffix makes identity ambiguous. */
+  raw_name: z.string().nullable().default(null),
+  name_status: z.enum(["exact", "ambiguous"]).nullable().default(null),
+  /** Addend is unknown when only the ambiguous text expression is available. */
+  addend: hexAddress.nullable().default(null),
   address: hexAddress.nullable(),
   weak: z.boolean().nullable(),
   reexport: z.boolean().nullable(),
@@ -132,7 +157,7 @@ export const inspectMachoSchema = z.object({
   build_metadata: coverage(buildMetadataSchema),
   load_commands: coverage(loadCommandSchema),
   dependencies: coverage(dependencySchema),
-  imports: coverage(symbolSchema),
+  imports: coverage(importSymbolSchema),
   exports: coverage(symbolSchema),
   segments: coverage(segmentSchema),
   provenance: z.array(nativeCommandInvocationSchema),

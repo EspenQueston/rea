@@ -1,3 +1,5 @@
+import type { ResidualUnknown } from "../domain/residualUnknown.js";
+import type { JsonValue } from "../domain/jsonValue.js";
 import type { EvidenceMcpServer } from "./EvidenceMcpServer.js";
 
 import type { BinarySessionPort } from "../application/binary/BinarySessionPort.js";
@@ -11,7 +13,6 @@ import type { ArtifactResourceScope } from "../artifacts/ArtifactResourceScope.j
 import { err, ok } from "../domain/result.js";
 import { AnalysisCancelledError } from "../domain/analysisErrorCore.js";
 import { inspectEvidenceBundle } from "../application/investigation/InspectEvidenceBundle.js";
-import { investigationEvidenceBundle } from "../application/investigation/InvestigationEvidence.js";
 import { toolRegistrationOptions } from "./toolRegistrationOptions.js";
 import { withAdmittedAnalysis } from "./analysisAdmission.js";
 import { runAdmittedToolOperation } from "./admittedToolOperation.js";
@@ -50,7 +51,7 @@ const registerExportEvidenceTool = ({
     exportContract.name,
     toolRegistrationOptions(exportContract),
     async (input, context) => {
-      const bundle = investigationEvidenceBundle(session);
+      const bundle = session.immutableEvidenceBundle();
       const written = await writeEvidenceBundle(
         bundle,
         input.path,
@@ -83,7 +84,7 @@ const registerSnapshotEvidenceTool = ({
     toolRegistrationOptions(snapshotContract),
     (input) =>
       server.delivery.toCallToolResult(
-        inspectEvidenceBundle(investigationEvidenceBundle(session), input),
+        inspectEvidenceBundle(session.immutableEvidenceBundle(), input),
         snapshotContract,
       ),
   );
@@ -117,13 +118,17 @@ const registerImportEvidenceTool = ({
           if (!loaded.ok)
             return server.delivery.toCallToolResult(loaded, importContract);
           const retainedUnknownRevisions = new Set(
-            investigationEvidenceBundle(session).unknowns.map((unknown) =>
-              unknownRevisionKey(unknown),
-            ),
+            session
+              .immutableEvidenceBundle()
+              .unknowns.map((unknown) => unknownRevisionKey(unknown)),
           );
           if (signal.aborted)
             return server.delivery.toCallToolResult(
-              err(new AnalysisCancelledError("import_evidence_bundle")),
+              err(
+                new AnalysisCancelledError("import_evidence_bundle", {
+                  cause: signal.reason,
+                }),
+              ),
               importContract,
             );
           const imported = session.importEvidenceBundle(loaded.value);
@@ -137,7 +142,7 @@ const registerImportEvidenceTool = ({
                         unknownRevisionKey(unknown),
                       ),
                   ).length,
-                  total: investigationEvidenceBundle(session).records.length,
+                  total: session.immutableEvidenceBundle().records.length,
                 }),
                 importContract,
               )
@@ -188,7 +193,11 @@ const registerRecordUnknownTool = ({
     toolRegistrationOptions(recordContract),
     (input) => {
       const result = session.recordUnknown(input);
-      return server.delivery.toCallToolResult(result, recordContract);
+      return server.delivery.toCallToolResult(
+        result,
+        recordContract,
+        result.ok ? committedUnknownReceipt(result.value) : {},
+      );
     },
   );
 };
@@ -203,7 +212,11 @@ const registerUpdateUnknownTool = ({
     toolRegistrationOptions(updateContract),
     (input) => {
       const result = session.updateUnknown(input);
-      return server.delivery.toCallToolResult(result, updateContract);
+      return server.delivery.toCallToolResult(
+        result,
+        updateContract,
+        result.ok ? committedUnknownReceipt(result.value) : {},
+      );
     },
   );
 };
@@ -232,3 +245,17 @@ export const registerUnknownTools = (
   registerUpdateUnknownTool(registration);
   registerVerifyUnknownTool(registration);
 };
+
+const committedUnknownReceipt = (
+  unknown: ResidualUnknown,
+): Readonly<Record<string, JsonValue>> => ({
+  committed_unknown: {
+    unknown_id: unknown.unknown_id,
+    revision: unknown.revision,
+    mutation_evidence_ids: unknown.mutation_evidence_ids,
+  },
+  evidence_reference: {
+    kind: "retained-evidence",
+    evidence_id: unknown.mutation_evidence_ids[0]!,
+  },
+});

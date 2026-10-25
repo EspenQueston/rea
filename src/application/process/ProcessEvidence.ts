@@ -1,23 +1,22 @@
-import { z } from "zod";
+import type { z } from "zod";
 import { posix, win32 } from "node:path";
 
 import type { JsonValue } from "../../domain/jsonValue.js";
 import {
   createEvidence,
-  parseEvidence,
-  type Evidence,
   type EvidenceProvider,
 } from "../../domain/evidence.js";
 import {
   PROCESS_PROVIDER,
   isProcessEvidenceProvider,
 } from "../../domain/process/processEvidenceProvider.js";
-import { jsonValueSchema } from "../../domain/jsonValue.js";
 import {
   safeParseProcessCapture,
   type ProcessCapture,
 } from "../../domain/process/processCaptureParsing.js";
+import { safeParseEvidence } from "../../domain/evidenceValidation.js";
 import type { ProcessScenario } from "../../domain/process/processScenario.js";
+import type { ParsedProcessCaptureEvidence } from "../../domain/process/processComparisonEvidence.js";
 import { err, ok, type Result } from "../../domain/result.js";
 
 const PROCESS_CAPTURE_EVIDENCE = {
@@ -45,18 +44,11 @@ export type ProcessCaptureEvidenceFailure =
 /** Authenticate capture Evidence before admitting its workflow, provider and payload. */
 export const parseProcessCaptureEvidence = (
   input: unknown,
-): Result<
-  { readonly record: Evidence; readonly capture: ProcessCapture },
-  ProcessCaptureEvidenceFailure
-> => {
-  let record: Evidence;
-  try {
-    record = parseEvidence(input);
-  } catch (cause: unknown) {
-    if (cause instanceof z.ZodError)
-      return err({ kind: "invalid-evidence", cause });
-    throw cause;
-  }
+): Result<ParsedProcessCaptureEvidence, ProcessCaptureEvidenceFailure> => {
+  const parsedEvidence = safeParseEvidence(input);
+  if (!parsedEvidence.ok)
+    return err({ kind: "invalid-evidence", cause: parsedEvidence.error });
+  const record = parsedEvidence.value;
   if (
     record.operation !== PROCESS_CAPTURE_EVIDENCE.operation ||
     record.predicate_type !== PROCESS_CAPTURE_EVIDENCE.predicate
@@ -98,7 +90,7 @@ export const createProcessCaptureEvidence = (
     predicateType: PROCESS_CAPTURE_EVIDENCE.predicate,
     operation: PROCESS_CAPTURE_EVIDENCE.operation,
     parameters: processEvidenceParameters(scenario, capture.manifest.platform),
-    result: jsonValueSchema.parse(capture),
+    result: capture,
     confidence: "observed",
     authority: "controlled-replay",
     environment: {
