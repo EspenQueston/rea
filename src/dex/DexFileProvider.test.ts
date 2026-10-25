@@ -401,3 +401,56 @@ describe("DexFileProvider stored member names", () => {
     );
   });
 });
+
+describe("DexFileProvider partial results", () => {
+  it("retains completed member summaries when a later member is refused", async () => {
+    const first = debuggableDex();
+    const path = await write(
+      "partial.apk",
+      await zipArchive([
+        { name: "classes.dex", bytes: first },
+        {
+          name: "classes2.dex",
+          bytes: Uint8Array.from([1, 2, 3, 4, 5, 6, 7, 8]),
+        },
+        { name: "classes3.dex", bytes: debuggableDex() },
+      ]),
+    );
+    const result = await provider.inspect({ path });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.partialObservation).toMatchObject({
+      kind: "dex-debug-metadata-members",
+      path,
+      completed_members: [
+        {
+          entry: "classes.dex",
+          sha256: createHash("sha256").update(first).digest("hex"),
+          bytes: first.length,
+          summary: { readiness: "present" },
+        },
+      ],
+      unfinished: { entry: "classes2.dex", unread_members: 1 },
+    });
+  });
+
+  it("retains nothing for a class lookup that cannot finish", async () => {
+    const path = await write(
+      "partial-detail.apk",
+      await zipArchive([
+        { name: "classes.dex", bytes: debuggableDex() },
+        {
+          name: "classes2.dex",
+          bytes: Uint8Array.from([1, 2, 3, 4, 5, 6, 7, 8]),
+        },
+      ]),
+    );
+    const result = await provider.inspect({
+      path,
+      class_descriptor: "Lcom/example/Foo;",
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.partialObservation).toBeUndefined();
+  });
+});

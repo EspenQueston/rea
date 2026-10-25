@@ -57,6 +57,7 @@ import {
   mapDexWorkError,
 } from "./dexFailures.js";
 import { displayName, displayNote } from "./dexDisplayText.js";
+import { DexProgress } from "./dexProgress.js";
 import { selectDexMembers } from "./dexMemberSelection.js";
 import { DEX_LIMITS, DEX_PROVIDER_IDENTITY } from "./DexFileRelease.js";
 
@@ -183,10 +184,11 @@ export class DexFileProvider implements DexDebugMetadataPort {
   ): Promise<Result<DexDebugMetadataExecution, AnalysisError>> {
     const signal = options?.signal;
     if (signal?.aborted) return err(dexCancelled(signal));
+    const progress = new DexProgress();
     try {
       const execution = await this.#resources.run(async () => {
         if (input.entry !== undefined)
-          return this.#inspectArchive(input, signal);
+          return this.#inspectArchive(input, signal, progress);
         const magic = await peekArtifactMagic(
           input.path,
           8,
@@ -195,7 +197,7 @@ export class DexFileProvider implements DexDebugMetadataPort {
           this.#resources,
         );
         return looksLikeZip(magic)
-          ? this.#inspectArchive(input, signal)
+          ? this.#inspectArchive(input, signal, progress)
           : this.#inspectLooseDex(input, signal);
       });
       // Observed only after the final close: keep the completed report.
@@ -209,7 +211,9 @@ export class DexFileProvider implements DexDebugMetadataPort {
         );
       return ok(execution);
     } catch (cause: unknown) {
-      return err(dexFileFailure(cause, input, signal));
+      return err(
+        progress.retainOn(dexFileFailure(cause, input, signal), input.path),
+      );
     }
   }
 
@@ -257,6 +261,7 @@ export class DexFileProvider implements DexDebugMetadataPort {
   async #inspectArchive(
     input: InspectDexDebugMetadataInput,
     signal: AbortSignal | undefined,
+    progress: DexProgress,
   ): Promise<DexDebugMetadataExecution> {
     const { path } = input;
     const completed = await withArtifactRegularFile(
@@ -289,6 +294,7 @@ export class DexFileProvider implements DexDebugMetadataPort {
                 handle,
                 initial,
                 format: zipFormat === "apk" ? "apk" : "zip",
+                progress,
               }),
             ),
           };
@@ -322,6 +328,7 @@ export class DexFileProvider implements DexDebugMetadataPort {
       readonly handle: FileHandle;
       readonly initial: Stats;
       readonly format: "apk" | "zip";
+      readonly progress: DexProgress;
     },
   ): Promise<DexDebugMetadataExecution> {
     const { path } = input;
@@ -337,9 +344,13 @@ export class DexFileProvider implements DexDebugMetadataPort {
       })),
       input,
       signal,
-      selected.value.skippedNote === undefined
-        ? []
-        : [selected.value.skippedNote],
+      {
+        selectionFacts:
+          selected.value.skippedNote === undefined
+            ? []
+            : [selected.value.skippedNote],
+        progress: archive.progress,
+      },
     );
     if (!findings.ok) throw findings.error;
     const digest = await hashStableRootArtifactHandle(
@@ -364,14 +375,25 @@ export class DexFileProvider implements DexDebugMetadataPort {
     sources: readonly MemberSource[],
     input: InspectDexDebugMetadataInput,
     signal: AbortSignal | undefined,
-    selectionFacts: readonly string[] = [],
+    {
+      selectionFacts = [],
+      progress = new DexProgress(),
+    }: {
+      readonly selectionFacts?: readonly string[];
+      readonly progress?: DexProgress;
+    } = {},
   ): Promise<Result<MemberFindings, AnalysisError>> {
     const cancelled = (): boolean => signal?.aborted === true;
     const summaries: DexSummaryMember[] = [];
     const found: { entry: string | null; detail: DexClassDetail }[] = [];
     const limitations: string[] = [...selectionFacts];
     const notes = new ReaderNotes(limitations);
-    for (const source of sources) {
+    if (input.class_descriptor === undefined) progress.completed = summaries;
+    for (const [index, source] of sources.entries()) {
+      progress.unfinished = {
+        entry: source.entry,
+        unread_members: sources.length - index - 1,
+      };
       if (signal?.aborted) return err(dexCancelled(signal));
       const loaded = await source.load();
       notes.carry(source.label, source.limitations ?? []);
@@ -429,6 +451,7 @@ export class DexFileProvider implements DexDebugMetadataPort {
       // A second match is already ambiguous; reading further members is waste.
       if (found.length > 1) break;
     }
+    progress.unfinished = null;
     const facts = notes.facts();
     return ok(
       input.class_descriptor === undefined

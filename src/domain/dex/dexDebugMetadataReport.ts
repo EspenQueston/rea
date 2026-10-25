@@ -217,6 +217,41 @@ export const buildDexSummaryResult = (
   limitations: [...DEX_DEBUG_METADATA_LIMITATIONS],
 });
 
+/**
+ * Summaries of the archive members that completed before a later member was
+ * refused or the call was cancelled, retained on that failure so their facts
+ * are not lost. `unfinished` names the member that was being analysed and
+ * counts the members never read; it is null when every member completed and a
+ * later step (the archive's own identity) failed. Each member keeps its own
+ * SHA-256; the archive's digest was not computed.
+ */
+export interface DexDebugMetadataPartialObservation {
+  readonly kind: "dex-debug-metadata-members";
+  readonly path: string;
+  readonly completed_members: readonly z.infer<typeof memberSummarySchema>[];
+  readonly unfinished: {
+    readonly entry: string | null;
+    readonly unread_members: number;
+  } | null;
+}
+
+/** Retain completed member summaries on a failure that ends the call. */
+export const buildDexPartialObservation = (
+  path: string,
+  members: readonly DexSummaryMember[],
+  unfinished: DexDebugMetadataPartialObservation["unfinished"],
+): DexDebugMetadataPartialObservation => ({
+  kind: "dex-debug-metadata-members",
+  path,
+  completed_members: members.map((m) => ({
+    entry: m.entry,
+    sha256: m.sha256,
+    bytes: m.bytes,
+    summary: projectSummary(m.summary),
+  })),
+  unfinished,
+});
+
 /** Project full per-method detail for one selected class. */
 export const buildDexClassDetailResult = (
   artifact: DexArtifactIdentity,

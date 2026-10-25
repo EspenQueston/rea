@@ -148,6 +148,14 @@ Limits and refusals a caller can meet:
   local name, type or signature, or `DBG_SET_FILE` name lies outside the
   member's string or type pool, as ART's verifier rejects it: such a name is
   never counted as surviving debug evidence.
+- **Completed members survive a later failure.** When summarising several
+  members, a refusal of a later member, a cancellation or a failed read still
+  returns the members already summarised, as the failure's
+  `partial_observation` (`kind: "dex-debug-metadata-members"`): each with its
+  entry, SHA-256, size and summary, plus the member that was being analysed
+  and how many were never read. The archive's own SHA-256 is not computed
+  then. A class lookup retains nothing, because a match is an answer only
+  once every member was checked for a second definition.
 - **No ART verifier.** REA decodes `class_data` but does not run ART's
   verifier: an index repeated across lists (an instance and a static field, a
   virtual and a direct method), access flags inconsistent with a member's list,
