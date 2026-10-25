@@ -43,11 +43,13 @@ export const registerArtifactComparisonTool = (
               const resolvedLeft = resolveArtifactComparisonEvidence(
                 suppliedLeft,
                 evidenceById,
+                "left",
               );
               if (!resolvedLeft.ok) throw resolvedLeft.error;
               const resolvedRight = resolveArtifactComparisonEvidence(
                 suppliedRight,
                 evidenceById,
+                "right",
               );
               if (!resolvedRight.ok) throw resolvedRight.error;
               const left = resolvedLeft.value;
