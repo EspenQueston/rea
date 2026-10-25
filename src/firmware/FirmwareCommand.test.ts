@@ -288,11 +288,16 @@ test.each([
   {
     selected: 1,
     inherited: Number.MAX_SAFE_INTEGER,
-    expected: 8 * 1024 * 1024,
+    expected: 8 * 1024 * 1024 + 1,
   },
   {
     selected: 16 * 1024 * 1024,
     inherited: Number.MAX_SAFE_INTEGER,
+    expected: 16 * 1024 * 1024 + 1,
+  },
+  {
+    selected: 16 * 1024 * 1024,
+    inherited: 16 * 1024 * 1024,
     expected: 16 * 1024 * 1024,
   },
   { selected: 16 * 1024 * 1024, inherited: 1024, expected: 1024 },
