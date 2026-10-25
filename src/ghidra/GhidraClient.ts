@@ -54,6 +54,7 @@ import {
   ghidraFailureOutput,
   GHIDRA_JVM_OOME_MARKER,
   GHIDRA_PROCESS_DIAGNOSTIC_BYTES,
+  type GhidraDiagnosticsScope,
 } from "./GhidraDiagnostics.js";
 import { GhidraLaunchError, type GhidraLaunch } from "./GhidraLauncher.js";
 import { GhidraResponseRouter } from "./GhidraResponseRouter.js";
@@ -158,7 +159,7 @@ export class GhidraClient {
   #startupAttempt: GhidraStartupAttempt | undefined;
   #closePromise: Promise<void> | undefined;
   readonly #failure = bindGhidraSessionFailure(
-    () => this.#diagnostics(),
+    (scope) => this.#diagnostics(scope),
     (value, incomplete) => this.#redactAuthentication(value, incomplete),
   );
   readonly #wire: GhidraWire;
@@ -378,15 +379,17 @@ export class GhidraClient {
     options: {
       readonly signal?: AbortSignal;
       readonly progress?: ProgressReporter;
+      readonly decompileTimeoutSeconds?: number | null;
     } = {},
   ): Promise<Result<JsonValue, GhidraSessionError>> {
     const started = await this.start(options.signal, options.progress);
     if (!started.ok) return started;
-    return this.#requestQueue.run(
-      operation,
-      parameters,
-      options.signal === undefined ? {} : { signal: options.signal },
-    );
+    return this.#requestQueue.run(operation, parameters, {
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
+      ...(options.decompileTimeoutSeconds === undefined
+        ? {}
+        : { decompileTimeoutSeconds: options.decompileTimeoutSeconds }),
+    });
   }
 
   /** Dispatch against the connected bridge without invoking startup or retry. */
@@ -852,13 +855,13 @@ export class GhidraClient {
     this.#outputDrainPromise = undefined;
     this.#outputDrainIncomplete = false;
     const deadline = new ProviderStartupDeadline(
-      this.#options.startupTimeoutMs,
+      this.#options.readStartupTimeoutMs?.() ?? this.#options.startupTimeoutMs,
       signal,
     );
     try {
       const result = await this.#startWithin(deadline);
       return result.ok && deadline.signal.aborted
-        ? this.#startupInterrupted(deadline)
+        ? await this.#startupInterrupted(deadline)
         : result;
     } catch (cause: unknown) {
       if (cause instanceof GhidraSessionError) return err(cause);
@@ -1037,7 +1040,7 @@ export class GhidraClient {
           this.#wire.request(method, params, requestOptions),
         parseSessionInfo: (value) => this.#parseSessionInfo(value),
         failure: this.#failure,
-        startupTimeoutMs: this.#options.startupTimeoutMs,
+        startupTimeoutMs: deadline.timeoutMs,
       });
       if (
         completed.ok ||
@@ -1068,7 +1071,7 @@ export class GhidraClient {
       failure: this.#failure,
       isClosed: () => this.#closing,
       processExited: () => this.#process?.observedExit() !== undefined,
-      startupTimeoutMs: this.#options.startupTimeoutMs,
+      startupTimeoutMs: deadline.timeoutMs,
       handlers: {
         data: this.#onSocketData,
         error: this.#onSocketError,
@@ -1337,7 +1340,17 @@ export class GhidraClient {
         });
   }
 
-  #diagnostics(): Readonly<Record<string, JsonValue>> {
+  #diagnostics(
+    requestedScope: GhidraDiagnosticsScope = "session",
+  ): Readonly<Record<string, JsonValue>> {
+    // Startup errors still need launcher evidence. A request projection must
+    // have both a completed handshake and its own active output checkpoint.
+    const scope =
+      requestedScope === "request" &&
+      this.#startupSucceeded() &&
+      this.#activeOutputCheckpoint !== undefined
+        ? "request"
+        : "session";
     const currentSnapshot = this.#process?.snapshot() ?? this.#processSnapshot;
     const snapshot: ProviderProcessSnapshot | undefined =
       this.#outputDrainIncomplete && currentSnapshot !== undefined
@@ -1348,7 +1361,9 @@ export class GhidraClient {
           }
         : currentSnapshot;
     const checkpoint =
-      this.#activeOutputCheckpoint ?? this.#startupOutputCheckpoint;
+      scope === "request"
+        ? this.#activeOutputCheckpoint
+        : (this.#activeOutputCheckpoint ?? this.#startupOutputCheckpoint);
     const scoped =
       checkpoint === undefined
         ? undefined
@@ -1358,6 +1373,7 @@ export class GhidraClient {
         ? undefined
         : ghidraFailureOutput(scoped, this.#token, this.#outputDrainIncomplete);
     return createGhidraDiagnostics({
+      scope,
       targetPath: this.#options.targetPath,
       targetSha256: this.#options.targetSha256,
       ...(this.#targetAdmission === undefined

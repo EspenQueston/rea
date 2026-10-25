@@ -1,3 +1,4 @@
+import { launchRegexMatchingLimitation } from "../process/RegexMatcher.js";
 import { snapshotEnvironment } from "../process/snapshotEnvironment.js";
 import {
   createAnalysisProfile,
@@ -21,6 +22,7 @@ import type {
   AnalysisProviderCandidate,
   ProviderAvailability,
   ProviderTargetSupport,
+  RetainedResourceScope,
 } from "../application/AnalysisProvider.js";
 import type { AppConfig } from "../config/types.js";
 import type { ConfigurationError } from "../domain/configurationErrors.js";
@@ -49,7 +51,6 @@ import {
 import { AnalysisCleanupLease } from "../artifacts/AnalysisCleanupLease.js";
 import { AnalysisCleanupLeaseGroup } from "../artifacts/AnalysisCleanupLease.js";
 import { ProviderCleanupError } from "../domain/providerCleanupError.js";
-import type { RetainedResourceScope } from "../application/AnalysisProvider.js";
 import type { ProviderInspectionScope } from "../providers/ProviderInspectionScope.js";
 
 /** Bring-your-own IDA MCP candidate; discovery performs no provider startup. */
@@ -85,9 +86,9 @@ export class IdaProvider implements AnalysisProviderCandidate {
   }
   capabilities(): readonly CapabilityDescriptor[] {
     const profiles = [
-      ...idaCapabilities("attached", false, false),
-      ...idaCapabilities("attached", true, true),
-      ...idaCapabilities("headless", true, false),
+      ...idaCapabilities("attached", false, false, this.#regexLimitation()),
+      ...idaCapabilities("attached", true, true, this.#regexLimitation()),
+      ...idaCapabilities("headless", true, false, this.#regexLimitation()),
     ];
     const byOperation = new Map<string, (typeof profiles)[number][]>();
     for (const capability of profiles) {
@@ -173,6 +174,7 @@ export class IdaProvider implements AnalysisProviderCandidate {
           config.value.mode,
           "command" in config.value,
           config.value.protocol === "native",
+          this.#regexLimitation(),
         )
       : this.capabilities();
     const registrationDiagnostics = {
@@ -402,6 +404,12 @@ export class IdaProvider implements AnalysisProviderCandidate {
     const registration = await pending;
     return registration;
   }
+  #regexLimitation(): string {
+    return launchRegexMatchingLimitation(
+      this.config.regexMatchingDeadline,
+      this.config.regexWorkerHeapRequest,
+    );
+  }
   #createBoundClient(
     config: IdaConfiguration,
     target: BinaryTarget,
@@ -412,6 +420,7 @@ export class IdaProvider implements AnalysisProviderCandidate {
       target,
       this.connectionFactory(config, this.environment),
       profile,
+      this.config,
     );
   }
   #unboundClient(reason: string): AnalysisClient {

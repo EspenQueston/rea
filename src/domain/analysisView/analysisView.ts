@@ -111,10 +111,10 @@ import {
 import {
   nativeInventoryViewRequestSchema,
   nativeInventoryViewRowSchema,
-  nativeInventoryViewContext,
   nativeInventorySummarySchema,
   projectNativeInventoryView,
 } from "./nativeInventoryView.js";
+import { nativeViewSourceContext } from "./nativeViewContext.js";
 import {
   NATIVE_INVENTORY_OPERATIONS,
   nativeInventoryOperationSchema,
@@ -122,6 +122,19 @@ import {
 
 import { absoluteLocalPathStringSchema } from "../localPath.js";
 import { z } from "zod";
+import {
+  browserScenarioSummarySchema,
+  browserScenarioViewContextSchema,
+  browserScenarioViewItemsSchema,
+  browserScenarioViewRequestSchema,
+} from "./browserScenarioViewSchemas.js";
+import { projectBrowserScenarioView } from "./browserScenarioView.js";
+import {
+  nativeLoadImageViewRequestSchema,
+  nativeLoadImageViewItemsSchema,
+  nativeLoadImageSummarySchema,
+  projectNativeLoadImageView,
+} from "./nativeLoadImageView.js";
 import {
   desktopViewRequestSchema,
   desktopViewItemsSchema,
@@ -380,6 +393,7 @@ export const analysisViewRequestSchema = z.discriminatedUnion("kind", [
   javascriptFactsViewRequestSchema,
   nativeViewSchema,
   nativeInventoryViewRequestSchema,
+  nativeLoadImageViewRequestSchema,
   artifactInventoryViewRequestSchema,
   wasmViewRequestSchema,
   machoViewRequestSchema,
@@ -393,6 +407,7 @@ export const analysisViewRequestSchema = z.discriminatedUnion("kind", [
   environmentStateViewRequestSchema,
   environmentCoverageViewRequestSchema,
   captureViewRequestSchema,
+  browserScenarioViewRequestSchema,
   protobufViewRequestSchema,
   qlogViewRequestSchema,
   pcapViewRequestSchema,
@@ -729,6 +744,14 @@ export const webNetworkCaptureSummaryViewResultSchema = z.strictObject({
   summary: captureSummarySchema,
 });
 
+/** Compact outcomes and the focus screen from a retained browser scenario. */
+export const browserScenarioSummaryViewResultSchema = z.strictObject({
+  ...summaryViewResultBase,
+  artifact: z.null(),
+  parent_operation: z.literal("capture_browser_scenario"),
+  summary: browserScenarioSummarySchema,
+});
+
 /** Exact package declarations with retained decoded manifest text. */
 export const androidPackageSummaryViewResultSchema = z.strictObject({
   ...summaryViewResultBase,
@@ -823,10 +846,19 @@ export const il2cppMetadataSummaryViewResultSchema = z.strictObject({
 /** Exact inventory summary with the original observation's provider and query. */
 export const nativeInventorySummaryViewResultSchema = z.strictObject({
   ...summaryViewResultBase,
-  ...nativeInventoryViewContext,
+  ...nativeViewSourceContext,
   parent_operation: nativeInventoryOperationSchema,
   artifact: artifactSchema.nullable(),
   summary: nativeInventorySummarySchema,
+});
+
+/** Compact provider load observations retain the independent verification state. */
+export const nativeLoadImageSummaryViewResultSchema = z.strictObject({
+  ...summaryViewResultBase,
+  ...nativeViewSourceContext,
+  artifact: artifactSchema.nullable(),
+  parent_operation: z.literal("inspect_native_load_image"),
+  summary: nativeLoadImageSummarySchema,
 });
 
 /** Compact native matching discovery retains the complete matching report. */
@@ -1022,6 +1054,7 @@ export const analysisViewResultSchema = z.discriminatedUnion("kind", [
     managedArtifactSummaryViewResultSchema,
     managedMemberSummaryViewResultSchema,
     webNetworkCaptureSummaryViewResultSchema,
+    browserScenarioSummaryViewResultSchema,
     androidPackageSummaryViewResultSchema,
     pcapCaptureSummaryViewResultSchema,
     dartAotSummaryViewResultSchema,
@@ -1030,6 +1063,7 @@ export const analysisViewResultSchema = z.discriminatedUnion("kind", [
     modelArtifactSummaryViewResultSchema,
     gpuCodeObjectsSummaryViewResultSchema,
     nativeInventorySummaryViewResultSchema,
+    nativeLoadImageSummaryViewResultSchema,
     nativeFunctionMatchingSummaryViewResultSchema,
     nativeFunctionSummaryViewResultSchema,
     sourceToBundleSummaryViewResultSchema,
@@ -1054,12 +1088,22 @@ export const analysisViewResultSchema = z.discriminatedUnion("kind", [
   }),
   z.strictObject({
     ...viewResultBase,
-    ...nativeInventoryViewContext,
+    ...nativeViewSourceContext,
     kind: z.literal("native-inventory"),
     parent_operation: nativeInventoryOperationSchema,
     artifact: artifactSchema.nullable(),
     view: nativeInventoryViewRequestSchema,
     rows: z.array(nativeInventoryViewRowSchema),
+  }),
+  z.strictObject({
+    ...viewResultBase,
+    kind: z.literal("native-load-image"),
+    ...nativeViewSourceContext,
+    verification_status: z.enum(["unsupported", "verified", "mismatch"]),
+    parent_operation: z.literal("inspect_native_load_image"),
+    artifact: artifactSchema.nullable(),
+    view: nativeLoadImageViewRequestSchema,
+    items: nativeLoadImageViewItemsSchema,
   }),
   z.strictObject({
     kind: z.literal("protobuf"),
@@ -1075,6 +1119,15 @@ export const analysisViewResultSchema = z.discriminatedUnion("kind", [
     items: captureViewItemsSchema,
     ...viewResultBase,
     parent_operation: z.literal("inspect_web_network_capture"),
+  }),
+  z.strictObject({
+    kind: z.literal("browser-scenario"),
+    view: browserScenarioViewRequestSchema,
+    items: browserScenarioViewItemsSchema,
+    ...viewResultBase,
+    ...browserScenarioViewContextSchema.shape,
+    artifact: z.null(),
+    parent_operation: z.literal("capture_browser_scenario"),
   }),
   z.strictObject({
     kind: z.literal("qlog"),
@@ -1283,9 +1336,7 @@ const unsupportedParent = (
   new AnalysisUnsupportedTargetError(
     INSPECT_ANALYSIS_VIEW_OPERATION,
     parentArtifactPath(parent),
-    parent.operation === "capture_browser_scenario"
-      ? `Parent Evidence operation "capture_browser_scenario" supports only the environment-manifest, environment-state and environment-coverage views.`
-      : `Parent Evidence operation ${JSON.stringify(parent.operation)} does not support analysis views. Use completed Evidence from a supported parent operation with a compatible view. For a summary receipt, use its normalized_result.parent_evidence_id rather than the receipt's own evidence_id.`,
+    `Parent Evidence operation ${JSON.stringify(parent.operation)} does not support analysis views. Use completed Evidence from a supported parent operation with a compatible view. For a summary receipt, use its normalized_result.parent_evidence_id rather than the receipt's own evidence_id.`,
   );
 
 const parentArtifactPath = (parent: AnalysisViewParent): string => {
@@ -1314,6 +1365,7 @@ const retainedViewProjectors = new Map<string, typeof projectWasmArtifactView>([
   ["inspect_erlang_beam", projectErlangBeamView],
   ["inspect_devicetree", projectDevicetreeView],
   ["inspect_native_exports", projectNativeExportsView],
+  ["inspect_native_load_image", projectNativeLoadImageView],
   ["inspect_python_pyc", projectPythonPycView],
   ["frida_session_status", projectFridaSessionStatusView],
   ["gdb_console", projectCommandObservationView],
@@ -1331,6 +1383,7 @@ const retainedViewProjectors = new Map<string, typeof projectWasmArtifactView>([
   ["inspect_managed_artifact", projectManagedArtifactView],
   ["inspect_managed_members", projectManagedMemberView],
   ["inspect_android_package", projectAndroidPackageView],
+  ["capture_browser_scenario", projectBrowserScenarioView],
   ["inspect_dart_aot", projectDartAotView],
   ["inspect_il2cpp_metadata", projectIl2cppMetadataView],
   ["inspect_apk_signature", projectApkSignatureView],

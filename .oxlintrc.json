@@ -7,6 +7,7 @@
     "no-async-promise-executor": "error",
     "no-unreachable": "error",
     "no-unsafe-optional-chaining": "error",
+    "no-useless-escape": ["warn", { "allowRegexCharacters": ["-"] }],
     "complexity": ["warn", 20],
     "max-depth": ["warn", 4],
     "max-lines": [
@@ -50,15 +51,16 @@
     "rea/no-evidence-json-preadmission": "error",
     "rea/no-positional-tool-contract": "error",
     "rea/no-fixture-root-cleanup": "error",
-    "typescript/no-floating-promises": "warn",
+    "typescript/no-floating-promises": "error",
     "typescript/no-misused-promises": "warn",
-    "typescript/return-await": ["warn", "error-handling-correctness-only"],
+    "typescript/return-await": ["error", "error-handling-correctness-only"],
     "typescript/switch-exhaustiveness-check": [
-      "warn",
+      "error",
       {
-        "considerDefaultExhaustiveForUnions": false
+        "considerDefaultExhaustiveForUnions": true
       }
-    ]
+    ],
+    "rea/no-shared-module-mock": "error"
   },
   "overrides": [
     {
@@ -148,9 +150,29 @@
       }
     },
     {
-      "files": ["src/**/*.test.ts"],
+      "files": [
+        "scripts/lib/http3-capture-assertions.test.mjs",
+        "scripts/lib/http3-verifier-lifecycle.test.mjs"
+      ],
       "rules": {
-        "typescript/no-floating-promises": "error"
+        "typescript/no-floating-promises": [
+          "error",
+          {
+            "allowForKnownSafeCalls": [
+              {
+                "from": "package",
+                "package": "@types/node",
+                "name": "test"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "files": ["scripts/fixtures/javascript-recovery/code-split/entry.mjs"],
+      "rules": {
+        "typescript/no-floating-promises": "off"
       }
     }
   ],
