@@ -56,3 +56,23 @@ export const parseNativeMatchingAllowance = (
         }),
       );
 };
+
+const MEBIBYTE = 1024 * 1024;
+
+/** Display one allowance in MiB and bytes, or bytes alone when not whole MiB. */
+export const nativeMatchingByteAllowance = (bytes: number): string =>
+  Number.isInteger(bytes / MEBIBYTE)
+    ? `${String(bytes / MEBIBYTE)} MiB / ${String(bytes)} bytes`
+    : `${String(bytes)} bytes`;
+
+/** User-visible recovery for the effective matching representation allowance. */
+export const nativeMatchingAllowanceRecovery = (
+  allowance: NativeMatchingAllowance,
+): string =>
+  [
+    `Native function matching is limited to ${nativeMatchingByteAllowance(allowance.maximumBytes)} of representation${allowance.source === "setting" ? ` by ${NATIVE_MATCHING_ALLOWANCE_SETTING}` : ""}.`,
+    `On MCP, call update_analysis_settings with setting native.matching_representation_bytes, action set, and a value in bytes up to ${nativeMatchingByteAllowance(MAXIMUM_NATIVE_MATCHING_REPRESENTATION_BYTES)} (default ${nativeMatchingByteAllowance(DEFAULT_NATIVE_MATCHING_REPRESENTATION_BYTES)}), then retry the original request. It applies to the next operation without restarting REA. For CLI or future REA processes, set ${NATIVE_MATCHING_ALLOWANCE_SETTING} in the launch environment.`,
+    "This budget is not a bound on total process RSS; raising it lets matching retain more representation in the REA process.",
+    "Splitting inventories into separate matches changes global name and body uniqueness, so it is not an equivalent workaround.",
+    "Repeating the unchanged request fails the same way.",
+  ].join(" ");

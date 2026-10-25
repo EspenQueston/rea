@@ -141,8 +141,9 @@ operation without restarting REA. For CLI or future REA processes, set
 setup` copies it into client registrations. An invalid launch value is refused
 by matching only, and a runtime value repairs it. A refusal carries
 `details.limit` with the effective value, its source and bounds. Raising the
-allowance lets matching retain more in the REA process; the upper bound keeps
-the complete Evidence's canonical serialization within one Node string.
+allowance lets matching retain more in the REA process. The 1 GiB maximum is
+an REA policy, not a host-capacity claim, and peak heap during a request can
+exceed the allowance.
 Summary delivery happens after complete matching Evidence is constructed and
 retained. It reduces the initial reply, but does not avoid that construction or
 raise the allowance. Repeated provenance remains

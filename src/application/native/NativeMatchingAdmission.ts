@@ -3,32 +3,11 @@ import { AnalysisResourceConstraintError } from "../../domain/analysisErrorCore.
 import type { Evidence } from "../../domain/evidence.js";
 import { analysisSettingLimit } from "../../domain/analysisSettingDefinitions.js";
 import {
-  DEFAULT_NATIVE_MATCHING_REPRESENTATION_BYTES,
-  MAXIMUM_NATIVE_MATCHING_REPRESENTATION_BYTES,
-} from "../../domain/analysisResourceLimits.js";
-import {
   DEFAULT_NATIVE_MATCHING_ALLOWANCE,
-  NATIVE_MATCHING_ALLOWANCE_SETTING,
+  nativeMatchingAllowanceRecovery,
+  nativeMatchingByteAllowance,
   type NativeMatchingAllowance,
 } from "../../config/nativeMatchingAllowance.js";
-
-const MEBIBYTE = 1024 * 1024;
-const byteAllowance = (bytes: number): string =>
-  Number.isInteger(bytes / MEBIBYTE)
-    ? `${String(bytes / MEBIBYTE)} MiB / ${String(bytes)} bytes`
-    : `${String(bytes)} bytes`;
-
-/** User-visible recovery for the effective matching representation allowance. */
-const nativeMatchingAllowanceRecovery = (
-  allowance: NativeMatchingAllowance,
-): string =>
-  [
-    `Native function matching is limited to ${byteAllowance(allowance.maximumBytes)} of representation${allowance.source === "setting" ? ` by ${NATIVE_MATCHING_ALLOWANCE_SETTING}` : ""}.`,
-    `On MCP, call update_analysis_settings with setting native.matching_representation_bytes, action set, and a value in bytes up to ${byteAllowance(MAXIMUM_NATIVE_MATCHING_REPRESENTATION_BYTES)} (default ${byteAllowance(DEFAULT_NATIVE_MATCHING_REPRESENTATION_BYTES)}), then retry the original request. It applies to the next operation without restarting REA. For CLI or future REA processes, set ${NATIVE_MATCHING_ALLOWANCE_SETTING} in the launch environment.`,
-    "This budget is not a bound on total process RSS; raising it lets matching retain more representation in the REA process.",
-    "Splitting inventories into separate matches changes global name and body uniqueness, so it is not an equivalent workaround.",
-    "Repeating the unchanged request fails the same way.",
-  ].join(" ");
 
 /** Budget the actual selected observations, before cloning or index allocation. */
 export class NativeMatchingAdmission {
@@ -54,7 +33,7 @@ export class NativeMatchingAdmission {
       throw new AnalysisResourceConstraintError(
         this.operation,
         "capacity",
-        `Native function matching exceeds its ${byteAllowance(this.#maximum)} representation allowance (native.matching_representation_bytes).`,
+        `Native function matching exceeds its ${nativeMatchingByteAllowance(this.#maximum)} representation allowance (native.matching_representation_bytes).`,
         { maximum_bytes: this.#maximum },
         {
           retryable: false,
