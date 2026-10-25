@@ -1,10 +1,10 @@
 import { z } from "incur";
-import { resolve } from "node:path";
 import type { Logger } from "pino";
 
 import { jvmDebugMetadataModule } from "../composition/jvm.js";
 import { logCliCommand } from "../cliLogging.js";
 import { finishAnalysisCommand } from "./finishAnalysisCommand.js";
+import { absoluteCallerPath } from "../filesystem/callerPath.js";
 import { JVM_PROVIDER_IDENTITY } from "../jvm/JvmClassFileRelease.js";
 import type { CliInstance } from "./types.js";
 import { withCommandCancellation } from "./commandCancellation.js";
@@ -47,7 +47,7 @@ export const registerJvmCommands = (
             () =>
               service.inspect(
                 {
-                  path: resolve(args.path),
+                  path: absoluteCallerPath(args.path),
                   ...(options.entry === undefined
                     ? {}
                     : { entry: options.entry }),

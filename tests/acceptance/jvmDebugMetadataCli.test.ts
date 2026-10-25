@@ -1,4 +1,5 @@
-import { writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdir, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { expect } from "vitest";
 
@@ -286,6 +287,34 @@ cliTest(
         .details.reported_limits,
     ).not.toHaveProperty("max_input_bytes");
     await client.ping();
+  },
+  30000,
+);
+
+cliTest.skipIf(process.platform === "win32")(
+  "reads the file a symlink-relative path names, not its lexical rewrite",
+  async ({ cli }) => {
+    const root = await createTestTempDirectory("rea-jvm-caller-path-");
+    await mkdir(join(root, "real", "inner"), { recursive: true });
+    await symlink(join(root, "real", "inner"), join(root, "link"));
+    // POSIX resolves `link/..` after following the link: real/Example.class.
+    const bytes = jvmDebugClass();
+    await writeFile(join(root, "real", "Example.class"), bytes);
+    const result = await cli.run({
+      arguments: [
+        "inspect-jvm-debug-metadata",
+        `${root}/link/../Example.class`,
+        "--json",
+      ],
+    });
+    expect(result.exitCode, result.stdout).toBe(0);
+    const evidence = toolContract(TOOL).outputSchema.parse(result.json);
+    expect(evidence.subject).toMatchObject({
+      local_path: `${root}/link/../Example.class`,
+      digest: {
+        sha256: createHash("sha256").update(bytes).digest("hex"),
+      },
+    });
   },
   30000,
 );
