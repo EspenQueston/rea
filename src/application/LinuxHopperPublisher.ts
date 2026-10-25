@@ -34,6 +34,7 @@ import type { OwnedLease } from "../process/OwnedLease.js";
 import {
   downloadHopperPackage,
   HOPPER_DOWNLOAD_BYTES,
+  HopperDownloadTimeoutError,
 } from "./HopperDownload.js";
 import {
   HOPPER_LINUX_PRIMARY_FINGERPRINT,
@@ -1097,6 +1098,8 @@ const releaseFailure = (
       "Hopper publisher verification was cancelled.",
       { cause },
     );
+  if (cause instanceof HopperDownloadTimeoutError)
+    return new HopperReleaseError(fallback, cause.message, { cause });
   return new HopperReleaseError(
     fallback,
     "Hopper publisher verification could not complete.",
