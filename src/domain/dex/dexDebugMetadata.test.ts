@@ -6,7 +6,7 @@ import {
   type DexWork,
   summarizeDex,
 } from "./dexDebugMetadata.js";
-import { parseDexFile } from "./dexFile.js";
+import { type DexFile, parseDexFile } from "./dexFile.js";
 import { debuggableDex, uleb } from "../../../tests/fixtures/dexFile.js";
 
 const work = (limit = 1_000_000, cancelled = false): DexWork => ({
@@ -16,6 +16,10 @@ const work = (limit = 1_000_000, cancelled = false): DexWork => ({
   sliceUnits: 1 << 18,
 });
 const OUTPUT_LIMIT = 8 * 1024 * 1024;
+
+/** The class detail of the fixture's one class, shaped like {@link summarizeDex}. */
+const detailRun = (dex: DexFile, bytes: Uint8Array, work: DexWork) =>
+  assembleClassDetail(dex, bytes, "Lcom/example/Foo;", work, OUTPUT_LIMIT);
 
 describe("dexDebugMetadata assembly", () => {
   it("summarizes a debuggable dex with resolved tallies and readiness", async () => {
@@ -451,6 +455,37 @@ describe("dexDebugMetadata cooperative scheduling", () => {
     });
     expect(result.ok).toBe(true);
     expect(yields).toBeGreaterThanOrEqual(extra / 8);
+  });
+
+  it("pauses inside one long debug stream, so its slices stay short and an abort lands mid-stream", async () => {
+    const positions = 200_000;
+    const sliceUnits = 1_000;
+    const bytes = debuggableDex(positions);
+    const parsed = parseDexFile(bytes);
+    if (!parsed.ok) throw new Error("fixture must frame");
+    for (const run of [summarizeDex, detailRun] as const) {
+      const budget = dexWorkBudget(1_000_000);
+      const state = { aborted: false };
+      let mark = budget.remaining;
+      let longest = 0;
+      let yields = 0;
+      const result = await run(parsed.value, bytes, {
+        budget,
+        cancelled: () => state.aborted,
+        yieldNow: () => {
+          longest = Math.max(longest, mark - budget.remaining);
+          mark = budget.remaining;
+          yields += 1;
+          if (yields === 3) state.aborted = true;
+          return Promise.resolve();
+        },
+        sliceUnits,
+      });
+      expect(result).toEqual({ ok: false, error: { kind: "cancelled" } });
+      // A slice overshoots by at most one pause-check interval (1,024 opcodes).
+      expect(longest).toBeLessThanOrEqual(sliceUnits + 1_024);
+      expect(1_000_000 - budget.remaining).toBeLessThan(positions / 10);
+    }
   });
 
   it("completes unchanged when the host keeps yielding without an abort", async () => {

@@ -8,7 +8,7 @@
  * {@link DexWorkBudget}, so many methods cannot multiply the per-method guard.
  * Decoding is synchronous, so the walk hands the event loop back to the host
  * after each slice of work ({@link DexWork.yieldNow}) and observes cancellation
- * there. The summary only counts (no per-position or per-local allocation) and
+ * there, including inside one long debug stream. The summary only counts (no per-position or per-local allocation) and
  * decodes each distinct debug stream + parameter layout once. The class detail
  * projects its serialized size from memoised per-string bounds while it
  * decodes, and refuses before materialising a report past the caller's output
@@ -25,7 +25,9 @@ import {
 } from "./dexFile.js";
 import {
   absentMethodDebug,
-  decodeDebugInfo,
+  DEX_DEBUG_PAUSED,
+  DexDebugInfoWalk,
+  startDebugInfo,
   type DexDecodeOptions,
   DEX_THIS_NAME,
   type DexMethodDebug,
@@ -153,7 +155,41 @@ class DexPacer {
     this.#mark = this.work.budget.remaining;
     return outOfWork(this.work);
   }
+
+  /** {@link due} as a callback, for walks that pause from inside a stream. */
+  readonly pauseDue = (): boolean => this.due;
 }
+
+/**
+ * Finish a method's decode. A stream that fits in the current slice finishes
+ * synchronously; a longer one pauses between slices, so the host can yield and
+ * deliver cancellation, and the result is a promise.
+ */
+const settleDecode = (
+  decode: DexMethodDebug | DexDebugInfoWalk,
+  pacer: DexPacer,
+): DexMethodDebug | Promise<Result<DexMethodDebug, DexWorkError>> => {
+  if (!(decode instanceof DexDebugInfoWalk)) return decode;
+  const first = decode.resume();
+  if (first !== DEX_DEBUG_PAUSED) return first;
+  return (async () => {
+    for (;;) {
+      const stop = await pacer.pause();
+      if (stop !== null) return err(stop);
+      const next = decode.resume();
+      if (next !== DEX_DEBUG_PAUSED) return ok(next);
+    }
+  })();
+};
+
+/** Apply `finish` to a settled decode, synchronously when it settled at once. */
+const afterDecode = (
+  settled: DexMethodDebug | Promise<Result<DexMethodDebug, DexWorkError>>,
+  finish: (debug: DexMethodDebug) => DexWorkError | null,
+): DexWorkError | null | Promise<DexWorkError | null> =>
+  settled instanceof Promise
+    ? settled.then((r) => (r.ok ? finish(r.value) : r.error))
+    : finish(settled);
 
 const methodState = (
   hasCode: boolean,
@@ -216,7 +252,7 @@ const decodeMethodDebug = (
   classTypeIdx: number,
   resolver: DexStringResolver,
   options: DexDecodeOptions,
-): DexMethodDebug => {
+): DexMethodDebug | DexDebugInfoWalk => {
   if (code === null) return absentMethodDebug();
   const malformed = { ...absentMethodDebug(), present: true, malformed: true };
   if (code === "unreadable") return malformed;
@@ -231,7 +267,7 @@ const decodeMethodDebug = (
     ((method.accessFlags & ACC_STATIC) === 0 ? 1 : 0) +
     dexParameterWords(paramTypes);
   if (words !== code.registersSize - code.firstRegister) return malformed;
-  return decodeDebugInfo(
+  return startDebugInfo(
     bytes,
     code.debugInfoOff,
     code.insnsSize,
@@ -259,7 +295,9 @@ const walkClassMethods = async (
   reader: DexClassDataReader,
   work: DexWork,
   pacer: DexPacer,
-  visit: (method: DexEncodedMethod) => DexWorkError | null,
+  visit: (
+    method: DexEncodedMethod,
+  ) => DexWorkError | null | Promise<DexWorkError | null>,
 ): Promise<DexWorkError | "unreadable" | null> => {
   const charge = (): boolean => chargeWork(work.budget);
   for (;;) {
@@ -277,7 +315,8 @@ const walkClassMethods = async (
         : "unreadable";
     }
     if (step === "method") {
-      const stop = visit(reader.method);
+      const visited = visit(reader.method);
+      const stop = visited instanceof Promise ? await visited : visited;
       if (stop !== null) return stop;
     }
   }
@@ -444,10 +483,12 @@ export const assembleClassDetail = async (
     classDataOff: classDef.classDataOff,
   });
   if (walk.value === "unreadable") return err(malformed());
-  const visit = (method: DexEncodedMethod): DexWorkError | null => {
+  const visit = (
+    method: DexEncodedMethod,
+  ): DexWorkError | null | Promise<DexWorkError | null> => {
     const stop = outOfWork(work);
     if (stop !== null) return stop;
-    const debug = decodeMethodDebug(
+    const decode = decodeMethodDebug(
       bytes,
       method,
       methodCode(bytes, method),
@@ -460,8 +501,17 @@ export const assembleClassDetail = async (
           0,
           Math.floor((outputLimit - projected) / LOCAL_OVERHEAD),
         ),
+        pauseDue: pacer.pauseDue,
       },
     );
+    return afterDecode(settleDecode(decode, pacer), (debug) =>
+      recordMethod(method, debug),
+    );
+  };
+  const recordMethod = (
+    method: DexEncodedMethod,
+    debug: DexMethodDebug,
+  ): DexWorkError | null => {
     const after = outOfWork(work);
     if (after !== null) return after;
     // Bound the name and descriptor from type ids before building them.
@@ -626,7 +676,29 @@ export const summarizeDex = async (
       unreadableClassData += 1;
       continue;
     }
-    const visit = (method: DexEncodedMethod): DexWorkError | null => {
+    const tallyMethod = (debug: DexMethodDebug): MethodTally => ({
+      present: debug.present,
+      positions: debug.positionCount,
+      locals: debug.localCount,
+      explicitLocals: debug.explicitLocalCount,
+      setFileEvents: debug.setFileEvents,
+      hasParameterNames: debug.parameterNames.some((idx) => idx >= 0),
+      malformed: debug.malformed,
+    });
+    const count = (tally: MethodTally): null => {
+      if (tally.malformed) malformedDebugInfo += 1;
+      if (!tally.present) return null;
+      methodsWithDebugInfo += 1;
+      linePositions += tally.positions;
+      localDeclarations += tally.locals;
+      explicitLocalDeclarations += tally.explicitLocals;
+      setFileEvents += tally.setFileEvents;
+      if (tally.hasParameterNames) methodsWithParameterNames += 1;
+      return null;
+    };
+    const visit = (
+      method: DexEncodedMethod,
+    ): DexWorkError | null | Promise<DexWorkError | null> => {
       if (method.codeOff === 0) return null;
       methodsWithCode += 1;
       const code = methodCode(bytes, method);
@@ -639,40 +711,25 @@ export const summarizeDex = async (
       // index stands in for the (up to 255) parameter types.
       const isStatic = (method.accessFlags & ACC_STATIC) !== 0;
       const key = `${String(code.debugInfoOff)}:${String(code.insnsSize)}:${String(code.firstRegister)}:${String(code.registersSize)}:${isStatic ? "s" : `i${String(classDef.classIdx)}`}:${String(resolver.methodProtoIndex(method.methodIdx))}`;
-      let tally = tallies.get(key);
-      if (tally === undefined) {
-        const debug = decodeMethodDebug(
-          bytes,
-          method,
-          code,
-          classDef.classIdx,
-          resolver,
-          { budget: work.budget, collectLocals: false },
-        );
+      const memo = tallies.get(key);
+      if (memo !== undefined) return count(memo);
+      const decode = decodeMethodDebug(
+        bytes,
+        method,
+        code,
+        classDef.classIdx,
+        resolver,
+        { budget: work.budget, collectLocals: false, pauseDue: pacer.pauseDue },
+      );
+      return afterDecode(settleDecode(decode, pacer), (debug) => {
         const spent = outOfWork(work);
         if (spent !== null) return spent;
-        tally = {
-          present: debug.present,
-          positions: debug.positionCount,
-          locals: debug.localCount,
-          explicitLocals: debug.explicitLocalCount,
-          setFileEvents: debug.setFileEvents,
-          hasParameterNames: debug.parameterNames.some((idx) => idx >= 0),
-          malformed: debug.malformed,
-        };
+        const tally = tallyMethod(debug);
         // The memo is an optimisation, not a working set: past its cap a
         // repeat is decoded again (still charged), never retained.
         if (tallies.size < MEMO_LIMIT) tallies.set(key, tally);
-      }
-      if (tally.malformed) malformedDebugInfo += 1;
-      if (!tally.present) return null;
-      methodsWithDebugInfo += 1;
-      linePositions += tally.positions;
-      localDeclarations += tally.locals;
-      explicitLocalDeclarations += tally.explicitLocals;
-      setFileEvents += tally.setFileEvents;
-      if (tally.hasParameterNames) methodsWithParameterNames += 1;
-      return null;
+        return count(tally);
+      });
     };
     const ended = await walkClassMethods(walk.value, work, pacer, visit);
     // Validated framing cannot fail on the method pass; stay unknown if it does.

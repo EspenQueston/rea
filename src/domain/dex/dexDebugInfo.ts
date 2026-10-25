@@ -128,7 +128,18 @@ export interface DexDecodeOptions {
   readonly budget?: DexWorkBudget;
   readonly collectLocals?: boolean;
   readonly maxLocals?: number;
+  /**
+   * Asked every {@link PAUSE_CHECK_INTERVAL} opcodes; `true` pauses the walk so
+   * the host can yield, and {@link DexDebugInfoWalk.resume} continues it.
+   */
+  readonly pauseDue?: () => boolean;
 }
+
+/** Opcodes walked between {@link DexDecodeOptions.pauseDue} checks. */
+const PAUSE_CHECK_INTERVAL = 1024;
+
+/** {@link DexDebugInfoWalk.resume} stopped for a pause, not at the stream's end. */
+export const DEX_DEBUG_PAUSED = Symbol("dex-debug-paused");
 
 /** A method with no `debug_info_item` (debug_info_off == 0). */
 export const absentMethodDebug = (): DexMethodDebug => ({
@@ -189,8 +200,12 @@ export const chargeWork = (budget: DexWorkBudget): boolean => {
   return true;
 };
 
-/** Mutable walk over one `debug_info_item`; one handler per opcode group. */
-class DebugInfoWalk {
+/**
+ * Mutable walk over one `debug_info_item`; one handler per opcode group. The
+ * walk keeps its whole state between {@link resume} calls, so one long stream
+ * can be decoded across many work slices.
+ */
+export class DexDebugInfoWalk {
   private readonly cursor: DexCursor;
   private readonly locals: DexLocalEntry[] = [];
   private readonly live = new Map<number, LiveLocal>();
@@ -205,7 +220,10 @@ class DebugInfoWalk {
   private localCount = 0;
   private explicitLocalCount = 0;
   private localLimitExceeded = false;
+  private started = false;
+  private sincePauseCheck = 0;
   private readonly budget: DexWorkBudget | undefined;
+  private readonly pauseDue: (() => boolean) | undefined;
   private readonly collectLocals: boolean;
   private readonly maxLocals: number;
 
@@ -218,6 +236,7 @@ class DebugInfoWalk {
   ) {
     this.cursor = new DexCursor(bytes, offset);
     this.budget = options.budget;
+    this.pauseDue = options.pauseDue;
     this.collectLocals = options.collectLocals ?? true;
     this.maxLocals = options.maxLocals ?? Number.POSITIVE_INFINITY;
   }
@@ -449,11 +468,25 @@ class DebugInfoWalk {
     this.live.clear();
   }
 
-  run(): DexMethodDebug {
-    if (!this.header()) return this.result(true);
+  /**
+   * Walk until the stream ends (the decoded result) or a pause is due
+   * ({@link DEX_DEBUG_PAUSED}); call again after the host has yielded.
+   */
+  resume(): DexMethodDebug | typeof DEX_DEBUG_PAUSED {
+    if (!this.started) {
+      this.started = true;
+      if (!this.header()) return this.result(true);
+    }
     // Every opcode consumes at least one byte, so the stream's own bytes bound
     // the loop; the member's work budget bounds its cost.
     for (;;) {
+      if (this.pauseDue !== undefined) {
+        this.sincePauseCheck += 1;
+        if (this.sincePauseCheck >= PAUSE_CHECK_INTERVAL) {
+          this.sincePauseCheck = 0;
+          if (this.pauseDue()) return DEX_DEBUG_PAUSED;
+        }
+      }
       // Out of the member's work: stop; the caller sees remaining <= 0 and refuses.
       if (!this.charge() || this.localLimitExceeded) break;
       const op = this.cursor.u1();
@@ -471,10 +504,24 @@ class DebugInfoWalk {
 }
 
 /**
- * Walk the `debug_info_item` at `offset`. `insnsSize` (code units) bounds local
+ * Start a walk of the `debug_info_item` at `offset`, or return the result at
+ * once when the offset cannot hold one. `insnsSize` (code units) bounds local
  * scopes and flags out-of-range entries. Never throws; a structural or semantic
  * fault sets `malformed` and stops, preserving what was recovered.
  */
+export const startDebugInfo = (
+  bytes: Uint8Array,
+  offset: number,
+  insnsSize: number,
+  layout?: DexParameterLayout,
+  options: DexDecodeOptions = {},
+): DexMethodDebug | DexDebugInfoWalk => {
+  if (offset <= 0 || offset >= bytes.length)
+    return { ...absentMethodDebug(), present: true, malformed: true };
+  return new DexDebugInfoWalk(bytes, offset, insnsSize, layout, options);
+};
+
+/** Decode a whole `debug_info_item` without pausing (see {@link startDebugInfo}). */
 export const decodeDebugInfo = (
   bytes: Uint8Array,
   offset: number,
@@ -482,7 +529,13 @@ export const decodeDebugInfo = (
   layout?: DexParameterLayout,
   options: DexDecodeOptions = {},
 ): DexMethodDebug => {
-  if (offset <= 0 || offset >= bytes.length)
-    return { ...absentMethodDebug(), present: true, malformed: true };
-  return new DebugInfoWalk(bytes, offset, insnsSize, layout, options).run();
+  const walk = startDebugInfo(bytes, offset, insnsSize, layout, {
+    ...options,
+    pauseDue: undefined,
+  });
+  if (!(walk instanceof DexDebugInfoWalk)) return walk;
+  // Without `pauseDue` the walk never pauses; the loop only satisfies the type.
+  let result = walk.resume();
+  while (result === DEX_DEBUG_PAUSED) result = walk.resume();
+  return result;
 };
