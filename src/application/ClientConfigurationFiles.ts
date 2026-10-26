@@ -252,6 +252,8 @@ export interface EffectiveClientRegistrationConfiguration {
   readonly document: ClientConfigurationDocument | undefined;
   readonly configPath: string;
   readonly scope?: ClientRegistrationScope;
+  readonly launcherScope?: ClientRegistrationScope;
+  readonly launcherConfigPath?: string;
 }
 
 /** Read the configuration the client will load across project and user scopes. */
@@ -259,6 +261,7 @@ export const readEffectiveClientRegistrationConfiguration = async (
   client: SetupClient,
   resources?: ArtifactResourceScope,
   platform: NodeJS.Platform = process.platform,
+  targetScope: "user" | "all" = "all",
 ): Promise<
   Result<EffectiveClientRegistrationConfiguration, ClientConfigurationFileError>
 > => {
@@ -279,6 +282,7 @@ export const readEffectiveClientRegistrationConfiguration = async (
   );
 
   if (
+    targetScope !== "user" &&
     client.format === "pi" &&
     client.projectConfigPaths !== undefined &&
     client.projectConfigPaths.length > 0
@@ -317,6 +321,8 @@ export const readEffectiveClientRegistrationConfiguration = async (
                   PRODUCT_IDENTITY.mcpServerKey,
                 );
           let effectiveRea = rawProjectRea;
+          let isProjectLauncher = true;
+          let launcherConfigPath = projectPath;
           if (
             isPiPartialServerOverride(rawProjectRea) &&
             isObject(rawUserRea)
@@ -329,6 +335,8 @@ export const readEffectiveClientRegistrationConfiguration = async (
             if (Object.hasOwn(rawProjectRea, "toolExposure"))
               merged.toolExposure = rawProjectRea.toolExposure;
             effectiveRea = merged;
+            isProjectLauncher = false;
+            launcherConfigPath = client.configPath;
           }
           const effectiveDoc: ClientConfigurationDocument = {
             ...projectFile.value,
@@ -351,19 +359,16 @@ export const readEffectiveClientRegistrationConfiguration = async (
             document: effectiveDoc,
             configPath: projectPath,
             scope: "project",
+            launcherScope: isProjectLauncher ? "project" : "user",
+            launcherConfigPath,
           });
         }
-        if (nativeDocument === undefined)
-          return ok({
-            document: undefined,
-            configPath: projectPath,
-            scope: "project",
-          });
       }
     }
   }
 
   if (
+    targetScope !== "user" &&
     client.format === "opencode" &&
     client.projectConfigPaths !== undefined &&
     client.projectConfigPaths.length > 0
@@ -388,6 +393,7 @@ export const readEffectiveClientRegistrationConfiguration = async (
       }
     }
 
+    const allSources = [...nativeSources.value, ...projectSources];
     const winningProjectDoc = [...projectSources]
       .reverse()
       .find(
@@ -396,49 +402,44 @@ export const readEffectiveClientRegistrationConfiguration = async (
           undefined,
       );
     if (winningProjectDoc !== undefined) {
-      const effectiveDoc: ClientConfigurationDocument = {
-        ...winningProjectDoc,
-        dialect: clientWriteDialect(winningProjectDoc.dialect, [
-          ...nativeSources.value,
-          ...projectSources,
-        ]),
-        servers: {
-          ...winningProjectDoc.servers,
-          [PRODUCT_IDENTITY.mcpServerKey]: effectiveClientServer(
-            winningProjectDoc,
-            PRODUCT_IDENTITY.mcpServerKey,
-          ),
-        },
-        legacyServers: {},
-      };
-      const effectiveEnv = clientRegistrationEnvironment(
-        effectiveDoc,
-        {},
-        "effective",
+      const effectiveDoc = effectiveClientConfiguration(
+        allSources,
+        undefined,
         platform,
       );
-      if (!effectiveEnv.ok)
-        return err(
-          invalidEnvironment(
-            winningProjectDoc.sourcePath,
-            effectiveEnv.error,
-            "project",
-          ),
+      if (effectiveDoc !== undefined) {
+        const effectiveEnv = clientRegistrationEnvironment(
+          effectiveDoc,
+          {},
+          "effective",
+          platform,
         );
-      return ok({
-        document: effectiveDoc,
-        configPath: winningProjectDoc.sourcePath,
-        scope: "project",
-      });
-    }
-
-    const lastProjectSource = projectSources.at(-1);
-    if (nativeDocument === undefined && lastProjectSource !== undefined) {
-      return ok({
-        document: undefined,
-        configPath: lastProjectSource.sourcePath,
-        scope: "project",
-      });
+        if (!effectiveEnv.ok)
+          return err(
+            invalidEnvironment(
+              winningProjectDoc.sourcePath,
+              effectiveEnv.error,
+              "project",
+            ),
+          );
+        const launcherDoc = [...allSources].reverse().find((doc) => {
+          const s = effectiveClientServer(doc, PRODUCT_IDENTITY.mcpServerKey);
+          return isObject(s) && Object.hasOwn(s, "command");
+        });
+        const isProjectLauncher =
+          launcherDoc !== undefined &&
+          projectSources.some(
+            (proj) => proj.sourcePath === launcherDoc.sourcePath,
+          );
+        return ok({
+          document: effectiveDoc,
+          configPath: winningProjectDoc.sourcePath,
+          scope: "project",
+          launcherScope: isProjectLauncher ? "project" : "user",
+          launcherConfigPath:
+            launcherDoc?.sourcePath ?? winningProjectDoc.sourcePath,
+        });
+      }
     }
   }
 
@@ -453,6 +454,8 @@ export const readEffectiveClientRegistrationConfiguration = async (
       document: nativeDocument,
       configPath: client.configPath,
       scope: "user",
+      launcherScope: "user",
+      launcherConfigPath: client.configPath,
     });
 
   const fallbackClient: SetupClient = {
@@ -482,11 +485,15 @@ export const readEffectiveClientRegistrationConfiguration = async (
           document: nativeDocument,
           configPath: client.configPath,
           scope: "user",
+          launcherScope: "user",
+          launcherConfigPath: client.configPath,
         }
       : {
           document: fallbackDocument,
           configPath: fallbackPath,
           scope: "user",
+          launcherScope: "user",
+          launcherConfigPath: fallbackPath,
         },
   );
 };
