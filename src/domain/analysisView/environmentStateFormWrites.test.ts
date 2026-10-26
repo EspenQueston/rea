@@ -5,6 +5,7 @@ import {
   type TimedCaptureRow,
 } from "../../../tests/fixtures/analysisView.js";
 import {
+  BULK_EMPTY_TAG_ROWS,
   CREATION_ORDER_ROWS,
   DERIVED_TEXT_ROWS,
   formLabelRows,
@@ -13,6 +14,7 @@ import {
   MINIMAL_CONTACT_ROWS,
   NOTE_DEFAULT_ROWS,
   RENAMED_LABEL_ROWS,
+  SHELF_SORTED_ROWS,
   TITLE_ORDER_ROWS,
   UNLOADED_ANSWER_ROWS,
 } from "../../../tests/fixtures/environmentStateFormWrites.js";
@@ -149,6 +151,20 @@ describe("collections kept sorted", () => {
     );
     expect(planOf(CREATION_ORDER_ROWS, "put_folders_by_id")).toMatchObject({
       served: false,
+    });
+  });
+
+  it("learns the name order from a rename when a read sorted by its query placed the create", () => {
+    const byName = { rule: "sorted", field: "name", direction: "ascending" };
+    expect(planOf(SHELF_SORTED_ROWS, "put_books_by_id")).toMatchObject({
+      served: true,
+      insert: byName,
+    });
+  });
+
+  it("serves a bulk update whose recordings echo the empty values each call sent", () => {
+    expect(planOf(BULK_EMPTY_TAG_ROWS, "patch_labels")).toMatchObject({
+      served: true,
     });
   });
 

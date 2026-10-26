@@ -128,7 +128,15 @@ describe("served creates and updates modelled on form recordings", () => {
     const tasks = servedFrom(UNLOADED_ANSWER_ROWS);
     expect(
       tasks.answer("post_tasks", { body: { title: "Coil the ropes" } }).body,
-    ).toMatchObject({ title: "Coil the ropes", assignees: [] });
+    ).toMatchObject({
+      id: 2,
+      title: "Coil the ropes",
+      assignees: [],
+      owner: { id: 1, name: "", created: "0001-01-01T00:00:00Z" },
+    });
+    expect(tasks.answer("get_tasks_by_id", { id: "2" }).body).toMatchObject({
+      owner: { id: 1, name: "Rea Admin" },
+    });
     expect(
       tasks.answer("patch_tasks_by_id", { id: "1", body: { done: true } }).body,
     ).toMatchObject({ done: true, assignees: [] });

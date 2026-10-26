@@ -298,6 +298,8 @@ export interface StateWritePlan {
       readonly ordinal: number;
       readonly pointer: string;
       readonly shape: "item" | "list";
+      /** Pointers into the entity to values the response had not loaded, which answers keep as it showed them. */
+      readonly unloaded?: string[];
     };
   } | null;
   readonly response: WriteResponse | null;

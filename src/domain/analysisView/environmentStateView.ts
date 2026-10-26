@@ -361,6 +361,12 @@ const writePlanSchema = z.strictObject({
           ordinal: ordinalSchema,
           pointer: z.string(),
           shape: z.enum(["item", "list"]),
+          unloaded: z
+            .array(z.string())
+            .exactOptional()
+            .describe(
+              "JSON pointers into the entity to values the response had not loaded, which answers keep as the response showed them.",
+            ),
         })
         .exactOptional()
         .describe(

@@ -24,6 +24,8 @@ export interface ObservedRead {
   readonly ordinal: number;
   readonly pointer: string;
   readonly shape: "item" | "list";
+  /** Pointers into the entity to values the response had not loaded and the item read shows loaded. */
+  readonly unloaded?: string[];
 }
 
 /** Whether two clocks agree at the coarser recorded fraction precision, retaining all digits through nanoseconds. */
@@ -72,6 +74,21 @@ export const loadedLater = (
     Object.keys(response).every((key) =>
       loadedLater(response[key], ownMember(read, key)),
     ));
+
+/** Pointers to the values a create's response had not loaded where a later read shows others, within nested objects too. */
+export const unloadedPointers = (
+  response: JsonObject,
+  read: JsonObject,
+  prefix = "",
+): string[] =>
+  Object.entries(response).flatMap(([key, value]) => {
+    const loaded = ownMember(read, key);
+    const pointer = `${prefix}${pointerTo(key)}`;
+    if (loaded === undefined || same(value, loaded)) return [];
+    if (isObject(value) && isObject(loaded) && Object.keys(value).length > 0)
+      return unloadedPointers(value, loaded, pointer);
+    return unloaded(value) ? [pointer] : [];
+  });
 
 /** A create's response object with a read's fields: an item read's values win, a list read only adds fields the response lacks. */
 export const withRead = (

@@ -32,12 +32,14 @@ natural-language tasks ask for, or withheld them:
   the new value sorts, in replay and serving (a bulk update moving each entity in turn), and its plan carries that
   `insert`. When a read listing the whole collection fails after an update and the type's creates are not sorted by a
   field the update writes, replay tries the collection sorted by such a field, unless a create was placed by a sort
-  that excludes it or a whole-collection read that placed a create did not follow it; on a match, the type's creates
-  and updates take that order.
+  that excludes it or a whole-collection read in collection order (not sorted by its query) that placed a create did
+  not follow it; on a match, the type's creates and updates take that order.
 - **Unloaded answers.** A create's later item read is taken as its observation when it differs from the answer only in
   values the answer had not loaded: empty, zero, `false` or Go's zero time, or objects whose members are each the same
-  or loaded so. An unsent update field that changes only between `null`, `[]` and `{}` is unchanged. Write answers
-  spell empty lists and maps the call did not send as their recorded answers did, and a sent one as sent.
+  or loaded so; the plan points to those values (`observation.read.unloaded`), which a served create's answer keeps as
+  the recorded answer showed them while the state holds the read's. An unsent update field that changes only between
+  `null`, `[]` and `{}` is unchanged. Write answers, bulk answers and replay's checks of them included, spell empty
+  lists and maps the call did not send as their recorded answers did, and a sent one as sent.
 - **Unruled fields.** A later create that stored a field no rule writes otherwise than the plan keeps it is
   `unexplained-change` at the create, so its recorded entity is held and later reads check other writes as before.
 - **Skill.** The two scratch creates differ in what they send, the second only what a person must give, however they

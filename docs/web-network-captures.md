@@ -751,15 +751,17 @@ fields keep the observed value. When the first read of a created entity before
 the next write shows fields the create's answer lacks, its clocks to another
 precision, or values the answer had not loaded (an empty, zero or `false` value,
 Go's zero time, or an object whose members are each loaded so), the observed
-entity takes them (`observation.read`). An item read
+entity takes them (`observation.read`, whose `unloaded` points to the values the
+answer had not loaded). An item read
 that agrees with the answer otherwise lends its fields and clock spellings and
 no longer confirms the create; one that disagrees or omits an answer field its
 item view renders still checks it. Clock agreement uses the coarser recorded
 precision, including microseconds. A list read
 only adds fields the answer lacks and still checks it. Serving answers a create
 in its answer's shape and clock precision, with empty lists and maps the call
-did not send spelled (`null`, `[]` or `{}`) as its answer spelled them, and
-stores the fields of both with the item read-back's clock precision. Updates
+did not send spelled (`null`, `[]` or `{}`) as its answer spelled them and the
+values it had not loaded as it answered them, and stores the fields of both,
+as the item read-back shows them, with its clock precision. Updates
 answer empty lists and maps they did not send as their answers spelled them
 too; a member a call sent is answered as sent. A `reference` is an object
 holding fields of the
@@ -857,7 +859,8 @@ it writes in turn, as replay applies them. When a read listing the whole
 collection fails after an update and the type's creates are not sorted by a field
 that update writes, the view tries the collection sorted by such a field, unless
 a create was placed by a sort that excludes it or a read listing the whole
-collection that placed a create did not follow it; on a match, the type's creates
+collection in its own order, not one its query sorts, that placed a create did
+not follow it; on a match, the type's creates
 and updates take that order, as Grafana keeps folders by title though no earlier
 read could tell that from creation order, or from id order where both ascend.
 

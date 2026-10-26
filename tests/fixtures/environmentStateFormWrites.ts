@@ -366,3 +366,59 @@ export const ECHOED_EMPTY_ROWS: readonly TimedCaptureRow[] = (() => {
     ["GET", "/api/labels", [attic, garden, kitchen, tools]],
   ];
 })();
+
+/** Two bulk label renames that send the empty tags each label holds as the form does, `null` on one and `[]` on the other, and echo them. */
+export const BULK_EMPTY_TAG_ROWS: readonly TimedCaptureRow[] = (() => {
+  const tagged = (entity: Entity, tags: JsonValue): Entity => ({
+    ...entity,
+    tags,
+  });
+  const [kitchen, tools] = [tagged(KITCHEN, null), tagged(TOOLS, [])];
+  const [larder, shed] = [
+    { ...kitchen, name: "Larder" },
+    { ...tools, name: "Shed" },
+  ];
+  return [
+    ["GET", "/api/labels", [kitchen, tools]],
+    ["GET", "/api/labels/1", kitchen],
+    ["GET", "/api/labels/2", tools],
+    [
+      "PATCH",
+      "/api/labels",
+      [larder],
+      200,
+      [{ id: 1, name: "Larder", tags: null }],
+    ],
+    ["GET", "/api/labels/1", larder],
+    ["PATCH", "/api/labels", [shed], 200, [{ id: 2, name: "Shed", tags: [] }]],
+    ["GET", "/api/labels/2", shed],
+    ["GET", "/api/labels", [larder, shed]],
+  ];
+})();
+
+/**
+ * Two seeded books kept in id order, which their names follow too, a create a read sorted by shelf places by its tie
+ * with a seeded book, then a rename an unsorted read lists in name order.
+ */
+export const SHELF_SORTED_ROWS: readonly TimedCaptureRow[] = (() => {
+  const shelved = (id: number, name: string, shelf: string): Entity => ({
+    id,
+    name,
+    shelf,
+  });
+  const [alpha, bravo] = [shelved(1, "Alpha", "b"), shelved(2, "Bravo", "a")];
+  const charlie = shelved(3, "Charlie", "a");
+  const renamed = shelved(3, "Aardvark", "a");
+  return [
+    ["GET", "/api/books", [alpha, bravo]],
+    ["GET", "/api/books?sort=-id", [bravo, alpha]],
+    ["GET", "/api/books/1", alpha],
+    ["GET", "/api/books/2", bravo],
+    ["POST", "/api/books", charlie, 201, { name: "Charlie", shelf: "a" }],
+    ["GET", "/api/books/3", charlie],
+    ["GET", "/api/books?sort=shelf", [bravo, charlie, alpha]],
+    ["PUT", "/api/books/3", renamed, 200, { name: "Aardvark", shelf: "a" }],
+    ["GET", "/api/books/3", renamed],
+    ["GET", "/api/books", [renamed, alpha, bravo]],
+  ];
+})();

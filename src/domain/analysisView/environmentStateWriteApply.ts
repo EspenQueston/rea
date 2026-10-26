@@ -531,6 +531,8 @@ export const writtenResponse = (
     readonly clocks?: readonly string[];
     /** Members the call sent, which the answer shows as stored. */
     readonly sent?: readonly string[];
+    /** Pointers into the entity to values the recorded answer had not loaded, which the answer keeps as recorded. */
+    readonly unloaded?: readonly string[];
   },
   optional: readonly string[] = [],
 ): Applied<JsonValue | undefined> => {
@@ -563,33 +565,63 @@ export const writtenResponse = (
     ...Object.keys(shown).filter(held),
     ...optional.filter((field) => !Object.hasOwn(shown, field) && held(field)),
   ];
-  return ok(
-    replaceAt(
-      recorded,
-      pointer,
-      Object.fromEntries(
-        fields.map((field) => {
-          const value = ownMember(written.fields!, field)!;
-          const answered = ownMember(shown, field);
-          // An answer spells an empty list or map the call did not send as its recording did.
-          if (
-            answered !== undefined &&
-            written.sent?.includes(field) !== true &&
-            emptySpellings(answered, value)
-          )
-            return [field, answered];
-          const clock =
-            written.clocks?.includes(field) === true
-              ? readClock(answered)
-              : undefined;
-          return [
-            field,
-            clock === undefined ? value : respellClock(value, clock.format),
-          ];
-        }),
-      ),
-    ),
+  const entity = Object.fromEntries(
+    fields.map((field): [string, JsonValue] => {
+      const value = ownMember(written.fields!, field)!;
+      const answered = ownMember(shown, field);
+      // An answer spells an empty list or map the call did not send as its recording did.
+      if (
+        answered !== undefined &&
+        written.sent?.includes(field) !== true &&
+        emptySpellings(answered, value)
+      )
+        return [field, answered];
+      const clock =
+        written.clocks?.includes(field) === true
+          ? readClock(answered)
+          : undefined;
+      return [
+        field,
+        clock === undefined ? value : respellClock(value, clock.format),
+      ];
+    }),
   );
+  const answer = (written.unloaded ?? []).reduce<JsonObject>(
+    (rendered, path) => {
+      const tokens = pointerTokens(path);
+      const kept = memberAt(shown, tokens);
+      return kept === undefined || written.sent?.includes(tokens[0]!) === true
+        ? rendered
+        : withMemberAt(rendered, tokens, kept);
+    },
+    entity,
+  );
+  return ok(replaceAt(recorded, pointer, answer));
+};
+
+/** The value under these member names, nested objects included. */
+const memberAt = (
+  value: JsonValue | undefined,
+  tokens: readonly string[],
+): JsonValue | undefined =>
+  tokens.reduce<JsonValue | undefined>(
+    (inner, token) => (isObject(inner) ? ownMember(inner, token) : undefined),
+    value,
+  );
+
+/** A copy with the value under these member names replaced, when the object holds every one of them. */
+const withMemberAt = (
+  object: JsonObject,
+  tokens: readonly string[],
+  value: JsonValue,
+): JsonObject => {
+  const [first, ...rest] = tokens;
+  if (first === undefined || !Object.hasOwn(object, first)) return object;
+  if (rest.length === 0) return { ...object, [first]: value };
+  const inner = object[first];
+  return isObject(inner)
+    ? { ...object, [first]: withMemberAt(inner, rest, value) }
+    : object;
 };
 
 /** The shared bulk renderer: fixed acknowledgements, or one first-template element per written entity. */
