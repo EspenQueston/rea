@@ -283,7 +283,9 @@ describe("Electron constant options read from nested functions", () => {
       { web_preferences_status: "dynamic", web_preferences: [] },
     ]);
   });
+});
 
+describe("Electron nested-function constants and module exports", () => {
   it.each([
     "export const preferences = { nodeIntegration: true };",
     "const preferences = { nodeIntegration: true }; export { preferences };",
@@ -305,6 +307,37 @@ describe("Electron constant options read from nested functions", () => {
     `);
       expect(analysis.electron.browser_windows).toMatchObject([
         { web_preferences_status: "dynamic", web_preferences: [] },
+      ]);
+    },
+  );
+
+  it.each([
+    "export interface WindowConfig { width: number }",
+    "export type Config = string;",
+    "type Config = string; export type { Config };",
+    "type Config = string; export { type Config };",
+    "export declare const version: string;",
+    "export {};",
+  ])(
+    "resolves when an ES module exports only erased types: %s",
+    (declaration) => {
+      const analysis = analyzeJavaScriptStaticSource(`
+      import { BrowserWindow } from "electron";
+      const preferences = { nodeIntegration: true };
+      ${declaration}
+      function create() { new BrowserWindow({ webPreferences: preferences }); }
+    `);
+      expect(analysis.parse_error_count).toBe(0);
+      expect(analysis.electron.browser_windows).toMatchObject([
+        {
+          web_preferences_status: "object-literal",
+          web_preferences: [
+            {
+              name: "nodeIntegration",
+              value: { status: "literal", value: true },
+            },
+          ],
+        },
       ]);
     },
   );

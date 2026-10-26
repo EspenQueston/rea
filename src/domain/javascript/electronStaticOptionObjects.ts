@@ -1,5 +1,6 @@
 import * as t from "@babel/types";
 import { unwrapJavaScriptExpression } from "./javascriptAstValues.js";
+import { semanticRuntimeExportValueSources } from "./javascriptModuleDeclaration.js";
 import { semanticBindingAtRead } from "./javascriptSemanticMutationInitializers.js";
 import {
   semanticStableInitializer,
@@ -85,13 +86,13 @@ const initializedBeforeEnclosingFunction = (
 /**
  * ESM exports are not escapes in the shared mutation index, and an importer
  * can reach an object through an exported alias, container or function. Keep
- * nested-function reads unknown in any module that exports local bindings.
+ * nested-function reads unknown in any module that exports a runtime local
+ * value; erased type-only exports publish nothing.
  */
 const exportsLocalBindings = (program: t.Program): boolean =>
   program.body.some(
     (statement) =>
-      (t.isExportNamedDeclaration(statement) && statement.source == null) ||
-      t.isExportDefaultDeclaration(statement) ||
+      semanticRuntimeExportValueSources(statement).length > 0 ||
       t.isTSExportAssignment(statement),
   );
 
