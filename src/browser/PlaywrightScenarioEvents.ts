@@ -110,7 +110,7 @@ export class PlaywrightScenarioEvents {
   private readonly stopListeners = new Map<object, Set<() => void>>();
   private sealed = false;
   private sourcePrivacyIncomplete = false;
-  private sourcePrivacyFinalized = false;
+  private networkPrivacyFinalized = false;
 
   constructor(options: EventCaptureOptions) {
     const network = options.network ?? {
@@ -204,7 +204,7 @@ export class PlaywrightScenarioEvents {
       await this.network?.finish();
     } finally {
       try {
-        await this.finalizeSourcePrivacy();
+        await this.finalizeNetworkPrivacy();
       } finally {
         this.sealed = true;
       }
@@ -274,22 +274,24 @@ export class PlaywrightScenarioEvents {
     };
   }
 
-  /** Finalize only selected source transactions after their secret facts become available. */
-  private async finalizeSourcePrivacy(): Promise<void> {
-    if (this.sourcePrivacyFinalized) return;
+  /** Apply the final known secret set to retained network facts before publication. */
+  private async finalizeNetworkPrivacy(): Promise<void> {
+    if (this.networkPrivacyFinalized) return;
     const sources = this.network?.sourcePrivacy();
     if (sources === undefined || sources.size === 0) return;
+    const learnedSecrets = [...sources.values()].some(Boolean);
     let retained = 0;
     for (const original of this.items) {
       if (!("transaction_id" in original)) {
         this.items[retained++] = original;
         continue;
       }
-      const ready = sources.get(original.transaction_id);
-      if (ready === undefined) {
+      const sourceReady = sources.get(original.transaction_id);
+      if (sourceReady === undefined && !learnedSecrets) {
         this.items[retained++] = original;
         continue;
       }
+      const ready = sourceReady ?? true;
       if (!ready) this.sourcePrivacyIncomplete = true;
       const oldCost = retainedEventCost(
         original,
@@ -334,7 +336,6 @@ export class PlaywrightScenarioEvents {
           : undefined;
       const bodyCopy =
         original.kind === "network-content" &&
-        original.phase === "request" &&
         original.body.state === "captured"
           ? Math.max(
               this.secrets.redactionAllocationCost(original.body.bytes),
@@ -351,7 +352,7 @@ export class PlaywrightScenarioEvents {
             : undefined;
       let event: BrowserScenarioEvent = original;
       if (reason === undefined) {
-        event = await this.protectSourceEvent(
+        event = await this.protectNetworkEvent(
           original,
           ready,
           Math.max(1, available),
@@ -376,10 +377,10 @@ export class PlaywrightScenarioEvents {
       this.omitNetwork(original.transaction_id, original.kind, reason);
     }
     this.items.length = retained;
-    this.sourcePrivacyFinalized = true;
+    this.networkPrivacyFinalized = true;
   }
 
-  private async protectSourceEvent(
+  private async protectNetworkEvent(
     event: BrowserScenarioEvent,
     ready: boolean,
     available: number,
@@ -431,7 +432,7 @@ export class PlaywrightScenarioEvents {
       let body = event.body;
       if (body.state === "unavailable")
         body = { ...body, message: this.secrets.redact(body.message) };
-      if (event.phase === "request" && body.state === "captured") {
+      if (body.state === "captured") {
         const prior = body;
         const source = {
           headers: (): Record<string, string> =>
@@ -442,7 +443,7 @@ export class PlaywrightScenarioEvents {
         };
         const protectedBody = await captureNetworkBody(
           async () => Buffer.from(prior.content, "base64"),
-          "request",
+          event.phase,
           source,
           this.secrets,
           {

@@ -408,6 +408,7 @@ it("caps live descendant listeners and reuses capacity after closure", () => {
 const sourceTransactionCapture = async (
   options: {
     fail?: boolean;
+    followup?: boolean;
     value?: string;
     padding?: number;
     metadataLimit?: number;
@@ -479,7 +480,7 @@ const sourceTransactionCapture = async (
   const sourceId = capture
     .result()
     .items.find((event) => event.kind === "request")!.transaction_id;
-  // This same-URL transaction has no source policy and must keep its earlier facts.
+  // This same-URL transaction has no source policy; unknown source values must not withhold it.
   const unrelated = { ...request };
   listeners.get("request")!(unrelated);
   listeners.get("requestfinished")!(unrelated);
@@ -497,13 +498,39 @@ const sourceTransactionCapture = async (
       return Buffer.from(body);
     },
   });
+  if (options.followup) {
+    const followup = {
+      ...request,
+      url: () => `https://example.test/followup?token=${value}`,
+    };
+    listeners.get("request")!(followup);
+    listeners.get("response")!({
+      request: () => followup,
+      url: () => followup.url(),
+      status: () => 200,
+      headers: () => ({ "content-type": "application/json" }),
+      headersArray: async () => [{ name: "X-Followup", value }],
+      body: async () => Buffer.from(body),
+    });
+    listeners.get("requestfinished")!(followup);
+    await vi.waitFor(() =>
+      expect(
+        capture
+          .result()
+          .items.filter(
+            (event) =>
+              event.kind === "network-content" && event.phase === "response",
+          ),
+      ).toHaveLength(1),
+    );
+  }
   listeners.get("requestfinished")!(request);
   await capture.finish();
   return { capture, sourceId, value, url };
 };
 
 it("redacts earlier source transaction metadata and request content before publishing", async () => {
-  const { capture, sourceId, value, url } = await sourceTransactionCapture();
+  const { capture, sourceId, value } = await sourceTransactionCapture();
   const source = capture
     .result()
     .items.filter(
@@ -532,7 +559,11 @@ it("redacts earlier source transaction metadata and request content before publi
     expect.objectContaining({
       kind: "request",
       transaction_id: expect.not.stringMatching(new RegExp(`^${sourceId}$`)),
-      url: expect.objectContaining({ url }),
+      url: expect.objectContaining({
+        origin: "https://example.test",
+        redacted: true,
+        url: expect.stringContaining("safe=visible"),
+      }),
     }),
   );
   const finished = JSON.stringify(capture.result());
@@ -582,4 +613,38 @@ it("accounts for source metadata redaction expansion before publishing replaceme
       ]),
     }),
   );
+});
+
+it("re-protects follow-up URLs, headers and both body phases recorded before source secrets were learned", async () => {
+  const { capture, value } = await sourceTransactionCapture({ followup: true });
+  const request = capture
+    .result()
+    .items.find(
+      (event) =>
+        event.kind === "request" && event.url.url.includes("/followup?"),
+    );
+  expect(request).toBeDefined();
+  if (request?.kind !== "request")
+    throw new Error("Expected actual follow-up request");
+  const events = capture
+    .result()
+    .items.filter(
+      (event) =>
+        "transaction_id" in event &&
+        event.transaction_id === request.transaction_id,
+    );
+  expect(JSON.stringify(events)).not.toContain(value);
+  const bodies = events.flatMap((event) =>
+    event.kind === "network-content" && event.body.state === "captured"
+      ? [Buffer.from(event.body.content, "base64").toString()]
+      : [],
+  );
+  expect(bodies).toHaveLength(2);
+  for (const body of bodies) {
+    expect(body).not.toContain(value);
+    expect(JSON.parse(body)).toEqual({
+      token: "[REDACTED:page:click.token]",
+      public: "kept",
+    });
+  }
 });

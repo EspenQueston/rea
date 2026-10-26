@@ -516,11 +516,72 @@ try {
       (await (await fetch(countUrl)).json()).totalItems,
       beforeCount,
     );
+    const followup = await invoke("capture_browser_scenario", {
+      ...sourceScenario,
+      start_url: { url: origin + "/immediate-followup.html" },
+      actions: [
+        {
+          step_id: "exchange",
+          action: "click",
+          locator: { kind: "css", selector: "#run" },
+          save_response: {
+            method: "GET",
+            path: "/escaped-values.json",
+            save: [{ name: "token", json_pointer: "/token", secret: true }],
+          },
+          timeout_ms: 10000,
+        },
+        {
+          step_id: "settled",
+          action: "wait_for",
+          locator: { kind: "css", selector: '#result[data-ready="yes"]' },
+          state: "visible",
+          timeout_ms: 10000,
+        },
+      ],
+    });
+    assert.ok(
+      followup.normalized_result.summary.steps.every(
+        (step) => step.status === "completed",
+      ),
+    );
+    const followupPath = join(output, "followup-evidence.json");
+    await invoke("export_evidence_bundle", { path: followupPath });
+    const followupBundle = JSON.parse(await readFile(followupPath, "utf8"));
+    const followupParent = followupBundle.records.find(
+      (record) =>
+        record.evidence_id === followup.normalized_result.parent_evidence_id,
+    );
+    assert.ok(followupParent);
+    const followupPost = followupParent.normalized_result.events.items.find(
+      (event) => event.kind === "request" && event.method === "POST",
+    );
+    assert.ok(followupPost);
+    const followupEvents = followupParent.normalized_result.events.items.filter(
+      (event) => event.transaction_id === followupPost.transaction_id,
+    );
+    assert.ok(!JSON.stringify(followupEvents).includes("source-token"));
+    const followupBodies = decodeBodies({ events: followupEvents });
+    assert.ok(
+      followupBodies.some(
+        (body) => body?.token === "[REDACTED:page:exchange.token]",
+      ),
+    );
+    assert.ok(
+      followupEvents.some(
+        (event) => event.kind === "response" && event.status === 403,
+      ),
+    );
+    assert.equal(
+      (await (await fetch(countUrl)).json()).totalItems,
+      beforeCount,
+    );
     runs.push({
       verification: "source-and-later-JSON-spellings",
       verified_bodies: bodies.length,
       metadata_only_source_url: true,
       whole_json_secret_withheld: true,
+      immediate_followup_protected: true,
       whole_json_status: postResponse.status,
     });
   }

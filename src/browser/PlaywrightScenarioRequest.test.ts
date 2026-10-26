@@ -1092,6 +1092,8 @@ describe("values a URL path or Basic header cannot carry", () => {
   it.each([
     ["/api/items/{saved:item}.", `${ORIGIN}/items/{saved:item}.`],
     ["/api/items/%2e{saved:item}", `${ORIGIN}/items/%2E{saved:item}`],
+    ["/safe\\{saved:item}.", `${ORIGIN}/safe\\{saved:item}.`],
+    ["/safe\\%2e{saved:item}", `${ORIGIN}/safe\\%2e{saved:item}`],
   ])(
     "fails a step whose saved . and the text beside it make a dot segment (%s)",
     async (path, url) => {
@@ -1699,3 +1701,26 @@ describe("saved response limits and deadlines", () => {
     expect(reads.count).toBe(1);
   });
 });
+
+it.each(["array", "embedded"])(
+  "refuses repeated large saved JSON values in %s before expansion or browser dispatch",
+  async (kind) => {
+    const parsed = scenario([
+      requestStep({ save: [{ name: "large", json_pointer: "/value" }] }),
+      requestStep({
+        step_id: "expanded",
+        json:
+          kind === "array"
+            ? Array.from({ length: 1000 }, () => "{saved:large}")
+            : "prefix" + "{saved:large}".repeat(1000),
+      }),
+    ]);
+    const secrets = resolved(parsed);
+    secrets.save("source.large", "large", "x".repeat(3_000_000), false);
+    const page = { ...fakePage({}), evaluate: vi.fn() } as unknown as Page;
+    await expect(perform(page, parsed.actions[1]!, secrets)).rejects.toThrow(
+      "serialization allowance",
+    );
+    expect(page.evaluate).not.toHaveBeenCalled();
+  },
+);

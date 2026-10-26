@@ -1,3 +1,8 @@
+import { constants as bufferConstants } from "node:buffer";
+import { getHeapStatistics } from "node:v8";
+import { jsonStringByteLength } from "../domain/jsonStringByteLength.js";
+import { jsonValueByteLength } from "../domain/jsonValueByteLength.js";
+import type { JsonValue } from "../domain/jsonValue.js";
 import {
   MAX_SAVED_RESPONSE_CHARACTERS,
   MAX_SAVED_RESPONSE_BYTES,
@@ -328,6 +333,7 @@ export const performScenarioRequest = async (input: {
     throw new ScenarioRequestError(
       `Request step ${action.step_id} ran out of time before its request was sent.`,
     );
+  if (action.json !== undefined) admitSavedJson(action.json, secrets);
   const json =
     action.json === undefined ? undefined : withSavedJson(action.json, secrets);
   const request = {
@@ -427,7 +433,8 @@ export const withSavedPlaceholders = (
     );
   const pathEnd = text.search(/[?#]/u);
   const path = pathEnd < 0 ? text : text.slice(0, pathEnd);
-  const segments = path.split("/").map((segment) => {
+  // WHATWG special URLs treat literal backslashes as path separators too.
+  const filledPath = path.replace(/[^/\\]+/gu, (segment) => {
     const filled = fill(segment);
     if (filled !== segment && DOT_SEGMENT.test(filled))
       throw new Error(
@@ -435,7 +442,7 @@ export const withSavedPlaceholders = (
       );
     return filled;
   });
-  return segments.join("/") + (pathEnd < 0 ? "" : fill(text.slice(pathEnd)));
+  return filledPath + (pathEnd < 0 ? "" : fill(text.slice(pathEnd)));
 };
 
 /** Whether a request a UI step triggered is the one its `save_response` names: method, start origin, and path with `{*}` matching one segment. */
@@ -589,6 +596,79 @@ export const awaitSavedResponse = (
     secrets.markResponseSecretsReady(response.request());
   };
   return { saved, stop: () => page.off("request", watch) };
+};
+
+/** Allow for the expanded tree, stringify, Playwright transport and browser-side copies. */
+const REQUEST_JSON_ALLOCATION_FACTOR = 16;
+
+/** Count serialization expansion without allocating substituted strings or their serialized copies. */
+const admitSavedJson = (
+  value: JsonValue,
+  secrets: BrowserScenarioSecrets,
+): void => {
+  const limit = Math.min(
+    bufferConstants.MAX_STRING_LENGTH,
+    Math.floor(
+      getHeapStatistics().total_available_size / REQUEST_JSON_ALLOCATION_FACTOR,
+    ),
+  );
+  let bytes = 0;
+  const savedSizes = new Map<string, number>();
+  const charge = (size: number): void => {
+    bytes += size;
+    if (bytes > limit)
+      throw new ScenarioRequestError(
+        `Expanded request JSON exceeds its ${String(limit)}-byte serialization allowance, derived from current V8 heap headroom and the string limit. Reduce payload/repeated saved references, or raise the parent Node heap and restart.`,
+      );
+  };
+  const stringPart = (text: string): void =>
+    charge(jsonStringByteLength(text, limit - bytes + 2) - 2);
+  const visit = (item: JsonValue): void => {
+    if (typeof item === "string") {
+      const first = item.matchAll(SAVED_PLACEHOLDER).next().value;
+      if (first !== undefined && first[0] === item) {
+        const saved = secrets.savedValue(first[1]!);
+        if (typeof saved === "number") {
+          charge(jsonValueByteLength(saved));
+          return;
+        }
+      }
+      charge(2);
+      let offset = 0;
+      for (const match of item.matchAll(SAVED_PLACEHOLDER)) {
+        stringPart(item.slice(offset, match.index));
+        const name = match[1]!;
+        let size = savedSizes.get(name);
+        if (size === undefined) {
+          size =
+            jsonStringByteLength(
+              String(secrets.savedValue(name)),
+              limit - bytes + 2,
+            ) - 2;
+          savedSizes.set(name, size);
+        }
+        charge(size);
+        offset = match.index + match[0].length;
+      }
+      stringPart(item.slice(offset));
+    } else if (Array.isArray(item)) {
+      charge(2 + Math.max(0, item.length - 1));
+      for (const child of item) visit(child);
+    } else if (item !== null && typeof item === "object") {
+      charge(2);
+      let count = 0;
+      for (const key in item) {
+        if (!Object.hasOwn(item, key)) continue;
+        charge(
+          (count++ === 0 ? 0 : 1) +
+            jsonStringByteLength(key, limit - bytes) +
+            1,
+        );
+        visit(item[key]!);
+      }
+    } else charge(jsonValueByteLength(item));
+  };
+  visit(value);
 };
 
 /**

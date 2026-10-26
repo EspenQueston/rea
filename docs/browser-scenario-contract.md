@@ -534,13 +534,24 @@ id the application assigns:
   the selected source transaction's earlier URL, request headers and request
   body are also protected using the admitted values. Unresolved source values
   withhold that transaction's affected metadata/content with an explicit
-  limitation. Subsequent records use the same
-  redaction spellings; earlier unrelated records are not rewritten. A token
+  limitation. Before publication, retained network transactions are rechecked
+  with the final known secret values, including immediate follow-up requests
+  and their response bodies. Unknown source values withhold only the selected
+  source transaction. A token
   read later from local storage may therefore remain in its earlier login
   response. Other saved values, such as ids, stay visible, since
   environments model them. The environment build warns about saved values
   named like credentials that are not marked secret
   (`credential-named-saved-values`).
+- Expanded request JSON is admitted before substituting saved values or
+  serializing. Its allowance is the smaller of Node's string limit and
+  one sixteenth of current V8 available heap bytes, allowing for the expanded
+  tree, serialization, Playwright transport and browser-side copies. Size
+  accounting includes JSON escaping and repeated references; each distinct
+  saved value's size is measured once per request. An oversized request fails
+  before browser dispatch. Reduce the payload/repetitions, or raise the parent
+  Node heap and restart; this is a conservative allocation estimate, not a
+  measurement or guarantee of browser/process-family memory.
 - Evidence records a request step's empty `save` list as absent, so a scenario
   that saves nothing records the same parameters and `scenario_sha256` as
   before saved values existed, and REA versions without saved values read its
