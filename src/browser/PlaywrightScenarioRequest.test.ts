@@ -1804,3 +1804,15 @@ it("normalizes wildcard paths without colliding with literal marker-like segment
   await perform(page, parsed.actions[0]!, secrets);
   expect(secrets.savedValue("item")).toBe("42");
 });
+
+it("redacts a saved secret as a parsed URL query spells it", () => {
+  const secrets = resolved(scenario([requestStep({})]));
+  secrets.save("create.token", "token", "ab'cd~ef", true);
+  const sent = new URL(
+    `${ORIGIN}/api/items?token=${encodeURIComponent("ab'cd~ef")}`,
+  ).href;
+  expect(sent).toContain("ab%27cd~ef");
+  expect(secrets.redact(sent)).toBe(
+    `${ORIGIN}/api/items?token=[REDACTED:page:create.token]`,
+  );
+});

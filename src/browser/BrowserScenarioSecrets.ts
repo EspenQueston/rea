@@ -40,11 +40,15 @@ const normalizedSecretValues = (value: string): readonly string[] => [
   ...new Set([value.replace(/^[\t ]+|[\t ]+$/gu, ""), value]),
 ];
 
-const encodedSecretValues = (secret: string): ReadonlySet<string> =>
-  new Set([
-    encodeURIComponent(secret),
+const encodedSecretValues = (secret: string): ReadonlySet<string> => {
+  const component = encodeURIComponent(secret);
+  return new Set([
+    component,
+    // Special-URL queries escape apostrophes while keeping the component's tilde.
+    component.replace(/'/gu, "%27"),
     new URLSearchParams([["value", secret]]).toString().slice("value=".length),
   ]);
+};
 
 type SecretSpellings = "url" | "text";
 interface SecretPattern {
@@ -113,15 +117,18 @@ const FORM_KEPT = /[\w .*-]/u;
 /** A lower bound that refuses over-budget spellings before allocating encoded copies. */
 const leastSpellingUnits = (secret: string): number => {
   let uri = 0;
+  let query = 0;
   let form = 0;
   for (const character of secret) {
     const point = character.codePointAt(0) ?? 0;
     const escaped =
       3 * (point < 0x80 ? 1 : point < 0x800 ? 2 : point < 0x10000 ? 3 : 4);
-    uri += URI_KEPT.test(character) ? 1 : escaped;
+    const uriKept = URI_KEPT.test(character);
+    uri += uriKept ? 1 : escaped;
+    query += uriKept && character !== "'" ? 1 : escaped;
     form += FORM_KEPT.test(character) ? 1 : escaped;
   }
-  const encoded = Math.max(uri, form);
+  const encoded = Math.max(uri, query, form);
   return secret.length + (encoded > secret.length ? encoded : 0);
 };
 
