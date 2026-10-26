@@ -215,7 +215,8 @@ async function withRegularFile(path, signal, operation) {
             lease: AnalysisCleanupLease.forCloseOwner(owner, path),
           }),
       },
-      async (handle) => operation(handle, await handle.stat({ bigint: true })),
+      async ({ handle }) =>
+        operation(handle, await handle.stat({ bigint: true })),
     );
   } catch (cause) {
     const outcome =

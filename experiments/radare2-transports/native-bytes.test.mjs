@@ -1,8 +1,7 @@
 // Boundary/oracle tests. These simulated native replies do not establish r2 behavior.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import fs from "node:fs/promises";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import fs, { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -292,16 +291,16 @@ test("failed file cleanup preserves completed verification or primary failure, b
 
 test("an opaque cleanup-shaped abort reason during a file read never transfers an unrelated owner", async (context) => {
   let unrelatedCloses = 0;
-  const reason = new RegularFileCleanupFailure(
-    "/unrelated-owner",
-    {
+  const reason = new RegularFileCleanupFailure({
+    path: "/unrelated-owner",
+    owner: {
       close: async () => {
         unrelatedCloses++;
       },
     },
-    { kind: "completed", value: "unrelated" },
-    new Error("Opaque caller reason"),
-  );
+    outcome: { kind: "completed", value: "unrelated" },
+    cleanupCause: new Error("Opaque caller reason"),
+  });
   const controller = new AbortController();
   const originalOpen = fs.open;
   const intercepted = context.mock.method(fs, "open", async (...args) => {
