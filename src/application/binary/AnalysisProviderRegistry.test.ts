@@ -382,6 +382,87 @@ describe("analysis provider registry: selection failures", () => {
   });
 });
 
+describe("analysis provider registry: rejection origins", () => {
+  it("says no configured provider refused the target when every rejection is availability", async () => {
+    const registry = new AnalysisProviderRegistry([
+      candidate("alpha", { available: false, unconfigured: true }).provider,
+      candidate("gamma", { available: false, unconfigured: true }).provider,
+    ]);
+    const selection = await registry.select(DATABASE_TARGET);
+    expect(selection.ok).toBe(true);
+    if (!selection.ok) return;
+    const projected = projectAnalysisError(
+      registry.unboundOperationError("binary_overview", selection.value),
+    );
+    expect(projected.message).toContain(
+      "No analysis provider is configured on this host; no configured provider refused the target's format.",
+    );
+  });
+
+  it("names whether a rejection came from provider availability or target support", async () => {
+    const availabilityOnly = new AnalysisProviderRegistry([
+      candidate("alpha", { available: false, unconfigured: true }).provider,
+      candidate("gamma", { available: false, unconfigured: true }).provider,
+    ]);
+    const availabilitySelection =
+      await availabilityOnly.select(DATABASE_TARGET);
+    expect(availabilitySelection.ok).toBe(true);
+    if (availabilitySelection.ok) {
+      const { details } = projectAnalysisError(
+        availabilityOnly.unboundOperationError(
+          "binary_overview",
+          availabilitySelection.value,
+        ),
+      );
+      const rejections = details?.rejections as unknown as readonly {
+        origin: string;
+      }[];
+      expect(rejections.map(({ origin }) => origin)).toEqual([
+        "availability",
+        "availability",
+      ]);
+    }
+
+    const unconfiguredButAdmitting: AnalysisProviderCandidate = {
+      ...candidate("alpha", { available: false, unconfigured: true }).provider,
+      inspectTargetSupport: () => ({
+        status: "supported",
+        code: null,
+        reason: null,
+        diagnostics: { target_kind: "archive" },
+      }),
+    };
+    const refusingTarget: AnalysisProviderCandidate = {
+      ...candidate("beta").provider,
+      inspectTargetSupport: () => ({
+        status: "unsupported",
+        code: "target_format_unsupported",
+        reason: "beta refuses archives",
+        diagnostics: { target_kind: "archive" },
+      }),
+    };
+    const mixed = new AnalysisProviderRegistry([
+      unconfiguredButAdmitting,
+      refusingTarget,
+    ]);
+    const mixedSelection = await mixed.select(ARTIFACT_TARGET);
+    expect(mixedSelection.ok).toBe(true);
+    if (mixedSelection.ok) {
+      const { details } = projectAnalysisError(
+        mixed.unboundOperationError("binary_overview", mixedSelection.value),
+      );
+      const rejections = details?.rejections as unknown as readonly {
+        origin: string;
+        code: string;
+      }[];
+      expect(rejections).toMatchObject([
+        { origin: "availability", code: "not_configured" },
+        { origin: "target", code: "target_format_unsupported" },
+      ]);
+    }
+  });
+});
+
 describe("analysis provider registry: profile and cleanup failures", () => {
   it("does not bind a profile with unresolved version or adapter failure", async () => {
     const unresolved = candidate("unresolved", { profile: "missing" });
