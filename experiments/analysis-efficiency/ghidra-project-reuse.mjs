@@ -28,6 +28,7 @@ const { values } = parseArgs({
       "program",
       "control",
       "expected",
+      "heap",
     ].map((key) => [key, { type: "string" }]),
   ),
 });
@@ -75,7 +76,7 @@ try {
       PATH: process.env.PATH,
       GHIDRA_INSTALL_DIR: values.ghidra,
       JAVA_HOME: values.java,
-      GHIDRA_HEADLESS_MAXMEM: "1536M",
+      GHIDRA_HEADLESS_MAXMEM: values.heap ?? "1536M",
       JAVA_TOOL_OPTIONS: "-XX:ActiveProcessorCount=2",
       REA_GHIDRA_STARTUP_TIMEOUT_MS: "600000",
       ...(values.project === undefined

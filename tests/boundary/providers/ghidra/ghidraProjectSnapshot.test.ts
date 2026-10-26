@@ -28,30 +28,33 @@ const fixture = async () => {
   return { source, destination };
 };
 
-it("copies and fingerprints only the selected project, leaving unrelated siblings untouched", async () => {
-  const { source, destination } = await fixture();
-  await symlink("unrelated-missing-project", join(source, "unrelated.gpr"));
-  const commitment = await resolveGhidraProject(
-    { path: join(source, "selected.gpr"), programName: "target.elf" },
-    "/tmp/target.elf",
-    resources,
-  );
-  await copyExistingGhidraProject(source, destination, {
-    projectName: "selected",
-    expectedSha256: commitment.sha256,
-    resources,
-  });
-  expect((await readdir(destination)).sort()).toEqual([
-    "selected.gpr",
-    "selected.rep",
-  ]);
-  expect(await fingerprintGhidraProject(source, "selected", resources)).toBe(
-    commitment.sha256,
-  );
-  expect(
-    await readFile(join(destination, "selected.rep", "data"), "utf8"),
-  ).toBe("original program");
-});
+it.skipIf(process.platform === "win32")(
+  "copies and fingerprints only the selected project, leaving unrelated siblings untouched",
+  async () => {
+    const { source, destination } = await fixture();
+    await symlink("unrelated-missing-project", join(source, "unrelated.gpr"));
+    const commitment = await resolveGhidraProject(
+      { path: join(source, "selected.gpr"), programName: "target.elf" },
+      "/tmp/target.elf",
+      resources,
+    );
+    await copyExistingGhidraProject(source, destination, {
+      projectName: "selected",
+      expectedSha256: commitment.sha256,
+      resources,
+    });
+    expect((await readdir(destination)).sort()).toEqual([
+      "selected.gpr",
+      "selected.rep",
+    ]);
+    expect(await fingerprintGhidraProject(source, "selected", resources)).toBe(
+      commitment.sha256,
+    );
+    expect(
+      await readFile(join(destination, "selected.rep", "data"), "utf8"),
+    ).toBe("original program");
+  },
+);
 
 it("rejects a project whose copied content differs from the committed analysis profile", async () => {
   const { source, destination } = await fixture();

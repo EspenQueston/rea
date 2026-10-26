@@ -91,6 +91,7 @@ export const fingerprintGhidraProject = async (
 ): Promise<string> => {
   await validateProject(root, name);
   const hash = createHash("sha256");
+  const buffer = Buffer.allocUnsafe(64 * 1024);
   await visitProject(
     root,
     name,
@@ -109,7 +110,6 @@ export const fingerprintGhidraProject = async (
         signal,
         async ({ handle, initial }) => {
           hash.update(String(initial.size) + "\n");
-          const buffer = Buffer.allocUnsafe(64 * 1024);
           for (let offset = 0; offset < initial.size;) {
             signal?.throwIfAborted();
             const { bytesRead } = await handle.read(
