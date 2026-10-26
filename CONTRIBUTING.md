@@ -249,6 +249,41 @@ caches deterministic builds and static checks across Git worktrees. After a pack
 Repository invariants live in [AGENTS.md](AGENTS.md). Keep provider-specific
 protocols in adapters and shared CLI/MCP workflows in the application layer.
 
+### Dependency install scripts
+
+`package.json#allowScripts` decides every dependency install script. A package
+listed there is approved (`true`) or denied (`false`); a package that is
+absent is undecided, and the pinned npm then warns on every install and runs
+the script only after an interactive approval. Keep the decision explicit for
+every package that declares one, so an install either runs a reviewed script or
+runs none. `npm approve-scripts --allow-scripts-pending` lists the undecided
+packages, and `npm approve-scripts --allow-scripts-pin` records a decision.
+
+The repository declares no install-time lifecycle hook (`preinstall`,
+`install`, `postinstall`): an install-time hook runs before a reviewer can read
+the change and before the repository's own gates run.
+
+### Repository integrity
+
+`npm run verify:repository-integrity` checks the sensitive configuration
+surfaces — the manifest, the lockfile, the tracked JSON documents, and the
+executable configuration (CI workflows, Git hooks, the installer, and the
+lifecycle scripts). It verifies that no install-time lifecycle hook is
+declared, that every dependency install script is decided, that every direct
+dependency is an exact public-registry version, that every locked package
+resolves from the public registry with an integrity hash, that every tracked
+JSON document parses without a duplicate key, and that the executable
+configuration holds no decoded evaluation, no opaque literal, no remote script
+execution, and no unpinned third-party action. The check runs in
+`npm run check:fast`, `npm run check`, and the deep CI lane.
+
+These are general invariants rather than signatures of a known payload: a rule
+that recognized one historical blob would stop working at the next one. The
+conformance case in
+[tests/conformance/repositoryIntegrity.test.ts](tests/conformance/repositoryIntegrity.test.ts)
+exercises each rule against a synthetic violation, so a rule that cannot fail
+is known to fail.
+
 ### Windows source checkouts
 
 The published npm package includes the Windows x64 native addon and its
