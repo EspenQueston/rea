@@ -213,3 +213,46 @@ export const DERIVED_TEXT_ROWS: readonly TimedCaptureRow[] = (() => {
     ["GET", "/api/tags", [seed]],
   ];
 })();
+
+const contact = (
+  id: number,
+  fields: {
+    readonly firstName: string | null;
+    readonly lastName: string;
+    readonly email: string | null;
+  },
+): Entity => ({
+  id,
+  ...fields,
+  emailOptedOut: fields.email === null ? null : false,
+});
+
+/** A contact form's full create, then one with only the last name, whose empty members store as sent: `null` where the first stored a string, and an opt-out flag `null` where it stored `false`. */
+export const MINIMAL_CONTACT_ROWS: readonly TimedCaptureRow[] = (() => {
+  const seed = contact(1, {
+    firstName: "Ada",
+    lastName: "Finch",
+    email: "ada@example.test",
+  });
+  const full = contact(2, {
+    firstName: "Tomas",
+    lastName: "Vey",
+    email: "tomas@example.test",
+  });
+  const minimal = contact(3, {
+    firstName: null,
+    lastName: "Okafor",
+    email: null,
+  });
+  const sent = ({ id: _id, ...members }: Entity) => members;
+  return [
+    ["GET", "/api/contacts", [seed]],
+    ["GET", "/api/contacts/1", seed],
+    ["POST", "/api/contacts", full, 201, sent(full)],
+    ["GET", "/api/contacts/2", full],
+    ["GET", "/api/contacts", [seed, full]],
+    ["POST", "/api/contacts", minimal, 201, sent(minimal)],
+    ["GET", "/api/contacts/3", minimal],
+    ["GET", "/api/contacts", [seed, full, minimal]],
+  ];
+})();

@@ -8,6 +8,7 @@ import {
   DERIVED_TEXT_ROWS,
   formLabelRows,
   LISTED_ID_ROWS,
+  MINIMAL_CONTACT_ROWS,
   RENAMED_LABEL_ROWS,
   TITLE_ORDER_ROWS,
   UNLOADED_ANSWER_ROWS,
@@ -42,7 +43,7 @@ describe("create members a form sent empty", () => {
     });
   });
 
-  it("keeps a member required when two creates sent it empty in different spellings", () => {
+  it("accepts either spelling of a member two creates sent empty differently, filling the earliest", () => {
     const body: WriteBody = {
       accepted: ["name", "note"],
       fixed: [],
@@ -66,8 +67,30 @@ describe("create members a form sent empty", () => {
         contract: { ...body, blank: [{ member: "note", sent: null }] },
       },
     );
-    expect(merged?.body).toMatchObject({ required: ["name", "note"] });
-    expect(merged?.body.blank).toBeUndefined();
+    expect(merged?.body).toMatchObject({
+      required: ["name"],
+      blank: [
+        { member: "note", sent: "" },
+        { member: "note", sent: null },
+      ],
+    });
+  });
+});
+
+describe("a create with only what a person must give", () => {
+  it("serves a create whose minimal call left string members `null` and an empty flag spelled another way", () => {
+    expect(planOf(MINIMAL_CONTACT_ROWS, "post_contacts")).toMatchObject({
+      served: true,
+      body: {
+        required: ["lastName"],
+        blank: expect.arrayContaining([
+          { member: "firstName", sent: null },
+          { member: "email", sent: null },
+          { member: "emailOptedOut", sent: false },
+          { member: "emailOptedOut", sent: null },
+        ]),
+      },
+    });
   });
 });
 

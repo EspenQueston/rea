@@ -774,8 +774,9 @@ required, and an echoed member a call left out takes the value that call stored
 (`body.defaults`). A member a create sent empty (`""`, `null`, `false`, `[]` or
 `{}`), as a form sends a field left as it was, is not required: a call that
 leaves it out is applied as sending that value (`body.blank`), unless a call
-that left it out showed a default. Two creates that sent it empty in different
-spellings keep it required. A clock rule widens to `trimmed` only when no held entity or
+that left it out showed a default. A call may send it as any recorded call sent
+it empty, and one leaving it out is applied as the earliest did, as when one
+create sent `false` and another `null`. A clock rule widens to `trimmed` only when no held entity or
 earlier call showed that clock at a fixed width. A later create that disagrees
 leaves the plan as it was. A create whose observed reference differs from the
 entity the plan rebuilds, whether or not it sent the reference member, is

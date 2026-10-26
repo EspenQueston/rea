@@ -215,8 +215,8 @@ export const mergedCreatePlan = (
 };
 
 /**
- * Members both calls sent and either sent empty, with that empty value, and those both sent empty but differently,
- * which stay required; a member only one call sent takes its default from the call that left it out instead.
+ * Members both calls sent and either sent empty, with each empty value sent, the earliest first; a member only one call
+ * sent takes its default from the call that left it out instead.
  */
 const joinedBlanks = (
   held: readonly Blank[],
@@ -225,23 +225,21 @@ const joinedBlanks = (
     readonly sentBefore: ReadonlySet<string>;
     readonly later: JsonObject;
   },
-): { readonly blank: Blank[]; readonly differing: string[] } => {
+): Blank[] => {
   const blank: Blank[] = [];
-  const differing: string[] = [];
-  for (const entry of held) {
-    if (!Object.hasOwn(calls.later, entry.member)) continue;
-    const sent = calls.later[entry.member]!;
-    if (isBlankValue(sent) && !same(sent, entry.sent))
-      differing.push(entry.member);
-    else blank.push(entry);
+  const members = new Set(held.map(({ member }) => member));
+  for (const member of members) {
+    if (!Object.hasOwn(calls.later, member)) continue;
+    const entries = held.filter((entry) => entry.member === member);
+    const sent = calls.later[member]!;
+    if (isBlankValue(sent) && !entries.some((entry) => same(entry.sent, sent)))
+      entries.push({ member, sent });
+    blank.push(...entries);
   }
   for (const entry of added)
-    if (
-      calls.sentBefore.has(entry.member) &&
-      !held.some(({ member }) => member === entry.member)
-    )
+    if (calls.sentBefore.has(entry.member) && !members.has(entry.member))
       blank.push(entry);
-  return { blank, differing };
+  return blank;
 };
 
 /** Two calls' body contracts joined, undefined when a member one accepts with any value the other fixes, or both fix it at different values. */
@@ -269,14 +267,10 @@ const mergedBody = (
   const added = contract.accepted.filter(
     (member) => !body.accepted.includes(member),
   );
-  const { blank, differing } = joinedBlanks(
-    body.blank ?? [],
-    contract.blank ?? [],
-    {
-      sentBefore: new Set([...body.accepted, ...fixed.keys()]),
-      later: later.body,
-    },
-  );
+  const blank = joinedBlanks(body.blank ?? [], contract.blank ?? [], {
+    sentBefore: new Set([...body.accepted, ...fixed.keys()]),
+    later: later.body,
+  });
   const { blank: _blank, ...rest } = body;
   return {
     ...rest,
@@ -285,14 +279,10 @@ const mergedBody = (
       ...body.fixed,
       ...contract.fixed.filter((entry) => !fixed.has(entry.member)),
     ],
-    required: [
-      ...body.required.filter(
-        (member) =>
-          Object.hasOwn(later.body, member) &&
-          !isBlankValue(later.body[member]),
-      ),
-      ...differing,
-    ],
+    required: body.required.filter(
+      (member) =>
+        Object.hasOwn(later.body, member) && !isBlankValue(later.body[member]),
+    ),
     identity: body.identity ?? contract.identity,
     kinds: [...body.kinds, ...storedKinds(added, exemplar, later.entity)],
     ...(blank.length === 0 ? {} : { blank }),

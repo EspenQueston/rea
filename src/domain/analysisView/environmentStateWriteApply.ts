@@ -148,6 +148,13 @@ export const bodyProblem = (
     }
     if (!body.accepted.includes(member))
       return `Member ${member} is not one the capture showed stored (${bodyContract(body)}).`;
+    // A recorded call sent this member empty, as a form does for a field left as it was.
+    if (
+      body.blank?.some(
+        (entry) => entry.member === member && same(entry.sent, value),
+      ) === true
+    )
+      continue;
     const recorded = ownMember(shapes.entity, member);
     const kind =
       recorded === undefined || recorded === null
@@ -320,11 +327,13 @@ const copiedShapes = (
     }),
   );
 
-/** A create's call with the members it left out that recorded calls sent empty, as they sent them. */
+/** A create's call with the members it left out that recorded calls sent empty, as the earliest sent them. */
 const withBlanks = (body: WriteBody, call: WriteCall): WriteCall => {
   const given = call.body ?? {};
   const left = (body.blank ?? []).filter(
-    ({ member }) => !Object.hasOwn(given, member),
+    ({ member }, index, blank) =>
+      !Object.hasOwn(given, member) &&
+      blank.findIndex((entry) => entry.member === member) === index,
   );
   return left.length === 0
     ? call
