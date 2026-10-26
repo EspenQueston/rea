@@ -213,7 +213,7 @@ const registerExtractionCommand = (
         .boolean()
         .default(false)
         .describe(
-          "Plan and validate extraction paths, collisions, and byte estimates without creating files",
+          "Plan extraction without creating destination files or directories; reports planned, unsupported, and unresolved entries plus declared and observed content-byte estimates (for example: rea extract-artifact ./app.asar --dry-run --json)",
         ),
     }),
     run: ({ args, options }) =>

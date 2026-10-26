@@ -44,7 +44,19 @@ import { SafeOutputTree } from "../SafeOutputTree.js";
 import { ZipArtifactReader } from "../ZipArtifactReader.js";
 import { DirectoryArtifactReader } from "../DirectoryArtifactReader.js";
 import { createTestTempDirectory } from "../../../tests/fixtures/temporaryDirectory.js";
-import { extractArtifact } from "./ArtifactExtraction.js";
+import {
+  DRY_RUN_NON_ASCII_CASE_LIMITATION,
+  DRY_RUN_NON_FILE_DRIFT_SUMMARY_LIMITATION,
+  DRY_RUN_NON_FILE_RECONCILIATION_LIMITATION,
+  DRY_RUN_OVER_LIMIT_LIMITATION,
+  DRY_RUN_UNKNOWN_CASE_LIMITATION,
+  DRY_RUN_UNRESOLVED_LIMITATION,
+  DRY_RUN_VALIDATED_LIMITATION,
+  extractArtifact,
+  formatDryRunNonFileAddedLimitation,
+  formatDryRunNonFileKindMismatchReason,
+  formatExtractionIntegrityContradictionLimitation,
+} from "./ArtifactExtraction.js";
 
 const zipBytes = async (content?: string): Promise<Buffer> => {
   const writer = new ZipWriter(new Uint8ArrayWriter());
@@ -562,7 +574,7 @@ it("plans dry-run extraction with unresolved/unsupported entries and labeled byt
       materialized.extraction_manifest.selected_occurrence_ids,
     );
     expect(planned.limitations).not.toContain(
-      "Non-file inventory entries were not fully reconciled with the live reader; affected directory, symlink, and metadata facts remain unresolved.",
+      DRY_RUN_NON_FILE_RECONCILIATION_LIMITATION,
     );
   } finally {
     await resourceScope.close();
@@ -589,7 +601,7 @@ it("reconciles non-file directory and symlink entries against the inventory snap
       resourceScope,
     });
     expect(stablePlan.limitations).not.toContain(
-      "Non-file inventory entries were not fully reconciled with the live reader; affected directory, symlink, and metadata facts remain unresolved.",
+      DRY_RUN_NON_FILE_RECONCILIATION_LIMITATION,
     );
 
     const mutatedSource = join(directory, "mutated-source");
@@ -617,10 +629,14 @@ it("reconciles non-file directory and symlink entries against the inventory snap
         resourceScope,
       });
       expect(kindMismatchPlan.limitations).toContain(
-        "Inventoried directory entry empty-dir was observed as symlink by the live reader.",
+        formatDryRunNonFileKindMismatchReason(
+          "directory",
+          "empty-dir",
+          "symlink",
+        ),
       );
       expect(kindMismatchPlan.limitations).toContain(
-        "Non-file inventory entries were not fully reconciled with the live reader; affected directory, symlink, and metadata facts remain unresolved.",
+        DRY_RUN_NON_FILE_RECONCILIATION_LIMITATION,
       );
       expect(
         kindMismatchPlan.plan?.entries.find(
@@ -630,8 +646,11 @@ it("reconciles non-file directory and symlink entries against the inventory snap
         logical_path: "empty-dir",
         entry_kind: "directory",
         status: "unresolved",
-        reason:
-          "Inventoried directory entry empty-dir was observed as symlink by the live reader.",
+        reason: formatDryRunNonFileKindMismatchReason(
+          "directory",
+          "empty-dir",
+          "symlink",
+        ),
       });
     } finally {
       closeSpy.mockRestore();
@@ -664,13 +683,10 @@ it("reconciles non-file directory and symlink entries against the inventory snap
         unresolved_entries: 0,
       });
       expect(addedDirPlan.limitations).toContain(
-        "Newly observed directory entry new-dir is not in the inventory snapshot.",
+        formatDryRunNonFileAddedLimitation("directory", "new-dir"),
       );
       expect(addedDirPlan.limitations).toContain(
-        "Dry-run extraction validated destination admission, path collisions, and regular file reader entries without creating destination files or directories; live non-file reader entries were not fully reconciled with the inventory snapshot.",
-      );
-      expect(addedDirPlan.limitations).not.toContain(
-        "Dry-run extraction validated destination admission and reader entries and classified destination path collisions and length limits with unresolved entries without creating destination files or directories.",
+        DRY_RUN_NON_FILE_DRIFT_SUMMARY_LIMITATION,
       );
     } finally {
       addedCloseSpy.mockRestore();
@@ -863,14 +879,9 @@ it("refuses case-folding file and parent directory collisions in dry-run mode wh
       { logical_path: "𐐀.txt", status: "unresolved" },
       { logical_path: "𐐨.txt", status: "unresolved" },
     ]);
+    expect(nonAsciiPlan.limitations).toContain(DRY_RUN_UNRESOLVED_LIMITATION);
     expect(nonAsciiPlan.limitations).toContain(
-      "Dry-run extraction validated destination admission and reader entries and classified destination path collisions and length limits with unresolved entries without creating destination files or directories.",
-    );
-    expect(nonAsciiPlan.limitations).not.toContain(
-      "Dry-run extraction validated destination admission, path collisions, and reader entries without creating destination files or directories.",
-    );
-    expect(nonAsciiPlan.limitations).toContain(
-      "Non-ASCII case-folding paths depend on the destination filesystem case table and cannot be verified without creating files; affected paths remain unresolved in the dry-run plan.",
+      DRY_RUN_NON_ASCII_CASE_LIMITATION,
     );
     await expect(stat(nonAsciiOut)).rejects.toMatchObject({ code: "ENOENT" });
   } finally {
@@ -982,15 +993,8 @@ it("observes destination directory case sensitivity with bounded scans and hard-
       { logical_path: "Foo.txt", status: "unresolved" },
       { logical_path: "foo.txt", status: "unresolved" },
     ]);
-    expect(unknownPlan.limitations).toContain(
-      "Dry-run extraction validated destination admission and reader entries and classified destination path collisions and length limits with unresolved entries without creating destination files or directories.",
-    );
-    expect(unknownPlan.limitations).not.toContain(
-      "Dry-run extraction validated destination admission, path collisions, and reader entries without creating destination files or directories.",
-    );
-    expect(unknownPlan.limitations).toContain(
-      "Destination directory case sensitivity is unknown because the destination parent has no observable cased entry; case-colliding paths remain unresolved in the dry-run plan.",
-    );
+    expect(unknownPlan.limitations).toContain(DRY_RUN_UNRESOLVED_LIMITATION);
+    expect(unknownPlan.limitations).toContain(DRY_RUN_UNKNOWN_CASE_LIMITATION);
     await expect(stat(unknownOut)).rejects.toMatchObject({ code: "ENOENT" });
   } finally {
     await resourceScope.close();
@@ -1106,7 +1110,7 @@ it("retains observed_bytes on unsupported nested ASAR members without adding the
       declared_bytes_estimate: nestedAsar.byteLength,
     });
     expect(planned.limitations).not.toContain(
-      "Non-file inventory entries were not fully reconciled with the live reader; affected directory, symlink, and metadata facts remain unresolved.",
+      DRY_RUN_NON_FILE_RECONCILIATION_LIMITATION,
     );
   } finally {
     await resourceScope.close();
@@ -1200,15 +1204,8 @@ it("classifies over-limit destination path segments and resolved symlink paths a
       { logical_path: overLimitName, status: "unresolved" },
       { logical_path: "short.txt", status: "planned" },
     ]);
-    expect(planned.limitations).toContain(
-      "Dry-run extraction validated destination admission and reader entries and classified destination path collisions and length limits with unresolved entries without creating destination files or directories.",
-    );
-    expect(planned.limitations).not.toContain(
-      "Dry-run extraction validated destination admission, path collisions, and reader entries without creating destination files or directories.",
-    );
-    expect(planned.limitations).toContain(
-      "Destination filesystem component and path length limits (such as 255-byte NAME_MAX) cannot be verified without creating files; over-limit paths remain unresolved in the dry-run plan.",
-    );
+    expect(planned.limitations).toContain(DRY_RUN_UNRESOLVED_LIMITATION);
+    expect(planned.limitations).toContain(DRY_RUN_OVER_LIMIT_LIMITATION);
     await expect(stat(outputRoot)).rejects.toMatchObject({ code: "ENOENT" });
 
     if (process.platform !== "win32") {
@@ -1324,9 +1321,7 @@ it("revalidates unpacked ASAR companion files during dry-run planning", async ()
       integrityPolicy: "fail",
       resourceScope,
     });
-    expect(validPlan.limitations).toContain(
-      "Dry-run extraction validated destination admission, path collisions, and reader entries without creating destination files or directories.",
-    );
+    expect(validPlan.limitations).toContain(DRY_RUN_VALIDATED_LIMITATION);
     expect(validPlan.plan?.totals).toMatchObject({
       planned_files: 2,
       unresolved_entries: 0,
@@ -1423,7 +1418,7 @@ it("revalidates unpacked ASAR companion files during dry-run planning", async ()
       unresolved_entries: 1,
     });
     expect(mismatchPlan.limitations).toContain(
-      "1 selected file(s) contradict declared integrity metadata; their bytes are observed-untrusted.",
+      formatExtractionIntegrityContradictionLimitation(1, true),
     );
   } finally {
     await resourceScope.close();

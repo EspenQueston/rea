@@ -451,6 +451,42 @@ const materializeSelection = async ({
   }
 };
 
+export const DRY_RUN_VALIDATED_LIMITATION =
+  "Dry-run extraction validated destination admission, path collisions, and reader entries without creating destination files or directories.";
+export const DRY_RUN_UNRESOLVED_LIMITATION =
+  "Dry-run extraction validated destination admission and reader entries and classified destination path collisions and length limits with unresolved entries without creating destination files or directories.";
+export const DRY_RUN_NON_FILE_DRIFT_SUMMARY_LIMITATION =
+  "Dry-run extraction validated destination admission, path collisions, and regular file reader entries without creating destination files or directories; live non-file reader entries were not fully reconciled with the inventory snapshot.";
+export const DRY_RUN_BYTE_TOTALS_LIMITATION =
+  "Dry-run byte totals are declared and observed content-byte estimates, not guaranteed disk usage.";
+export const DRY_RUN_OVER_LIMIT_LIMITATION =
+  "Destination filesystem component and path length limits (such as 255-byte NAME_MAX) cannot be verified without creating files; over-limit paths remain unresolved in the dry-run plan.";
+export const DRY_RUN_UNKNOWN_CASE_LIMITATION =
+  "Destination directory case sensitivity is unknown because the destination parent has no observable cased entry; case-colliding paths remain unresolved in the dry-run plan.";
+export const DRY_RUN_NON_ASCII_CASE_LIMITATION =
+  "Non-ASCII case-folding paths depend on the destination filesystem case table and cannot be verified without creating files; affected paths remain unresolved in the dry-run plan.";
+export const DRY_RUN_NON_FILE_RECONCILIATION_LIMITATION =
+  "Non-file inventory entries were not fully reconciled with the live reader; affected directory, symlink, and metadata facts remain unresolved.";
+
+export const formatDryRunNonFileKindMismatchReason = (
+  inventoriedKind: string,
+  path: string,
+  observedKind: string,
+): string =>
+  `Inventoried ${inventoriedKind} entry ${path} was observed as ${observedKind} by the live reader.`;
+
+export const formatDryRunNonFileAddedLimitation = (
+  observedKind: string,
+  path: string,
+): string =>
+  `Newly observed ${observedKind} entry ${path} is not in the inventory snapshot.`;
+
+export const formatExtractionIntegrityContradictionLimitation = (
+  count: number,
+  dryRun: boolean,
+): string =>
+  `${String(count)} ${dryRun ? "selected" : "extracted"} file(s) contradict declared integrity metadata; their bytes are observed-untrusted.`;
+
 interface UnresolvedDryRunPlan {
   readonly byOccurrenceId: ReadonlyMap<string, string>;
   readonly limitations: readonly string[];
@@ -638,12 +674,16 @@ const planSelectedEntries = async ({
               !matchedNonFileOccurrenceIds.has(candidate.occurrence_id),
           ) ?? candidates[0]!;
         matchedNonFileOccurrenceIds.add(unmatched.occurrence_id);
-        const reason = `Inventoried ${unmatched.entry_kind} entry ${path} was observed as ${entry.kind} by the live reader.`;
+        const reason = formatDryRunNonFileKindMismatchReason(
+          unmatched.entry_kind,
+          path,
+          entry.kind,
+        );
         unresolvedByOccurrenceId.set(unmatched.occurrence_id, reason);
         nonFileMismatches.push(reason);
       } else {
         nonFileMismatches.push(
-          `Newly observed ${entry.kind} entry ${path} is not in the inventory snapshot.`,
+          formatDryRunNonFileAddedLimitation(entry.kind, path),
         );
       }
       continue;
@@ -746,20 +786,17 @@ const planSelectedEntries = async ({
       created: false,
     });
   }
-  if (hasOverLimitLimitation)
-    limitations.push(
-      "Destination filesystem component and path length limits (such as 255-byte NAME_MAX) cannot be verified without creating files; over-limit paths remain unresolved in the dry-run plan.",
-    );
+  if (hasOverLimitLimitation) limitations.push(DRY_RUN_OVER_LIMIT_LIMITATION);
   if (hasCaseLimitation)
     limitations.push(
       caseSensitivity === "unknown"
-        ? "Destination directory case sensitivity is unknown because the destination parent has no observable cased entry; case-colliding paths remain unresolved in the dry-run plan."
-        : "Non-ASCII case-folding paths depend on the destination filesystem case table and cannot be verified without creating files; affected paths remain unresolved in the dry-run plan.",
+        ? DRY_RUN_UNKNOWN_CASE_LIMITATION
+        : DRY_RUN_NON_ASCII_CASE_LIMITATION,
     );
   if (nonFileMismatches.length > 0) {
     limitations.push(
       ...nonFileMismatches,
-      "Non-file inventory entries were not fully reconciled with the live reader; affected directory, symlink, and metadata facts remain unresolved.",
+      DRY_RUN_NON_FILE_RECONCILIATION_LIMITATION,
     );
   }
   return { byOccurrenceId: unresolvedByOccurrenceId, limitations };
@@ -1037,21 +1074,24 @@ const createExtractionResult = (
       dryRun
         ? unresolvedPlan.byOccurrenceId.size === 0 &&
           unresolvedPlan.limitations.length === 0
-          ? "Dry-run extraction validated destination admission, path collisions, and reader entries without creating destination files or directories."
+          ? DRY_RUN_VALIDATED_LIMITATION
           : unresolvedPlan.byOccurrenceId.size > 0
-            ? "Dry-run extraction validated destination admission and reader entries and classified destination path collisions and length limits with unresolved entries without creating destination files or directories."
-            : "Dry-run extraction validated destination admission, path collisions, and regular file reader entries without creating destination files or directories; live non-file reader entries were not fully reconciled with the inventory snapshot."
+            ? DRY_RUN_UNRESOLVED_LIMITATION
+            : DRY_RUN_NON_FILE_DRIFT_SUMMARY_LIMITATION
         : traversal.status === "complete"
           ? "All regular files exposed by the active artifact reader were materialized."
           : "All inventoried regular files exposed by the active reader were materialized; source traversal coverage is unknown, so the output is not established as a complete source copy.",
       dryRun
-        ? "Dry-run byte totals are declared and observed content-byte estimates, not guaranteed disk usage."
+        ? DRY_RUN_BYTE_TOTALS_LIMITATION
         : "Publication verifies the selected inventoried regular files; it does not establish complete content decoding.",
       ...unresolvedPlan.limitations,
       ...(integrityContradictions.length === 0
         ? []
         : [
-            `${String(integrityContradictions.length)} ${dryRun ? "selected" : "extracted"} file(s) contradict declared integrity metadata; their bytes are observed-untrusted.`,
+            formatExtractionIntegrityContradictionLimitation(
+              integrityContradictions.length,
+              dryRun,
+            ),
           ]),
     ],
   });
