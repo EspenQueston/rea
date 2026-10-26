@@ -2,10 +2,10 @@
 
 REA identifies a Flutter app's build facts by **pure parsing** of its APK:
 the Dart VM snapshot hash, per-ABI library digests, the engine's GNU
-build-id, and any labeled version strings. No engine, no tool installation,
-no execution, and no external lookups — this family answers "which Dart SDK
-build is this, and what exactly is in the payload?" before any deeper
-native analysis.
+build-id, and complete labeled or source-defined Dart version strings. No
+engine, no tool installation, no execution, and no external lookups — this
+family answers "which Dart SDK build is this, and what exactly is in the
+payload?" before any deeper native analysis.
 
 This is the triage step for Flutter reversing: the snapshot hash is the
 artifact that maps to a Dart SDK release through an external dataset (such
@@ -101,18 +101,33 @@ server; older servers keep the complete request after schema discovery.
   header check does not establish valid table contents or exported symbols.
 - **`libflutter` facts** are per-ABI observations: byte size, SHA-256
   digest, GNU build IDs from ELF-declared `PT_NOTE` / `SHT_NOTE` ranges,
-  and any _labeled_ strings the build
-  carries. Release engine builds often strip the `Dart VM version` string —
-  absence is reported as `null`, not guessed. Android clang/LLVM toolchain
-  lines are reported verbatim as build provenance.
+  a complete `Dart VM version:` string or a source-defined Dart
+  `Version::String()` value, and labeled Android clang/LLVM toolchain lines.
+  The unlabeled version grammar follows Dart SDK templates:
+  `VERSION_STR (CHANNEL) (COMMIT_TIME)`, with a platform suffix in some
+  versions, and the older `VERSION_STR (BUILD_TIME) on "os_arch"` form
+  ([Dart 3.7.2 `version_in.cc`](https://github.com/dart-lang/sdk/blob/3.7.2/runtime/vm/version_in.cc),
+  [Dart 2.14.0 `version_in.cc`](https://github.com/dart-lang/sdk/blob/2.14.0/runtime/vm/version_in.cc),
+  [Dart 1.24.3 `version_in.cc`](https://github.com/dart-lang/sdk/blob/1.24.3/runtime/vm/version_in.cc)).
+  The scanner accepts complete printable runs up to 192 bytes. Version tokens
+  are restricted to Dart SDK-generated stable, prerelease, and edge forms;
+  prerelease spelling follows the SDK's era-specific generators
+  ([Dart 3.7.2 `tools/utils.py`](https://github.com/dart-lang/sdk/blob/3.7.2/tools/utils.py),
+  [Dart 1.24.3 `tools/utils.py`](https://github.com/dart-lang/sdk/blob/1.24.3/tools/utils.py)).
+  Arbitrary version-shaped runs are not inferred. Unmatched runs leave
+  `dart_version` as `null`, and matching strings are preserved verbatim.
+  Android clang/LLVM toolchain lines are reported verbatim as build provenance.
   `build_id_candidates` preserves distinct IDs. `build_id` is populated only
   when all declared note ranges were examined and one ID was found;
   conflicting IDs or malformed/bounded note metadata make coverage partial.
   Matching bytes outside declared note ranges cannot supply a build ID.
-- Labeled strings must fit their complete grammar. `dart_version_capped`
-  and `toolchain_capped` independently report labels omitted by grammar or
-  projection bounds; either makes identification coverage partial. Values
-  split across read chunks are retained without publishing truncated prefixes.
+- Recognized Dart version strings and labeled toolchain lines must fit their
+  complete grammars. `dart_version_capped` reports labeled version runs
+  rejected by their grammar or distinct matching strings omitted by the
+  single-version projection; unmatched unlabeled runs alone do not set it.
+  `toolchain_capped` reports toolchain labels omitted by grammar or projection
+  bounds. Either cap makes identification coverage partial. Values split
+  across read chunks are retained without publishing truncated prefixes.
 - **`coverage: "partial"`** also appears when an ABI carries `libapp.so`
   without `libflutter.so` (or vice versa).
 - The APK itself is digested before parsing, so `target.sha256` binds the
@@ -170,8 +185,9 @@ server; older servers keep the complete request after schema discovery.
 `npm run verify:flutter -- --apk PATH [--plain-apk PATH]` runs both tools
 through compiled CLI and stdio MCP, compares Evidence, and checks every ABI.
 Use `--expectations scripts/fixtures/flutter-gallery-expectations.json` with
-the Gallery 2.9.2 release APK to check exact per-ABI engine labels,
-URI counts and the snapshot hash against its pinned SHA-256. The verifier
+the Gallery 2.9.2 release APK to check exact per-ABI Dart version and
+toolchain strings, URI counts and the snapshot hash against its pinned
+SHA-256. The verifier
 requires complete structural snapshot coverage on every ABI and explicitly
 reports the bounded pool projection as partial/unverified when truncated.
 Other APKs need their own expectations file to verify exact engine labels
@@ -179,8 +195,9 @@ and URI counts; otherwise those facets are reported unverified.
 The optional plain APK checks negative detection. Record: Flutter Gallery 2.9.2 (112 MB, three
 ABIs) — every ABI reports the same agreeing hash
 `65817c30a78bb44c3dc3771876b6010a` from two snapshot sections, per-ABI
-engine build-ids, no labeled Dart version (as expected for a release
-engine), and the Android clang toolchain line; a plain aapt2-built APK
+engine build-ids, the unlabeled Dart VM string
+`2.14.0-151.0.dev (dev) (Tue May 25 10:58:39 2021 -0700)`, and the Android
+clang toolchain line; a plain aapt2-built APK
 reports not-detected with complete coverage. The suite uses self-contained
 synthetic ELF images and scanner payloads; it does not read private local files.
 

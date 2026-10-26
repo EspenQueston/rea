@@ -32,7 +32,7 @@ const abiSelectorSchema = z
     },
     { message: ABI_SELECTOR_MESSAGE, abort: true },
   )
-  .regex(/^[^\/]*$/u, ABI_SELECTOR_MESSAGE)
+  .regex(/^[^/]*$/u, ABI_SELECTOR_MESSAGE)
   .meta({ maxLength: ABI_SELECTOR_MAX_CHARACTERS });
 
 /**
@@ -135,10 +135,10 @@ export const flutterResultSchemas = {
             .string()
             .nullable()
             .describe(
-              "Labeled 'Dart VM version' string, when a build carries one",
+              "Complete labeled Dart VM version or source-defined Dart Version::String when present",
             ),
           toolchain_lines: z.array(z.string().min(1)),
-          /** Dart labels omitted by grammar or single-version projection bounds. */
+          /** Labeled Dart runs rejected by grammar or distinct versions omitted by the single-version projection. */
           dart_version_capped: z.boolean(),
           /** Toolchain labels omitted by grammar or projection bounds. */
           toolchain_capped: z.boolean(),
