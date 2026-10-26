@@ -422,3 +422,20 @@ export const SHELF_SORTED_ROWS: readonly TimedCaptureRow[] = (() => {
     ["GET", "/api/books", [renamed, alpha, bravo]],
   ];
 })();
+
+/** Seeded folders listed out of title order, then a rename after which a list read happens to show title order. */
+export const UNSORTED_SEED_ROWS: readonly TimedCaptureRow[] = (() => {
+  const [charlie, bravo, alpha] = [
+    folder(1, "Charlie"),
+    folder(2, "Bravo"),
+    folder(3, "Alpha"),
+  ];
+  const renamed = folder(1, "Zulu", 2);
+  return [
+    ["GET", "/api/folders", [charlie, bravo, alpha]],
+    ["GET", "/api/folders/1", charlie],
+    ["PUT", "/api/folders/1", renamed, 200, { title: "Zulu", version: 1 }],
+    ["GET", "/api/folders/1", renamed],
+    ["GET", "/api/folders", [alpha, bravo, renamed]],
+  ];
+})();

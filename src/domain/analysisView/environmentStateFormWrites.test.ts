@@ -17,6 +17,7 @@ import {
   SHELF_SORTED_ROWS,
   TITLE_ORDER_ROWS,
   UNLOADED_ANSWER_ROWS,
+  UNSORTED_SEED_ROWS,
 } from "../../../tests/fixtures/environmentStateFormWrites.js";
 import { environmentStateViewOf } from "../../../tests/fixtures/environmentStateWrites.js";
 import { mergedCreatePlan } from "./environmentStateWriteCreateCalls.js";
@@ -160,6 +161,12 @@ describe("collections kept sorted", () => {
       served: true,
       insert: byName,
     });
+  });
+
+  it("learns no sort from a rename that moving the renamed entity alone cannot reach", () => {
+    const plan = planOf(UNSORTED_SEED_ROWS, "put_folders_by_id");
+    expect(plan.served).toBe(false);
+    expect(plan.insert).toBeNull();
   });
 
   it("serves a bulk update whose recordings echo the empty values each call sent", () => {
