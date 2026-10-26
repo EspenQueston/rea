@@ -50,6 +50,20 @@ status or error.
 - When `out_dir` is selected in either mode, the provider also writes
   `solana-analysis.json` (the Evidence result) and `disassembly.txt` (the
   full linear-sweep disassembly) there.
+- `instruction_names` (CLI: `--names a,b,c`) supplies Anchor instruction
+  names from an IDL or source; a handler candidate whose discriminator
+  equals `sha256("global:<name>")[..8]` is confirmed with that name in its
+  row. Unmatched candidates keep `name: null` — names are never guessed.
+- `handoff: true` (CLI: `--handoff`, requires `out_dir`) additionally
+  writes `<out_dir>/handoff/`: a byte-identical copy of the analyzed ELF
+  (SHA-256 verified against the analysis at write time), `handoff.json`
+  (pinned identity, entrypoint, the full handler table, dispatch
+  coverage, and the verified syscall surface), and `HANDOFF.md`, an
+  analyst brief splitting known from candidate from unknown and naming
+  the exact next step — feed the pinned ELF to REA's Ghidra/IDA native
+  workflows, then differential-verify. The analyzer never invokes
+  Ghidra/IDA itself. Batch mode writes the handoff into every item
+  directory when selected.
 
 ## Evidence semantics
 

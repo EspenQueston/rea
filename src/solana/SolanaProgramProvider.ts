@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 
 import type { ExecutionOptions } from "../application/AnalysisProvider.js";
 import type { SolanaProgramPort } from "../application/solana/SolanaProgramPort.js";
@@ -34,6 +34,10 @@ import {
   resolveSolanaCallSites,
   type SolanaCallResolution,
 } from "./SolanaSyscalls.js";
+import {
+  buildSolanaHandoff,
+  renderSolanaHandoffBrief,
+} from "./SolanaHandoff.js";
 import {
   DEFAULT_SOLANA_RPC_URL,
   fetchSolanaProgramElf,
@@ -240,8 +244,17 @@ interface AnalyzedProgram {
   readonly callResolutions: readonly SolanaCallResolution[];
 }
 
+/** Anchor instruction discriminator for one caller-supplied name. */
+const anchorDiscriminator = (name: string): string =>
+  createHash("sha256")
+    .update(`global:${name}`)
+    .digest()
+    .subarray(0, 8)
+    .toString("hex");
+
 const analyzeAcquired = (
   acquired: AcquiredProgram,
+  instructionNames: readonly string[],
 ): Result<AnalyzedProgram, AnalysisError> => {
   let image: SolanaElfImage;
   try {
@@ -288,6 +301,12 @@ const analyzeAcquired = (
   const dispatch = scanSolanaDispatch(instructions, image);
   const handlers = dispatch.candidates;
   const callResolutions = resolveSolanaCallSites(instructions, image);
+  const confirmedNames = new Map<string, string>();
+  for (const name of instructionNames) {
+    const discriminator = anchorDiscriminator(name);
+    if (!confirmedNames.has(discriminator))
+      confirmedNames.set(discriminator, name);
+  }
   const limitations = [...BASE_LIMITATIONS];
   if (textSection === undefined)
     limitations.push(
@@ -357,6 +376,10 @@ const analyzeAcquired = (
       method: handler.method,
       discriminator: handler.discriminator,
       label: handler.label,
+      name:
+        handler.discriminator === null
+          ? null
+          : (confirmedNames.get(handler.discriminator) ?? null),
       constant_address: handler.constantAddress,
       constant_file_offset: handler.constantFileOffset,
       comparison_address: handler.comparisonAddress,
@@ -450,6 +473,34 @@ const writeArtifacts = async (
         );
       }
     }
+    if (input.handoff === true) {
+      const handoffDir = join(input.out_dir, "handoff");
+      await mkdir(handoffDir, { recursive: true });
+      const elfFileName = basename(acquired.path);
+      const elfCopy = new Uint8Array(acquired.bytes);
+      if (
+        createHash("sha256").update(elfCopy).digest("hex") !==
+        report.artifact.sha256
+      )
+        return new ProviderAdapterError(
+          SOLANA_PROGRAM_PROVIDER_IDENTITY.id,
+          OPERATION,
+          {},
+        );
+      await writeFile(join(handoffDir, elfFileName), elfCopy);
+      const handoff = buildSolanaHandoff(
+        report,
+        join(input.out_dir, "solana-analysis.json"),
+      );
+      await writeFile(
+        join(handoffDir, "handoff.json"),
+        `${JSON.stringify(handoff, null, 2)}\n`,
+      );
+      await writeFile(
+        join(handoffDir, "HANDOFF.md"),
+        renderSolanaHandoffBrief(report, handoff, elfFileName),
+      );
+    }
     return undefined;
   } catch (cause) {
     return new ProviderAdapterError(
@@ -484,7 +535,10 @@ export class SolanaProgramProvider implements SolanaProgramPort {
             signal,
           );
     if (!acquired.ok) return acquired;
-    const analyzed = analyzeAcquired(acquired.value);
+    const analyzed = analyzeAcquired(
+      acquired.value,
+      input.instruction_names ?? [],
+    );
     if (!analyzed.ok) return analyzed;
     const writeFailure = await writeArtifacts(
       input,

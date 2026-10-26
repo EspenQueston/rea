@@ -74,6 +74,12 @@ export class SolanaProgramService {
             ...(input.value.out_dir === undefined
               ? {}
               : { out_dir: input.value.out_dir }),
+            ...(input.value.handoff === undefined
+              ? {}
+              : { handoff: input.value.handoff }),
+            ...(input.value.instruction_names === undefined
+              ? {}
+              : { instruction_names: input.value.instruction_names }),
           },
           result: value,
           confidence: "inferred",

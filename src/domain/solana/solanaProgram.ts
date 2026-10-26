@@ -38,6 +38,19 @@ export const analyzeSolanaProgramInputSchema = z
       .describe(
         "Directory receiving the fetched ELF (required with program_id) and, when selected, the analysis artifacts",
       ),
+    handoff: z
+      .boolean()
+      .optional()
+      .describe(
+        "Also write a deep-decompiler handoff under out_dir/handoff: the pinned ELF copy, handoff.json, and an analyst brief (HANDOFF.md)",
+      ),
+    instruction_names: z
+      .array(z.string().min(1).max(64))
+      .max(512)
+      .optional()
+      .describe(
+        'Caller-supplied Anchor instruction names (e.g. from an IDL); handler candidates whose discriminator equals sha256("global:<name>")[..8] are confirmed with that name',
+      ),
   })
   .superRefine((value, context) => {
     const hasPath = value.path !== undefined;
@@ -61,6 +74,13 @@ export const analyzeSolanaProgramInputSchema = z
         code: "custom",
         path: ["rpc_url"],
         message: "rpc_url applies only to program-id intake.",
+      });
+    if (value.handoff === true && value.out_dir === undefined)
+      context.addIssue({
+        code: "custom",
+        path: ["out_dir"],
+        message:
+          "The handoff artifact is written under out_dir; select it explicitly.",
       });
   });
 
@@ -118,6 +138,12 @@ export const solanaProgramAnalysisSchema = z
         /** Anchor discriminator bytes; null for table rows, whose identity is the slot label. */
         discriminator: discriminatorSchema.nullable(),
         label: z.string().nullable(),
+        /**
+         * Caller-supplied instruction name confirmed against the
+         * discriminator (sha256("global:<name>")[..8]); null when no
+         * supplied name matched — the row stays an unnamed candidate.
+         */
+        name: z.string().nullable(),
         constant_address: byteOffset.nullable(),
         constant_file_offset: byteOffset.nullable(),
         comparison_address: byteOffset.nullable(),
@@ -276,6 +302,19 @@ export const analyzeSolanaProgramsInputSchema = z.strictObject({
     .max(8)
     .optional()
     .describe("Maximum items analyzed at once (default 4, cap 8)"),
+  handoff: z
+    .boolean()
+    .optional()
+    .describe(
+      "Write the deep-decompiler handoff artifact into every item directory",
+    ),
+  instruction_names: z
+    .array(z.string().min(1).max(64))
+    .max(512)
+    .optional()
+    .describe(
+      "Caller-supplied Anchor instruction names confirmed against handler discriminators for every item",
+    ),
 });
 
 export type AnalyzeSolanaProgramsInput = z.infer<

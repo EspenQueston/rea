@@ -50,6 +50,7 @@ const report: SolanaProgramAnalysis = {
       method: "lddw-compare",
       discriminator: "c9cff3724b6f2fbd",
       label: null,
+      name: "create_config",
       constant_address: 900392,
       constant_file_offset: 900396,
       comparison_address: 900408,

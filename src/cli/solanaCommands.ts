@@ -47,6 +47,18 @@ export const registerSolanaCommands = (
         .describe(
           "Output directory for fetched ELF and analysis artifacts; required with --program",
         ),
+      handoff: z
+        .boolean()
+        .optional()
+        .describe(
+          "Write the deep-decompiler handoff artifact under <out>/handoff",
+        ),
+      names: z
+        .string()
+        .optional()
+        .describe(
+          "Comma-separated Anchor instruction names (e.g. from an IDL) to confirm against handler discriminators",
+        ),
       evidence_output: analysisEvidenceDeliveryOptions.evidence_output,
     }),
     run: ({ options }) =>
@@ -68,6 +80,17 @@ export const registerSolanaCommands = (
                   ...(options.out === undefined
                     ? {}
                     : { out_dir: absoluteCallerPath(options.out) }),
+                  ...(options.handoff === undefined
+                    ? {}
+                    : { handoff: options.handoff }),
+                  ...(options.names === undefined
+                    ? {}
+                    : {
+                        instruction_names: options.names
+                          .split(",")
+                          .map((name) => name.trim())
+                          .filter((name) => name.length > 0),
+                      }),
                 },
                 { signal },
               ),
@@ -119,6 +142,18 @@ export const registerSolanaCommands = (
         .max(8)
         .optional()
         .describe("Maximum items analyzed at once (default 4, cap 8)"),
+      handoff: z
+        .boolean()
+        .optional()
+        .describe(
+          "Write the deep-decompiler handoff artifact into every item directory",
+        ),
+      names: z
+        .string()
+        .optional()
+        .describe(
+          "Comma-separated Anchor instruction names to confirm against handler discriminators for every item",
+        ),
       evidence_output: analysisEvidenceDeliveryOptions.evidence_output,
     }),
     run: ({ options }) =>
@@ -152,6 +187,17 @@ export const registerSolanaCommands = (
                   ...(options.concurrency === undefined
                     ? {}
                     : { concurrency: options.concurrency }),
+                  ...(options.handoff === undefined
+                    ? {}
+                    : { handoff: options.handoff }),
+                  ...(options.names === undefined
+                    ? {}
+                    : {
+                        instruction_names: options.names
+                          .split(",")
+                          .map((name) => name.trim())
+                          .filter((name) => name.length > 0),
+                      }),
                 },
                 { signal },
               ),

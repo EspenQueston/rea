@@ -32,9 +32,19 @@ the deployed ELF. Do not use it for ordinary source-repository analysis.
    (account discriminators use the `account:` prefix). Leads that match no
    name stay labeled candidates — never rename them by guesswork.
 4. **Hand off to differential verification.** Decompilation output is a
-   reconstruction lead, never proof. Following the pumpfun-source model:
-   rebuild or write the candidate implementation, then run it side-by-side
-   with the captured original in a local VM (LiteSVM/Surfpool) over fixtures
+   reconstruction lead, never proof. For deeper decompilation, produce the
+   handoff artifact first (`--handoff`, or `handoff: true`; add
+   `--names <comma-separated IDL instruction names>` so confirmed handlers
+   are named): the analyzer writes `<out_dir>/handoff/` containing the
+   pinned ELF copy (byte-identical; verify its SHA-256 against
+   `handoff.json` before use), `handoff.json` (pinned identity, the full
+   handler table, dispatch coverage, and the verified syscall surface),
+   and `HANDOFF.md` — an analyst brief splitting known (observed/verified)
+   from candidates (IDL-confirmed vs unnamed leads) from unknown. Feed
+   that pinned ELF to REA's Ghidra/IDA native workflows; the analyzer
+   never invokes them itself. Following the pumpfun-source model: rebuild
+   or write the candidate implementation, then run it side-by-side with
+   the captured original in a local VM (LiteSVM/Surfpool) over fixtures
    derived from real transactions, and compare resulting account bytes,
    return data, and errors. A handler counts as recovered only when its
    differential receipts pass; the discriminator scan alone does not

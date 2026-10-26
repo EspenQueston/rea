@@ -123,6 +123,10 @@ export class SolanaProgramBatchService {
               ? {}
               : { rpc_url: plan.item.rpc_url }),
             out_dir: plan.itemDir,
+            ...(value.handoff === undefined ? {} : { handoff: value.handoff }),
+            ...(value.instruction_names === undefined
+              ? {}
+              : { instruction_names: value.instruction_names }),
           },
           options,
         );
