@@ -1,5 +1,5 @@
 import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
-import { writeFile, unlink, rm } from "node:fs/promises";
+import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { expect, it, onTestFinished } from "vitest";
 import { createServer } from "../../../src/server/createServer.js";
@@ -215,139 +215,134 @@ it("pages web bundle endpoints and inferences over MCP using evidence-file sourc
   const evidenceFile = join(tempDir, "webbundle-evidence.json");
   await writeFile(evidenceFile, JSON.stringify(parent));
 
-  try {
-    const page1Call = await client.callTool({
-      ...schemas.toolDefinition,
-      arguments: {
-        source: { kind: "evidence-file", path: evidenceFile },
-        view: {
-          kind: "web-bundle",
-          collection: "endpoints",
-          offset: 0,
-          limit: 2,
-        },
+  const page1Call = await client.callTool({
+    ...schemas.toolDefinition,
+    arguments: {
+      source: { kind: "evidence-file", path: evidenceFile },
+      view: {
+        kind: "web-bundle",
+        collection: "endpoints",
+        offset: 0,
+        limit: 2,
       },
-    });
-    expect(page1Call.isError).not.toBe(true);
-    expect(
-      schemas.ajv.validate(schemas.outputSchema, page1Call.structuredContent),
-      JSON.stringify(schemas.ajv.errors),
-    ).toBe(true);
-    const page1 = webBundlePageViewResultSchema.parse(
-      parseEvidence(page1Call.structuredContent).normalized_result,
-    );
-    expect(page1.items).toHaveLength(2);
-    expect(page1.items[0]).toMatchObject({
+    },
+  });
+  expect(page1Call.isError).not.toBe(true);
+  expect(
+    schemas.ajv.validate(schemas.outputSchema, page1Call.structuredContent),
+    JSON.stringify(schemas.ajv.errors),
+  ).toBe(true);
+  const page1 = webBundlePageViewResultSchema.parse(
+    parseEvidence(page1Call.structuredContent).normalized_result,
+  );
+  expect(page1.items).toHaveLength(2);
+  expect(page1.items[0]).toMatchObject({
+    source_index: 0,
+    value: "/api/users",
+  });
+  expect(page1.items[1]).toMatchObject({
+    source_index: 1,
+    value: "/api/users",
+  });
+  expect(page1.coverage).toMatchObject({
+    status: "page",
+    examined: 2,
+    total: 3,
+    next_offset: 2,
+    exhausted: false,
+  });
+  expect(page1.completeness.status).toBe("partial");
+
+  const page2Call = await client.callTool({
+    ...schemas.toolDefinition,
+    arguments: {
+      source: { kind: "evidence-file", path: evidenceFile },
+      view: {
+        kind: "web-bundle",
+        collection: "endpoints",
+        offset: 2,
+        limit: 2,
+      },
+    },
+  });
+  expect(page2Call.isError).not.toBe(true);
+  expect(
+    schemas.ajv.validate(schemas.outputSchema, page2Call.structuredContent),
+    JSON.stringify(schemas.ajv.errors),
+  ).toBe(true);
+  const page2 = webBundlePageViewResultSchema.parse(
+    parseEvidence(page2Call.structuredContent).normalized_result,
+  );
+  expect(page2.items).toHaveLength(1);
+  expect(page2.items[0]).toMatchObject({
+    source_index: 2,
+    value: "/api/orders",
+  });
+  expect(page2.coverage).toMatchObject({
+    status: "page",
+    examined: 1,
+    total: 3,
+    next_offset: null,
+    exhausted: true,
+  });
+
+  const candidatesCall = await client.callTool({
+    ...schemas.toolDefinition,
+    arguments: {
+      source: { kind: "evidence-file", path: evidenceFile },
+      view: {
+        kind: "web-bundle",
+        collection: "inferences",
+        kinds: ["endpoint_candidate"],
+      },
+    },
+  });
+  expect(candidatesCall.isError).not.toBe(true);
+  expect(
+    schemas.ajv.validate(
+      schemas.outputSchema,
+      candidatesCall.structuredContent,
+    ),
+    JSON.stringify(schemas.ajv.errors),
+  ).toBe(true);
+  const candidatesPage = webBundlePageViewResultSchema.parse(
+    parseEvidence(candidatesCall.structuredContent).normalized_result,
+  );
+  expect(candidatesPage.items).toEqual([
+    expect.objectContaining({
       source_index: 0,
-      value: "/api/users",
-    });
-    expect(page1.items[1]).toMatchObject({
-      source_index: 1,
-      value: "/api/users",
-    });
-    expect(page1.coverage).toMatchObject({
-      status: "page",
-      examined: 2,
-      total: 3,
-      next_offset: 2,
-      exhausted: false,
-    });
-    expect(page1.completeness.status).toBe("partial");
+      kind: "endpoint_candidate",
+      value: "/api/dynamic-user",
+      confidence: "low",
+    }),
+  ]);
 
-    const page2Call = await client.callTool({
-      ...schemas.toolDefinition,
-      arguments: {
-        source: { kind: "evidence-file", path: evidenceFile },
-        view: {
-          kind: "web-bundle",
-          collection: "endpoints",
-          offset: 2,
-          limit: 2,
-        },
+  const emptyCall = await client.callTool({
+    ...schemas.toolDefinition,
+    arguments: {
+      source: { kind: "evidence-file", path: evidenceFile },
+      view: {
+        kind: "web-bundle",
+        collection: "endpoints",
+        offset: 100,
+        limit: 10,
       },
-    });
-    expect(page2Call.isError).not.toBe(true);
-    expect(
-      schemas.ajv.validate(schemas.outputSchema, page2Call.structuredContent),
-      JSON.stringify(schemas.ajv.errors),
-    ).toBe(true);
-    const page2 = webBundlePageViewResultSchema.parse(
-      parseEvidence(page2Call.structuredContent).normalized_result,
-    );
-    expect(page2.items).toHaveLength(1);
-    expect(page2.items[0]).toMatchObject({
-      source_index: 2,
-      value: "/api/orders",
-    });
-    expect(page2.coverage).toMatchObject({
-      status: "page",
-      examined: 1,
-      total: 3,
-      next_offset: null,
-      exhausted: true,
-    });
-
-    const candidatesCall = await client.callTool({
-      ...schemas.toolDefinition,
-      arguments: {
-        source: { kind: "evidence-file", path: evidenceFile },
-        view: {
-          kind: "web-bundle",
-          collection: "inferences",
-          kinds: ["endpoint_candidate"],
-        },
-      },
-    });
-    expect(candidatesCall.isError).not.toBe(true);
-    expect(
-      schemas.ajv.validate(
-        schemas.outputSchema,
-        candidatesCall.structuredContent,
-      ),
-      JSON.stringify(schemas.ajv.errors),
-    ).toBe(true);
-    const candidatesPage = webBundlePageViewResultSchema.parse(
-      parseEvidence(candidatesCall.structuredContent).normalized_result,
-    );
-    expect(candidatesPage.items).toEqual([
-      expect.objectContaining({
-        source_index: 0,
-        kind: "endpoint_candidate",
-        value: "/api/dynamic-user",
-        confidence: "low",
-      }),
-    ]);
-
-    const emptyCall = await client.callTool({
-      ...schemas.toolDefinition,
-      arguments: {
-        source: { kind: "evidence-file", path: evidenceFile },
-        view: {
-          kind: "web-bundle",
-          collection: "endpoints",
-          offset: 100,
-          limit: 10,
-        },
-      },
-    });
-    expect(emptyCall.isError).not.toBe(true);
-    expect(
-      schemas.ajv.validate(schemas.outputSchema, emptyCall.structuredContent),
-      JSON.stringify(schemas.ajv.errors),
-    ).toBe(true);
-    const emptyPage = webBundlePageViewResultSchema.parse(
-      parseEvidence(emptyCall.structuredContent).normalized_result,
-    );
-    expect(emptyPage.items).toEqual([]);
-    expect(emptyPage.coverage).toMatchObject({
-      status: "empty",
-      examined: 0,
-      total: 3,
-      next_offset: null,
-      exhausted: true,
-    });
-  } finally {
-    await unlink(evidenceFile).catch(() => {});
-    await rm(tempDir, { recursive: true, force: true }).catch(() => {});
-  }
+    },
+  });
+  expect(emptyCall.isError).not.toBe(true);
+  expect(
+    schemas.ajv.validate(schemas.outputSchema, emptyCall.structuredContent),
+    JSON.stringify(schemas.ajv.errors),
+  ).toBe(true);
+  const emptyPage = webBundlePageViewResultSchema.parse(
+    parseEvidence(emptyCall.structuredContent).normalized_result,
+  );
+  expect(emptyPage.items).toEqual([]);
+  expect(emptyPage.coverage).toMatchObject({
+    status: "empty",
+    examined: 0,
+    total: 3,
+    next_offset: null,
+    exhausted: true,
+  });
 });

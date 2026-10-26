@@ -5,9 +5,10 @@ import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
-import { execFile } from "node:child_process";
-import { promisify, parseArgs } from "node:util";
+import { parseArgs } from "node:util";
 import { performance } from "node:perf_hooks";
+import { createVerifierCommands } from "../../scripts/lib/verify-commands.mjs";
+import { withVerifierCleanup } from "../../scripts/lib/verifier-cleanup.mjs";
 // Public CLI capture and same-session retained MCP queries. All assets and output
 // paths are explicitly supplied; this verifier installs no browser or application.
 const { values } = parseArgs({
@@ -46,6 +47,10 @@ const env = {
   REA_MCP_INPUT_SCHEMA_PROFILE: "compact",
   REA_MCP_TOOL_FAMILIES: "application,session",
 };
+const commands =
+  mode === "capture" || values["verify-cli"]
+    ? await createVerifierCommands()
+    : undefined;
 if (mode === "capture") {
   const { chromium } = require("playwright-core");
   const assets = resolve(values.application);
@@ -82,7 +87,7 @@ if (mode === "capture") {
   const origin = `http://127.0.0.1:${server.address().port}`;
   const userData = await mkdtemp(join(tmpdir(), "rea-6198-chrome-"));
   let context;
-  try {
+  await withVerifierCleanup(async () => {
     context = await chromium.launchPersistentContext(userData, {
       executablePath: resolve(values.browser),
       headless: true,
@@ -105,7 +110,7 @@ if (mode === "capture") {
     );
     assert.ok(target);
     const started = performance.now();
-    const { stdout, stderr } = await promisify(execFile)(
+    const { stdout, stderr } = await commands.exec(
       process.execPath,
       [
         join(repo, "scripts/rea.mjs"),
@@ -168,11 +173,17 @@ if (mode === "capture") {
         completeness: evidence.normalized_result.completeness,
       }),
     );
-  } finally {
-    await context?.close();
-    await new Promise((r) => server.close(r));
-    await rm(userData, { recursive: true, force: true });
-  }
+  }, [
+    () => commands.close(),
+    async () => {
+      await context?.close();
+      await rm(userData, { recursive: true, force: true });
+    },
+    () =>
+      new Promise((done, reject) =>
+        server.close((error) => (error ? reject(error) : done())),
+      ),
+  ]);
   process.exit(0);
 }
 const parent = JSON.parse(await readFile(bundle, "utf8"));
@@ -213,7 +224,7 @@ async function invoke(name, args) {
   assert.notEqual(result.isError, true, JSON.stringify(result));
   return result.structuredContent;
 }
-try {
+await withVerifierCleanup(async () => {
   await client.connect(transport);
   catalog = await client.listTools();
   await writeFile(join(out, "catalog.json"), JSON.stringify(catalog));
@@ -322,7 +333,7 @@ try {
           limit: 32,
         },
       });
-      const { stdout } = await promisify(execFile)(
+      const { stdout } = await commands.exec(
         process.execPath,
         [
           join(repo, "scripts/rea.mjs"),
@@ -368,6 +379,4 @@ try {
     ),
   );
   console.log(JSON.stringify({ mode, task: values.task, runs }));
-} finally {
-  await client.close();
-}
+}, [() => commands?.close(), () => client.close()]);

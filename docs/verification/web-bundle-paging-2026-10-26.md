@@ -53,6 +53,15 @@ limitation union before display bounding, and distinct script-scoped unknowns.
 These three corrections fail against the imported upstream production code;
 explicit-null and explicit-origin controls continue to pass.
 
+Automated review follow-up added an interleaved, intersecting-filter continuation
+case: the second matching offset is `2`, while the joined original indices are
+`2, 4, 5`. All 24 projection tests and both SDK boundary tests pass. Test temporary
+directories now have the existing fixture as their sole cleanup owner. Both real
+CLI launches in the verifier use `createVerifierCommands` and awaited shared
+cleanup; real selected capture and both CLI collection readbacks pass after that
+change. Command supervision is acquired lazily only for capture or explicit CLI
+verification, outside the measured retained-query workflows above.
+
 ## Equivalent completed query costs
 
 Both versions import the same already completed parent, discover the same 41

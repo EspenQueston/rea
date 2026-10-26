@@ -495,6 +495,56 @@ it("rejects non-web-bundle parent operation with invalid_value", () => {
   expect(result.error.issues[0]!.reason).toBe("invalid_value");
 });
 
+it("continues filtered pages by matching ordinal while preserving original indices", () => {
+  const report = sampleAnalysis();
+  const row = report.observations.endpoints[0]!;
+  const endpoints = [
+    { ...row, mechanism: "call:sendBeacon" },
+    { ...row, location: { ...row.location, script_key: "vendor.js" } },
+    row,
+    { ...row, value: "/api/orders" },
+    { ...row, location: { ...row.location, line: 99 } },
+    { ...row, location: { ...row.location, line: 100 } },
+    { ...row, location: { ...row.location, script_key: "vendor.js" } },
+  ];
+  const parent = makeParent({
+    observations: { ...report.observations, endpoints },
+  });
+  const selection = {
+    kind: "web-bundle",
+    collection: "endpoints",
+    script_keys: ["app.js"],
+    values: ["/api/users"],
+    mechanisms: ["call:fetch"],
+    limit: 2,
+  };
+  const first = query(parent, selection);
+  if (first.kind !== "web-bundle") throw new Error("Expected web-bundle page");
+  expect(first.coverage).toMatchObject({
+    total: 3,
+    examined: 2,
+    next_offset: 2,
+    exhausted: false,
+  });
+  const second = query(parent, {
+    ...selection,
+    offset: first.coverage.next_offset,
+  });
+  if (second.kind !== "web-bundle") throw new Error("Expected web-bundle page");
+  expect(second.coverage).toMatchObject({
+    total: 3,
+    examined: 1,
+    next_offset: null,
+    exhausted: true,
+  });
+  expect([...first.items, ...second.items]).toEqual(
+    [2, 4, 5].map((source_index) => ({
+      source_index,
+      ...endpoints[source_index],
+    })),
+  );
+});
+
 it("preserves parent artifact identity across summary and page views", () => {
   const artifact = { path: "/app.js", sha256: "e".repeat(64) };
   const parent: AnalysisViewParent = {
