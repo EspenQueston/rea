@@ -15,11 +15,23 @@ const artifact = { path: "/fixture/lib", sha256: "a".repeat(64), bytes: 1 };
 const parse = (bytes: Buffer) =>
   nativeExportsSchema.parse(parseNativeExports(bytes, artifact));
 
-const peExportNameAcrossSections = (overlapAtRva?: number): Buffer => {
+const indexedExportNames = [
+  "BoundaryName",
+  "SecondName",
+  ...Array.from({ length: 14 }, (_, index) => `Export${String(index + 2)}`),
+];
+
+const peExportNameAcrossSections = (
+  overlapAtRva?: number,
+  indexed = false,
+): Buffer => {
   const bytes = Buffer.concat([
     peExportImage({
       functions: [{ rva: 0x2000 }],
-      names: [{ name: "BoundaryName", index: 0 }],
+      names: (indexed ? indexedExportNames : ["BoundaryName"]).map((name) => ({
+        name,
+        index: 0,
+      })),
     }),
     Buffer.alloc(overlapAtRva === undefined ? 0x400 : 0x800),
   ]);
@@ -51,37 +63,55 @@ const peExportNameAcrossSections = (overlapAtRva?: number): Buffer => {
 };
 
 describe("PE export name mapping coverage", () => {
-  it("reads a bounded export name across adjacent section mappings", () => {
-    const result = parse(peExportNameAcrossSections());
-    expect(result).toMatchObject({
-      exports: [
-        {
-          name: "BoundaryName",
-          ordinal: 1,
-          address: "0x180002000",
-          forwarder: null,
+  it.each([false, true])(
+    "reads a bounded export name across adjacent section mappings (indexed: %s)",
+    (indexed) => {
+      const result = parse(peExportNameAcrossSections(undefined, indexed));
+      expect(result.exports.map(({ name }) => name)).toEqual(
+        indexed ? indexedExportNames : ["BoundaryName"],
+      );
+      expect(result.exports[0]).toMatchObject({
+        name: "BoundaryName",
+        ordinal: 1,
+        address: "0x180002000",
+        forwarder: null,
+      });
+      expect(result).toMatchObject({
+        coverage: {
+          status: "complete",
+          examined_entries: 1,
+          exports: indexed ? indexedExportNames.length : 1,
         },
-      ],
-      coverage: { status: "complete", examined_entries: 1, exports: 1 },
-      issues: [],
-    });
-  });
+        issues: [],
+      });
+    },
+  );
 
-  it("ignores conflicting mappings after the export name terminator", () => {
-    const result = parse(peExportNameAcrossSections(0x1409));
+  it.each([false, true])(
+    "ignores conflicting mappings after the export name terminator (indexed: %s)",
+    (indexed) => {
+      const result = parse(peExportNameAcrossSections(0x1409, indexed));
 
-    expect(result.exports).toMatchObject([{ name: "BoundaryName" }]);
-    expect(result.issues).toEqual([]);
-    expect(result.coverage.status).toBe("complete");
-  });
+      expect(result.exports.map(({ name }) => name)).toEqual(
+        indexed ? indexedExportNames : ["BoundaryName"],
+      );
+      expect(result.issues).toEqual([]);
+      expect(result.coverage.status).toBe("complete");
+    },
+  );
 
-  it("rejects conflicting mappings that overlap the export name", () => {
-    const result = parse(peExportNameAcrossSections(0x1404));
+  it.each([false, true])(
+    "rejects conflicting mappings that overlap the export name (indexed: %s)",
+    (indexed) => {
+      const result = parse(peExportNameAcrossSections(0x1404, indexed));
 
-    expect(result.exports).toEqual([]);
-    expect(result.issues).toMatchObject([{ code: "name_unreadable" }]);
-    expect(result.coverage.status).toBe("partial");
-  });
+      expect(result.exports.map(({ name }) => name)).toEqual(
+        indexed ? indexedExportNames.slice(1) : [],
+      );
+      expect(result.issues).toMatchObject([{ code: "name_unreadable" }]);
+      expect(result.coverage.status).toBe("partial");
+    },
+  );
 });
 
 describe("PE export directories", () => {

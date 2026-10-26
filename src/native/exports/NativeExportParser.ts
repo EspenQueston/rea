@@ -2,6 +2,7 @@ import {
   BinaryFormatFailure,
   BinaryReader,
   BinaryResourceFailure,
+  createFileMappingIndex,
   mappedFileOffset,
   imageFileMappings,
   readMappedCString,
@@ -114,20 +115,6 @@ const parsePeExports = (bytes: Buffer, artifact: Artifact): NativeExports => {
   const mappings = imageFileMappings(image);
   const map = (rva: number, size: number): number =>
     mappedFileOffset(mappings, base + BigInt(rva), size, image.zero_fills);
-  const cString = (rva: number): string => {
-    const value = readMappedCString(
-      bytes,
-      image,
-      base + BigInt(rva),
-      MAXIMUM_NAME_BYTES,
-    );
-    if (value.length === 0)
-      throw new BinaryFormatFailure(
-        "malformed",
-        `Export name at RVA ${hex(rva)} is empty`,
-      );
-    return value.toString("latin1");
-  };
 
   const header = map(directory.address, PE_EXPORT_DIRECTORY_BYTES);
   const ordinalBase = reader.u32(header + 16);
@@ -135,6 +122,21 @@ const parsePeExports = (bytes: Buffer, artifact: Artifact): NativeExports => {
   const nameCount = reader.u32(header + 24);
   rowBudget(functionCount, "PE export address table");
   rowBudget(nameCount, "PE export name table");
+  const mappingIndex =
+    nameCount >= 16 ? createFileMappingIndex(mappings, image.zero_fills) : null;
+  const cString = (rva: number): string => {
+    const address = base + BigInt(rva);
+    const value =
+      mappingIndex === null
+        ? readMappedCString(bytes, image, address, MAXIMUM_NAME_BYTES)
+        : mappingIndex.readCString(bytes, address, MAXIMUM_NAME_BYTES);
+    if (value.length === 0)
+      throw new BinaryFormatFailure(
+        "malformed",
+        `Export name at RVA ${hex(rva)} is empty`,
+      );
+    return value.toString("latin1");
+  };
   const functions =
     functionCount === 0 ? 0 : map(reader.u32(header + 28), functionCount * 4);
   const names =
