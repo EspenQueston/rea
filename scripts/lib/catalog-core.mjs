@@ -56,6 +56,8 @@ const SOURCE_PATHS = {
   rizinDebugProvider: "dist/rizin/RizinDebugSessionManager.js",
   fridaContracts: "dist/contracts/fridaToolContracts.js",
   fridaProvider: "dist/frida/FridaInstrumentationManager.js",
+  unicornContracts: "dist/contracts/unicorn/unicornToolContracts.js",
+  unicornProvider: "dist/unicorn/UnicornProviderMetadata.js",
   pwntoolsProvider: "dist/native/pwntools/PwntoolsRelease.js",
   nativeContracts: "dist/contracts/native/nativeToolContracts.js",
   captureContracts: "dist/contracts/captures/captureToolContracts.js",

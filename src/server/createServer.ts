@@ -123,6 +123,7 @@ import type { Logger } from "pino";
 import { registerApplicationTools } from "./registerApplicationTools.js";
 import { registerArtifactTools } from "./registerArtifactTools.js";
 import { registerNativeTools } from "./registerNativeTools.js";
+import { registerUnicornTools } from "./registerUnicornTools.js";
 import { registerBrowserScenarioTool } from "./registerBrowserScenarioTool.js";
 import { registerBrowserTools } from "./registerBrowserTools.js";
 import { registerWebScriptTool } from "./registerWebScriptTool.js";
@@ -1256,6 +1257,7 @@ const registerBinaryAnalysisTools = ({
     withAdmittedAnalysis,
   };
   registerNativeTools(server, { ...evidenceOptions, evidenceById });
+  registerUnicornTools(server, { ...evidenceOptions, evidenceById });
   registerArtifactTools(server, { ...evidenceOptions, evidenceById });
   registerManagedTools(server, { ...evidenceOptions, evidenceById });
   if (session !== undefined)
