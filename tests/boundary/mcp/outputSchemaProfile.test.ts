@@ -142,7 +142,8 @@ it("bounds output schema advertisements and keeps canonical MCP output validatio
   try {
     const tools = (await client.listTools()).tools;
     expect(tools).toHaveLength(2);
-    const advertised = tools[0]!.outputSchema as Record<string, unknown>;
+    const advertised = tools.find((tool) => tool.name === contract.name)!
+      .outputSchema as Record<string, unknown>;
     expect(advertised.type).toBe("object");
     expect(advertised.$id).toBeUndefined();
     expect((advertised.properties as Record<string, unknown>).value).toEqual({
