@@ -875,7 +875,9 @@ update that writes the field its type's creates are sorted by moves its entity
 to where the new value sorts (its own `insert`); a bulk update moves each entity
 it writes in turn, as replay applies them. When a read listing the whole
 collection fails after an update and the type's creates are not sorted by a field
-that update writes, the view tries the collection sorted by such a field, unless
+that update writes, the view tries the collection sorted by such a field, when
+the entities no write it exercised changed already follow it, as serving moves
+only the entities a write changes, and unless
 a create was placed by a sort that excludes it or a read listing the whole
 collection in its own order, not one its query sorts, that placed a create did
 not follow it; on a match, the type's creates

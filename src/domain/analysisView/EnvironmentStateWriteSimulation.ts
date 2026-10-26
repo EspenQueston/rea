@@ -86,7 +86,24 @@ import {
 } from "./environmentStateWriteRules.js";
 import { WriteTaint } from "./environmentStateWriteTaint.js";
 import { writeVerdict } from "./environmentStateWriteVerdict.js";
-import { orderedBy } from "./environmentStateWriteExplain.js";
+import { compareValues, orderedBy } from "./environmentStateWriteExplain.js";
+
+/** Whether members are in a sorted rule's order, ties kept in place as an insert keeps them. */
+const keptInOrder = (
+  members: readonly JsonObject[],
+  rule: Extract<InsertRule, { rule: "sorted" }>,
+): boolean =>
+  members.every((member, index) => {
+    if (index === 0) return true;
+    const order = compareValues(
+      ownMember(members[index - 1]!, rule.field),
+      ownMember(member, rule.field),
+    );
+    return (
+      order !== undefined &&
+      (rule.direction === "ascending" ? order <= 0 : order >= 0)
+    );
+  });
 
 const APPLY = {
   create: applyCreate,
@@ -136,6 +153,8 @@ export class EnvironmentStateWriteSimulation {
   }[] = [];
   /** Entities a create inserted, by target, with the create's tool. */
   readonly #inserted = new Map<string, string>();
+  /** The targets each write tool changed, which serving moves when their collection is kept sorted. */
+  readonly #wrote = new Map<string, Set<string>>();
   /** Creates whose insert rule a passing list check relied on, so it is no longer changed. */
   readonly #placed = new Set<string>();
   /** The order a read showed a type's collections sorted in after an update, when no create of it showed one. */
@@ -444,11 +463,15 @@ export class EnvironmentStateWriteSimulation {
       return;
     }
     this.#effects.supersede(this.#touched, write.tool, result);
-    for (const target of result.targets)
+    const wrote = this.#wrote.get(write.tool) ?? new Set<string>();
+    this.#wrote.set(write.tool, wrote);
+    for (const target of result.targets) {
+      wrote.add(target);
       touchTarget(this.#touched, this.#touchedSince, target, {
         ...write,
         fields: result.fields,
       });
+    }
     this.#log.push(write);
     if (result.inserted === undefined) return;
     this.#inserted.set(result.inserted, write.tool);
@@ -936,8 +959,20 @@ export class EnvironmentStateWriteSimulation {
           ),
         ),
       ) ?? [];
+    // Serving moves only the entities an update writes, so the others must already be in the order tried.
+    const kept = this.#state
+      .members(view.type, line.collection)
+      .filter((entity) => {
+        const target = entityTarget(entity.type, entity.collection, entity.id);
+        return ![...exercised].some((name) =>
+          this.#wrote.get(name)?.has(target),
+        );
+      })
+      .map((entity) => entity.fields);
     for (const rule of rules.filter(
-      (candidate) => current === undefined || !same(candidate, current),
+      (candidate) =>
+        (current === undefined || !same(candidate, current)) &&
+        keptInOrder(kept, candidate),
     )) {
       // A create placed by another sort shows the collection is not kept in this order.
       if (
