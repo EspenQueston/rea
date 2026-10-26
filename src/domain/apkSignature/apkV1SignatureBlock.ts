@@ -24,7 +24,9 @@ export type ApkV1BlockError =
   | {
       readonly kind: "budget-exceeded";
       readonly resource:
-        "v1-block-certificates" | "v1-signer-infos" | "asn1-elements";
+        | "v1-block-certificates"
+        | "v1-signer-infos"
+        | "asn1-elements";
       readonly limit: number;
     };
 
