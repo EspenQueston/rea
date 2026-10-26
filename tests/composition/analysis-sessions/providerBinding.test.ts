@@ -1,7 +1,7 @@
-import { writeFile } from "node:fs/promises";
+import { mkdir, realpath, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, onTestFinished } from "vitest";
 import { z } from "zod";
 
 import { createTestTempDirectory } from "../../fixtures/temporaryDirectory.js";
@@ -21,6 +21,7 @@ import { composeBinarySession } from "../../../src/application/binary/BinarySess
 import { SessionProviderRouter } from "../../../src/application/binary/SessionProviderRouter.js";
 import { createAnalysisProfile } from "../../../src/domain/analysisProfile.js";
 import { AnalysisCancelledError } from "../../../src/domain/analysisErrorCore.js";
+import { thinMach } from "../../../src/domain/binaryTarget.fixture.js";
 import { ProviderAdapterError } from "../../../src/domain/providerAdapterError.js";
 import { err, ok } from "../../../src/domain/result.js";
 
@@ -128,12 +129,29 @@ describe("target-bound provider routing", () => {
   });
 
   it("preserves bundle-root identity for artifact inventory operations", async () => {
-    const target = await databaseTarget();
+    const directory = await createTestTempDirectory("rea-provider-bundle-");
+    const target = join(directory, "Fixture.app");
+    const executable = join(target, "Fixture");
+    const infoPlist = join(target, "Info.plist");
+    await mkdir(target);
+    await writeFile(
+      infoPlist,
+      "<plist><dict><key>CFBundleExecutable</key><string>Fixture</string></dict></plist>",
+    );
+    await writeFile(executable, thinMach(0xfeedfacf, 0x0100000c));
     const analysis = deepProvider("alpha");
     const artifact = auxiliaryProvider("artifact", "inventory_artifact");
     const session = selectableSession([analysis.provider], artifact);
+    onTestFinished(async () => {
+      await session.close();
+    });
 
     expect((await session.open(target, { providerId: "alpha" })).ok).toBe(true);
+    expect(session.activeTarget()).toMatchObject({
+      path: await realpath(executable),
+      sourcePath: await realpath(target),
+      bundleInfoPlist: await realpath(infoPlist),
+    });
     const result = await session.execute("inventory_artifact", {});
     if (!result.ok) throw result.error;
 
