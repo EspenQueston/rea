@@ -63,6 +63,7 @@ import {
   laterObservation,
   newEntityIn,
   loadedLater,
+  unloadedPointers,
   withRead,
   type Observed,
 } from "./environmentStateWriteObserve.js";
@@ -143,10 +144,18 @@ const withReadBack = (
   const object = withRead(own.object, later.object, shape);
   if (same(object, own.object)) return own;
   if (shape === "item") context.observed(later.ordinal);
+  // Answers keep the values the response had not loaded, which the state holds as the item read shows them.
+  const unloaded =
+    shape === "item" ? unloadedPointers(own.object, later.object) : [];
   return {
     ...own,
     object,
-    read: { ordinal: later.ordinal, pointer: later.pointer, shape },
+    read: {
+      ordinal: later.ordinal,
+      pointer: later.pointer,
+      shape,
+      ...(unloaded.length === 0 ? {} : { unloaded }),
+    },
   };
 };
 

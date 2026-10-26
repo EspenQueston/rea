@@ -377,6 +377,7 @@ export const writeAnswer = (
                     rule.rule === "clock" ? [rule.field] : [],
                   )
                 : [],
+            unloaded: plan.observation?.read?.unloaded ?? [],
           },
           optionalFields(plan),
           laterItemFields(

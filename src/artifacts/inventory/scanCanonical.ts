@@ -1,4 +1,5 @@
 import type { ArtifactInventorySnapshot } from "../../domain/artifactInventorySnapshot.js";
+import type { ArtifactEmbeddedFormatProbeFacts } from "../ArtifactEmbeddedFormatProbes.js";
 import { compareUnicodeCodePoints } from "../../domain/unicodeCodePointOrder.js";
 
 import { AsarArtifactReader } from "../AsarArtifactReader.js";
@@ -60,23 +61,45 @@ export const scanCanonicalArtifactInventoryInScope = async (
   path: string,
   options: ArtifactInventoryOptions,
   readerFactory: typeof createReader = createReader,
+  selectedPath: string = path,
 ): Promise<ArtifactInventorySnapshot> =>
-  (await scanCanonical(path, options, readerFactory, "release")).snapshot;
+  (
+    await scanCanonical(
+      path,
+      options,
+      readerFactory,
+      "release",
+      undefined,
+      selectedPath,
+    )
+  ).snapshot;
 
 /** Keep the admitted ZIP descriptor alive for extraction of this inventory. */
 export const scanCanonicalArtifactInventoryForExtractionInScope = async (
   path: string,
   options: ArtifactInventoryOptions,
+  probeFacts?: ArtifactEmbeddedFormatProbeFacts,
+  selectedPath: string = path,
 ): Promise<{
   readonly snapshot: ArtifactInventorySnapshot;
   readonly zipSource: TransferredZipInventorySource | undefined;
-}> => scanCanonical(path, options, createReader, "transfer-zip");
+}> =>
+  scanCanonical(
+    path,
+    options,
+    createReader,
+    "transfer-zip",
+    probeFacts,
+    selectedPath,
+  );
 
 const scanCanonical = async (
   path: string,
   options: ArtifactInventoryOptions,
   readerFactory: typeof createReader,
   rootDisposition: "release" | "transfer-zip",
+  probeFacts?: ArtifactEmbeddedFormatProbeFacts,
+  selectedPath: string = path,
 ): Promise<{
   readonly snapshot: ArtifactInventorySnapshot;
   readonly zipSource: TransferredZipInventorySource | undefined;
@@ -92,7 +115,8 @@ const scanCanonical = async (
     path,
     metadata.isDirectory(),
     metadata,
-    options,
+    { ...options, selectedPath },
+    probeFacts,
   );
   let reader: ArtifactReader | undefined;
   let readerCreationFailure: { readonly cause: unknown } | undefined;
@@ -103,6 +127,7 @@ const scanCanonical = async (
       options.environment ?? {},
       readerAdmission,
       options.asarHeaderAdmission,
+      selectedPath,
     );
   } catch (cause: unknown) {
     readerCreationFailure = { cause };
