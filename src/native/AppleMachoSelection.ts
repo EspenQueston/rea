@@ -1,4 +1,9 @@
-import { MachoLoadCommandCursor } from "../domain/apple/machoLoadCommands.js";
+import { readMachoSectionHeader } from "../domain/apple/machoSectionHeader.js";
+import { readMachoSegmentHeader } from "../domain/apple/machoSegmentHeader.js";
+import {
+  MachoLoadCommandCursor,
+  readMachoLoadCommandDeclarations,
+} from "../domain/apple/machoLoadCommands.js";
 import { createHash } from "node:crypto";
 
 import type { FixupCommands } from "./AppleMachoFixups.js";
@@ -143,10 +148,6 @@ export const selectMachoSlice = (
   return selected;
 };
 
-const MH_MAGIC = 0xfeedface;
-const MH_CIGAM = 0xcefaedfe;
-const MH_CIGAM_64 = 0xcffaedfe;
-
 /** A recognized Mach-O class outside this metadata reader's supported formats. */
 export class UnsupportedMachoMetadataFormatError extends Error {
   constructor(message: string) {
@@ -164,26 +165,21 @@ export const parseMachoLayout = (
   const selection = selectMachoSlice(bytes, architecture);
   const { slice, sliceEnd } = selection;
   if (slice + 4 > sliceEnd) throw new RangeError("Truncated Mach-O header");
-  const selectedMagic = bytes.readUInt32LE(slice);
-  const is32Bit = selectedMagic === MH_MAGIC || selectedMagic === MH_CIGAM;
-  const isBigEndian =
-    selectedMagic === MH_CIGAM || selectedMagic === MH_CIGAM_64;
-  const headerSize = is32Bit ? 28 : 32;
-  const recognizedMagic =
-    is32Bit || selectedMagic === 0xfeedfacf || selectedMagic === MH_CIGAM_64;
-  if (!recognizedMagic && slice + 32 > sliceEnd)
-    throw new RangeError("Truncated Mach-O header");
-  if (!recognizedMagic)
+  const selectedBytes = bytes.subarray(slice, sliceEnd);
+  const declarations = readMachoLoadCommandDeclarations(
+    selectedBytes,
+    selectedBytes.length,
+  );
+  if (!declarations.ok) throw new RangeError("Truncated Mach-O header");
+  if (declarations.value === null) {
+    if (selectedBytes.length < 32)
+      throw new RangeError("Truncated Mach-O header");
     throw new TypeError(
       "Only little-endian 64-bit Mach-O metadata is supported",
     );
-  if (slice + headerSize > sliceEnd)
-    throw new RangeError("Truncated Mach-O header");
-  const readHeaderUInt32 = isBigEndian
-    ? (offset: number) => bytes.readUInt32BE(offset)
-    : (offset: number) => bytes.readUInt32LE(offset);
-  const cpuType = readHeaderUInt32(slice + 4);
-  const cpuSubtype = readHeaderUInt32(slice + 8);
+  }
+  const table = declarations.value;
+  const { cpuType, cpuSubtype } = table.identity;
   const fat = selection.fatDeclaration;
   if (fat !== undefined) {
     const issue = validateFatSliceIdentity(fat, {
@@ -192,7 +188,7 @@ export const parseMachoLayout = (
     });
     if (issue !== null) throw new TypeError(issue);
   }
-  if (selectedMagic === MH_CIGAM_64) {
+  if (table.wide && !table.littleEndian) {
     if (cpuType !== 0x01000012)
       throw new TypeError("Unsupported big-endian Mach-O CPU type");
     throw new UnsupportedMachoMetadataFormatError(
@@ -205,12 +201,12 @@ export const parseMachoLayout = (
     throw new TypeError(
       `Mach-O CPU type does not match requested architecture ${architecture}`,
     );
-  if (is32Bit)
+  if (!table.wide)
     throw new UnsupportedMachoMetadataFormatError(
       `Unsupported 32-bit Mach-O metadata for requested CPU type ${architecture}`,
     );
-  const commands = bytes.readUInt32LE(slice + 16);
-  const commandEnd = slice + 32 + bytes.readUInt32LE(slice + 20);
+  const commands = table.commandCount;
+  const commandEnd = slice + table.headerSize + table.commandBytes;
   if (commands > 4096 || commandEnd > sliceEnd)
     throw new RangeError("Malformed Mach-O command bounds");
   const state: LayoutState = {
@@ -224,14 +220,9 @@ export const parseMachoLayout = (
     chained: null,
     baseAddress: undefined,
   };
-  const framing = new MachoLoadCommandCursor({
-    wide: true,
-    littleEndian: true,
-    commandCount: commands,
-    commandBytes: commandEnd - slice - 32,
-  });
+  const framing = new MachoLoadCommandCursor(table);
   while (framing.nextOffset !== null) {
-    const cursor = slice + 32 + framing.nextOffset;
+    const cursor = slice + table.headerSize + framing.nextOffset;
     const frame = framing.read(bytes.subarray(cursor, cursor + 8));
     if (!frame.ok) throw new RangeError(frame.error);
     const command = {
@@ -307,33 +298,48 @@ const collectSegment = (
   { cursor, size }: LoadCommand,
   state: LayoutState,
 ): void => {
-  if (size < 72) throw new RangeError("Truncated segment command");
-  const address = bytes.readBigUInt64LE(cursor + 24),
-    fileSize = bytes.readBigUInt64LE(cursor + 48),
-    fileOffset = bytes.readBigUInt64LE(cursor + 40);
+  const parsed = readMachoSegmentHeader(
+    bytes.subarray(cursor, cursor + size),
+    true,
+    true,
+  );
+  if (!parsed.ok) throw new RangeError("Truncated segment command");
+  const {
+    address,
+    fileSize,
+    fileOffset,
+    protection,
+    sectionCount: count,
+    headerSize,
+  } = parsed.value;
   if (fileOffset + fileSize > BigInt(state.sliceEnd - state.slice))
     throw new RangeError("Segment file range exceeds target bytes");
   state.segments.push({
     address,
     size: fileSize,
     offset: state.slice + Number(fileOffset),
-    executable: (bytes.readUInt32LE(cursor + 60) & 4) !== 0,
+    executable: (protection & 4) !== 0,
   });
   if (fileOffset === 0n && fileSize > 0n) state.baseAddress ??= address;
-  const count = bytes.readUInt32LE(cursor + 64);
-  if (72 + count * 80 > size) throw new RangeError("Truncated section table");
+  if (headerSize + count * 80 > size)
+    throw new RangeError("Truncated section table");
   for (let section = 0; section < count; section++) {
-    const position = cursor + 72 + section * 80;
-    const sectionSize = bytes.readBigUInt64LE(position + 40);
+    const position = cursor + headerSize + section * 80;
+    const parsedSection = readMachoSectionHeader(
+      bytes.subarray(position, position + 80),
+      true,
+      true,
+    );
+    if (!parsedSection.ok) throw new RangeError("Truncated section table");
+    const { nameBytes, address, size: sectionSize } = parsedSection.value;
     if (sectionSize > BigInt(Number.MAX_SAFE_INTEGER))
       throw new RangeError("Section size exceeds exact numeric range");
     state.sections.push({
-      name: bytes
-        .subarray(position, position + 16)
+      name: nameBytes
         // ASCII decoding masks high bits and can fabricate known metadata names.
         .toString("latin1")
         .replace(/\0.*$/u, ""),
-      address: bytes.readBigUInt64LE(position + 32),
+      address,
       size: Number(sectionSize),
     });
   }

@@ -19,7 +19,7 @@
 
 **[Website](https://rea.tools/) · [Guides](https://rea.tools/guides/) · [Showcases](https://rea.tools/showcase/)**
 
-[Quick start](#quick-start) · [REA kaise kaam karta hai](#rea-kaise-kaam-karta-hai) · [Aap kya analyze kar sakte hain](#aap-kya-analyze-kar-sakte-hain) · [Showcases](#showcases) · [FAQ](#faq) · [Documentation](#documentation)
+[Quick start](#quick-start) · [REA kaise kaam karta hai](#rea-kaise-kaam-karta-hai) · [Aap kya analyze kar sakte hain](#aap-kya-analyze-kar-sakte-hain) · [Showcases](#showcases) · [RL environments banaiye](#rl-environments-banaiye) · [FAQ](#faq) · [Documentation](#documentation)
 
 <code>npx rea-agents setup</code>
 
@@ -225,7 +225,48 @@ Original PC-98 game ke 16-bit instructions inspect kijiye, fixed aur aimed angle
 [Case study padhiye](https://rea.tools/showcase/th04/) ·
 [Reconstruction repository](https://github.com/N0zoM1z0/th04)
 
+### REA se RL environments banaiye
+
+Ek web app session record kijiye, uske API ko tools mein badaliye, aur aisa environment export kijiye jise AI agent use kar sake. Ise AgentEnv ke saath chalaiye, phir RL training ya evaluation ke liye tasks aur reward checks jodiye.
+
+[Guide padhiye](https://rea.tools/guides/rl-environments/) ·
+[Video dekhiye](https://x.com/reatools/status/2112574822584918075?s=20)
+
 Agar aapne REA ko kisi interesting cheez par use kiya hai, to hum use zaroor dekhna chahenge. Apna case kisi [issue](https://github.com/morluto/rea/issues) ya [pull request](https://github.com/morluto/rea/pulls) mein share kijiye, jisme target, aapka sawaal, REA ne kaise madad ki, aur aapko kya mila, yeh sab ho.
+
+## RL environments banaiye
+
+AI agent ko ek local environment dijiye jahan woh original app chalaye bina tasks practice kar sake, jaise koi issue dhoondhna ya folder banana. Ise reinforcement learning (RL) ke liye use kijiye, ya yeh test karne ke liye ki agent tasks kitni achhi tarah poore karta hai.
+
+REA record kiye gaye API requests aur responses ko aise tools mein badalta hai jinhe agent call kar sakta hai. Environment recorded data use karta hai aur sirf wahi changes support karta hai jinke effects recording se confirm hote hain.
+
+Apne agent mein REA set up karne ke baad, neeche diye example URL aur folder tasks ki jagah apne tasks likhiye:
+
+```text
+REA use karke meri test web app http://127.0.0.1:3000 se ek RL environment
+banao. Folders ki listing, banana, rename karna aur delete karna cover karo.
+Tum test folders bana aur hata sakte ho. Pehle se maujood data ko mat chhedo.
+Ise my-env naam ke folder mein save karo. Check karo ki kaun se operations kaam
+karte hain aur mujhe batao ki ise kaise chalana hai.
+```
+
+<details>
+<summary>Iske bajaye command line use kijiye</summary>
+
+Agar aapke paas pehle se app ke recorded browser requests aur responses wali file hai, to yeh commands use kijiye. Result chalane ke liye AgentEnv aur Docker bhi chahiye.
+
+```sh
+rea environment-build ./session.har ./my-env --name my-env --json
+agent-env run ./my-env
+```
+
+</details>
+
+REA ek chalne layak environment export karta hai, saath mein ek basic test jo check karta hai ki woh start hota hai aur jawab deta hai. Ise apne RL framework ke saath use karke task goals define kijiye, reward checks jodiye aur training chalaiye.
+
+[Environment banaiye](https://rea.tools/guides/rl-environments/) ·
+[Environment reference](../agent-environments.md) ·
+[X par demo dekhiye](https://x.com/reatools/status/2112574822584918075?s=20)
 
 ## FAQ
 

@@ -32,6 +32,13 @@ import {
 import {
   ghidraMipsProfileMismatchReason,
   ghidraPinnedMipsLanguage,
+  GHIDRA_MIPS_SOFT_FLOAT_STORAGE,
+  ghidraMips1Limitations,
+  ghidraMipsSoftFloatFailure,
+  ghidraMipsRelocatableLimitations,
+  ghidraMipsSharedLimitations,
+  ghidraMipsSoftFloatLimitations,
+  isGhidraMipsSoftFloatTarget,
 } from "./GhidraMipsProfile.js";
 import type { AnalysisProfileCommitment } from "../domain/analysisProfile.js";
 import type { BinaryTarget } from "../domain/binaryTargetTypes.js";
@@ -77,15 +84,6 @@ import {
   GHIDRA_PSP_LIMITATIONS,
 } from "./GhidraPspProfile.js";
 import { ghidraPspExtensionSchema } from "./GhidraPspExtension.js";
-import {
-  GHIDRA_MIPS_SOFT_FLOAT_STORAGE,
-  ghidraMips1Limitations,
-  ghidraMipsSoftFloatFailure,
-  ghidraMipsRelocatableLimitations,
-  ghidraMipsSharedLimitations,
-  ghidraMipsSoftFloatLimitations,
-  isGhidraMipsSoftFloatTarget,
-} from "./GhidraMipsProfile.js";
 import { ghidraRiscvLimitations } from "./GhidraRiscvProfile.js";
 import { ghidraPePdbLimitations } from "./GhidraPeProfile.js";
 import { unverifiedGhidraBuildLimitation } from "./GhidraReleasePolicy.js";
@@ -101,6 +99,7 @@ import {
 } from "./GhidraProviderCapabilities.js";
 import {
   GHIDRA_STARTUP_DEADLINE_ELAPSED,
+  isGhidraInputFailureCode,
   type GhidraSessionError,
 } from "./GhidraSessionError.js";
 import type { GhidraSessionInfo } from "./GhidraSessionValues.js";
@@ -1048,12 +1047,7 @@ const projectPrimarySessionError = (
           "Retry this search in literal mode or simplify the regex.",
       },
     );
-  if (
-    failure.kind === "remote" &&
-    ["invalid_request", "not_found", "ambiguous"].includes(
-      failure.remoteCode ?? "",
-    )
-  )
+  if (failure.kind === "remote" && isGhidraInputFailureCode(failure.remoteCode))
     return new AnalysisInputError(operation, context, [
       { path: [], reason: "invalid_value", message: failure.message },
     ]);

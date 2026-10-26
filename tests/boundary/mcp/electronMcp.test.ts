@@ -1,5 +1,5 @@
 import { parseEvidence } from "../../../src/domain/evidence.js";
-import { ok as resultOk } from "../../../src/domain/result.js";
+import { ok as resultOk, err } from "../../../src/domain/result.js";
 import { rm, symlink, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -31,7 +31,6 @@ import { toolAvailabilityInventory } from "../../../src/contracts/toolOutputSche
 import { AnalysisCancelledError } from "../../../src/domain/analysisErrorCore.js";
 import { emptyElectronPageCoverage } from "../../../src/domain/javascript/electronPageInspection.fixture.js";
 import type { ElectronPageInspection } from "../../../src/domain/javascript/electronObservation.js";
-import { err } from "../../../src/domain/result.js";
 
 const browsers: FakeCdpBrowser[] = [];
 const resources: Array<{ close(): Promise<unknown> }> = [];
@@ -249,7 +248,7 @@ it("advertises owned JavaScript analysis effects without foreign target executio
 
   const status = await client.callTool({
     name: "binary_session",
-    arguments: {},
+    arguments: { detail: "complete" },
   });
   expect(status.isError).not.toBe(true);
   const { result } = z
@@ -345,6 +344,7 @@ it("exposes endpoint-scoped Electron discovery and inspection as Evidence", asyn
       targets: [{ target_id: "electron-page" }],
     },
   });
+  await expectPaddedElectronTargetRejected(client, browser);
   const inspected = await client.callTool({
     name: "inspect_electron_page",
     arguments: {
@@ -704,3 +704,22 @@ it("reports every unresolved Electron path without starting a provider", async (
   expect(capture).not.toHaveBeenCalled();
   await client.ping();
 });
+
+const expectPaddedElectronTargetRejected = async (
+  client: Client,
+  browser: FakeCdpBrowser,
+): Promise<void> => {
+  const commandsBeforeRejectedInspection = browser.commands.length;
+  const rejectedInspection = await client.callTool({
+    name: "inspect_electron_page",
+    arguments: {
+      cdp_endpoint: browser.endpoint,
+      target_id: " electron-page ",
+      observation_ms: 0,
+    },
+  });
+  expect(parseMcpToolError(rejectedInspection)).toMatchObject({
+    error: { details: { reason: "target_not_found" } },
+  });
+  expect(browser.commands).toHaveLength(commandsBeforeRejectedInspection);
+};

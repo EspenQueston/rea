@@ -1,10 +1,18 @@
+import { readPeCoffHeader } from "../domain/peCoffHeader.js";
+import {
+  hasGodotPckHeader,
+  readGodotPckHeaderFacts,
+} from "../domain/godotPckFormat.js";
 import type { FileHandle } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { setImmediate } from "node:timers/promises";
 import type { DesktopFile, DesktopFact } from "../domain/desktopApplication.js";
 import { jsonValueByteLength } from "../domain/jsonValueByteLength.js";
 import { observeIl2cppMetadataHeaderPrefix } from "../domain/il2cpp/il2cppMetadataHeaderPrefix.js";
-import { parsePeRecord, peRvaToFileOffset } from "../domain/binaryTarget.js";
+import {
+  parsePeRecordFacts,
+  peRvaToFileOffset,
+} from "../domain/binaryTarget.js";
 import { readManagedMetadataLayout } from "../dotnet/ManagedMetadataLayout.js";
 import { readAssemblyReferenceName } from "../dotnet/ManagedMetadataInventoryRows.js";
 import { ManagedReaderFailure } from "../dotnet/ManagedReaderFailure.js";
@@ -108,20 +116,22 @@ export const inspectDesktopFile = async (
         raw_version: metadataPrefix.rawVersion,
       },
     });
-  if (prefix.length >= 20 && prefix.toString("latin1", 0, 4) === "GDPC")
+  if (prefix.length >= 20 && hasGodotPckHeader(prefix)) {
+    const pckHeader = readGodotPckHeaderFacts(prefix);
     fact({
       kind: "godot-pck-header",
       offset: 0,
       value: {
-        pack_version: prefix.readUInt32LE(4),
+        pack_version: pckHeader.formatVersion,
         engine_version: [
-          prefix.readUInt32LE(8),
-          prefix.readUInt32LE(12),
-          prefix.readUInt32LE(16),
+          pckHeader.engineMajor,
+          pckHeader.engineMinor,
+          pckHeader.enginePatch,
         ],
         placement: "standalone",
       },
     });
+  }
   if (
     prefix.length >= 16 &&
     prefix.toString("latin1", 0, 4) === "FORM" &&
@@ -202,42 +212,47 @@ const inspectPeFile = async (
   const peOffset = prefix.readUInt32LE(0x3c);
   const coff = await read(peOffset, 24);
   if (coff.toString("latin1", 0, 4) !== "PE\0\0") return;
-  const optionalSize = coff.readUInt16LE(20);
+  const header = readPeCoffHeader(coff.subarray(4));
+  if (!header.ok) {
+    row.issues.push(header.error.message);
+    return;
+  }
+  const optionalSize = header.value.optionalHeaderSize;
   if (optionalSize > 4096)
     throw new ArtifactReaderFailure(
       "format",
       "PE optional header exceeds the supported format bound",
     );
   const optional = await read(peOffset + 24, optionalSize);
-  const parsed = parsePeRecord(Buffer.concat([coff, optional]), undefined);
+  const parsed = parsePeRecordFacts(Buffer.concat([coff, optional]), undefined);
   if (!parsed.ok) {
     row.issues.push(parsed.error);
     return;
   }
-  if (parsed.value.format !== "pe") return;
+  if (parsed.value.metadata.format !== "pe") return;
   fact({
     kind: "native-image-header",
     offset: peOffset,
-    value: { format: "pe", machine: coff.readUInt16LE(4) },
+    value: { format: "pe", machine: header.value.machine },
   });
-  if (!parsed.value.managed) return;
-  const directories = optional.readUInt16LE(0) === 0x20b ? 112 : 96;
-  const cliRva = optional.readUInt32LE(directories + 14 * 8);
-  const cliSize = optional.readUInt32LE(directories + 14 * 8 + 4);
+  if (!parsed.value.metadata.managed) return;
+  const cliDirectory = parsed.value.optionalHeader.dataDirectories[14];
+  if (cliDirectory === undefined) return;
+  const { address: cliRva, size: cliSize } = cliDirectory;
   fact({
     kind: "pe-cli-directory",
-    offset: peOffset + 24 + directories + 14 * 8,
+    offset: peOffset + 24 + cliDirectory.offset,
     value: { rva: cliRva, bytes: cliSize },
   });
   if (unityManagedDirectory === null) return;
-  const sectionCount = coff.readUInt16LE(6);
+  const sectionCount = header.value.sectionCount;
   const sections = await read(peOffset + 24 + optionalSize, sectionCount * 40);
   const mapped = (rva: number, bytes: number) =>
     peRvaToFileOffset(
       rva,
       sections,
       sectionCount,
-      optional.readUInt32LE(60),
+      parsed.value.optionalHeader.sizeOfHeaders,
       bytes,
     );
   const cliOffset = mapped(cliRva, 16);
@@ -320,21 +335,22 @@ const inspectPckTrailer = async (
         "Embedded PCK trailer declares an invalid pack extent",
       );
     const offset = size - 12 - Number(packSize);
-    const header = await read(offset, 20);
-    if (header.toString("latin1", 0, 4) !== "GDPC")
+    const bytes = await read(offset, 20);
+    if (!hasGodotPckHeader(bytes))
       throw new ArtifactReaderFailure(
         "format",
         "Embedded PCK trailer does not locate a pack header",
       );
+    const header = readGodotPckHeaderFacts(bytes);
     fact({
       kind: "godot-pck-header",
       offset,
       value: {
-        pack_version: header.readUInt32LE(4),
+        pack_version: header.formatVersion,
         engine_version: [
-          header.readUInt32LE(8),
-          header.readUInt32LE(12),
-          header.readUInt32LE(16),
+          header.engineMajor,
+          header.engineMinor,
+          header.enginePatch,
         ],
         placement: "embedded-trailer",
       },
