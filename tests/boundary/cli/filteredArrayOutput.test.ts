@@ -7,8 +7,8 @@ import { expect, it } from "vitest";
 import {
   parseCliOutputArguments,
   renderCliDocument,
-} from "../../src/cliOutput.js";
-import { adaptCliOutputArgumentsForIncur } from "../../src/cliBuiltinArguments.js";
+} from "../../../src/cliOutput.js";
+import { adaptCliOutputArgumentsForIncur } from "../../../src/cliBuiltinArguments.js";
 import {
   createCliResultOutput,
   streamCliCommandResults,
