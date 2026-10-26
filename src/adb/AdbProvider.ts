@@ -3116,7 +3116,7 @@ export class AdbProvider {
       const ran = await runAdb(
         operation,
         { device: input.serial },
-        selection.binary,
+        selection,
         adbArguments(input.serial, ["shell", "sh", "-c", BOOT_PROBE_SCRIPT]),
         {
           timeoutMs: Math.max(
