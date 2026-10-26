@@ -994,7 +994,9 @@ const createExtractionResult = (
         ? unresolvedPlan.byOccurrenceId.size === 0 &&
           unresolvedPlan.limitations.length === 0
           ? "Dry-run extraction validated destination admission, path collisions, and reader entries without creating destination files or directories."
-          : "Dry-run extraction validated destination admission and reader entries and classified destination path collisions and length limits with unresolved entries without creating destination files or directories."
+          : unresolvedPlan.byOccurrenceId.size > 0
+            ? "Dry-run extraction validated destination admission and reader entries and classified destination path collisions and length limits with unresolved entries without creating destination files or directories."
+            : "Dry-run extraction validated destination admission, path collisions, and regular file reader entries without creating destination files or directories; live non-file reader entries were not fully reconciled with the inventory snapshot."
         : traversal.status === "complete"
           ? "All regular files exposed by the active artifact reader were materialized."
           : "All inventoried regular files exposed by the active reader were materialized; source traversal coverage is unknown, so the output is not established as a complete source copy.",
@@ -1005,7 +1007,7 @@ const createExtractionResult = (
       ...(integrityContradictions.length === 0
         ? []
         : [
-            `${String(integrityContradictions.length)} ${dryRun ? "planned" : "extracted"} file(s) contradict declared integrity metadata; their bytes are observed-untrusted.`,
+            `${String(integrityContradictions.length)} ${dryRun ? "selected" : "extracted"} file(s) contradict declared integrity metadata; their bytes are observed-untrusted.`,
           ]),
     ],
   });

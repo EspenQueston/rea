@@ -619,6 +619,45 @@ it("reconciles non-file directory and symlink entries against the inventory snap
     } finally {
       closeSpy.mockRestore();
     }
+
+    const addedDirSource = join(directory, "added-dir-source");
+    await mkdir(addedDirSource, { recursive: true });
+    await writeFile(join(addedDirSource, "alpha.txt"), "alpha");
+    let addedInventoryClosed = false;
+    const addedCloseSpy = vi
+      .spyOn(DirectoryArtifactReader.prototype, "close")
+      .mockImplementation(async function (this: DirectoryArtifactReader) {
+        await originalClose.call(this);
+        if (addedInventoryClosed) return;
+        addedInventoryClosed = true;
+        await mkdir(join(addedDirSource, "new-dir"), { recursive: true });
+      });
+    try {
+      const addedDirPlan = await extractArtifact({
+        inputPath: addedDirSource,
+        inputFormat: "asar",
+        outputRoot: join(directory, "added-dir-dry-out"),
+        dryRun: true,
+        environment: {},
+        integrityPolicy: "fail",
+        resourceScope,
+      });
+      expect(addedDirPlan.plan?.totals).toMatchObject({
+        planned_files: 1,
+        unresolved_entries: 0,
+      });
+      expect(addedDirPlan.limitations).toContain(
+        "Newly observed directory entry new-dir is not in the inventory snapshot.",
+      );
+      expect(addedDirPlan.limitations).toContain(
+        "Dry-run extraction validated destination admission, path collisions, and regular file reader entries without creating destination files or directories; live non-file reader entries were not fully reconciled with the inventory snapshot.",
+      );
+      expect(addedDirPlan.limitations).not.toContain(
+        "Dry-run extraction validated destination admission and reader entries and classified destination path collisions and length limits with unresolved entries without creating destination files or directories.",
+      );
+    } finally {
+      addedCloseSpy.mockRestore();
+    }
   } finally {
     await resourceScope.close();
   }
@@ -1330,6 +1369,45 @@ it("revalidates unpacked ASAR companion files during dry-run planning", async ()
     } finally {
       closeSpy.mockRestore();
     }
+    const mismatchArchive = join(directory, "mismatch.asar");
+    const overLimitEntryName = `${"m".repeat(256)}.js`;
+    const mismatchPayload = Buffer.from("mismatch-payload");
+    const mismatchAsar = Buffer.concat([
+      asarHeaderBytes(
+        JSON.stringify({
+          files: {
+            [overLimitEntryName]: {
+              size: mismatchPayload.byteLength,
+              offset: "0",
+              integrity: {
+                algorithm: "SHA256",
+                hash: "0".repeat(64),
+                blockSize: 4194304,
+                blocks: ["0".repeat(64)],
+              },
+            },
+          },
+        }),
+      ),
+      mismatchPayload,
+    ]);
+    await writeFile(mismatchArchive, mismatchAsar);
+    const mismatchPlan = await extractArtifact({
+      inputPath: mismatchArchive,
+      inputFormat: "asar",
+      outputRoot: join(directory, "mismatch-dry-out"),
+      dryRun: true,
+      environment: {},
+      integrityPolicy: "record-and-continue",
+      resourceScope,
+    });
+    expect(mismatchPlan.plan?.totals).toMatchObject({
+      planned_files: 0,
+      unresolved_entries: 1,
+    });
+    expect(mismatchPlan.limitations).toContain(
+      "1 selected file(s) contradict declared integrity metadata; their bytes are observed-untrusted.",
+    );
   } finally {
     await resourceScope.close();
   }
