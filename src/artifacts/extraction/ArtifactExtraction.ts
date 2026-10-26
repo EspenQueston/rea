@@ -180,33 +180,15 @@ export const materializeArtifactInventoryInScope = async (
       input.inputPath,
       `Godot PCK directory is ${containerMetadata.directory_status}; its complete contents cannot be extracted`,
     );
+  const isExposedByActiveReader = exposedByActiveReaderFilter(
+    snapshot.occurrences,
+  );
   const selectedOccurrences = snapshot.occurrences.filter(
     (occurrence) =>
       (occurrence.entry_kind === "file" || occurrence.entry_kind === "slice") &&
       occurrence.logical_path !== ".",
   );
-  const regularPaths = new Set(
-    selectedOccurrences.map(({ logical_path: path }) => path),
-  );
-  const directoryPaths = new Set(
-    snapshot.occurrences
-      .filter(({ entry_kind }) => entry_kind === "directory")
-      .map(({ logical_path }) => logical_path),
-  );
-  const activeOccurrences = selectedOccurrences.filter(({ logical_path }) => {
-    // Nested members remain represented by their containing regular file;
-    // only entries exposed by the active reader are materialized.
-    let path = logical_path;
-    for (
-      let slash = path.lastIndexOf("/");
-      slash >= 0;
-      slash = path.lastIndexOf("/")
-    ) {
-      path = path.slice(0, slash);
-      if (regularPaths.has(path) && !directoryPaths.has(path)) return false;
-    }
-    return true;
-  });
+  const activeOccurrences = selectedOccurrences.filter(isExposedByActiveReader);
   const neededNodes = new Set(
     activeOccurrences.map(({ artifact_id: id }) => id),
   );
@@ -267,6 +249,40 @@ export const materializeArtifactInventoryInScope = async (
     signal,
     zipSource,
   });
+};
+
+const exposedByActiveReaderFilter = (
+  occurrences: readonly ArtifactOccurrence[],
+): ((occurrence: ArtifactOccurrence) => boolean) => {
+  const regularPaths = new Set(
+    occurrences
+      .filter(
+        (occurrence) =>
+          (occurrence.entry_kind === "file" ||
+            occurrence.entry_kind === "slice") &&
+          occurrence.logical_path !== ".",
+      )
+      .map(({ logical_path }) => logical_path),
+  );
+  const directoryPaths = new Set(
+    occurrences
+      .filter(({ entry_kind }) => entry_kind === "directory")
+      .map(({ logical_path }) => logical_path),
+  );
+  return ({ logical_path }) => {
+    // Nested members remain represented by their containing regular file;
+    // only entries exposed by the active reader are traversed.
+    let path = logical_path;
+    for (
+      let slash = path.lastIndexOf("/");
+      slash >= 0;
+      slash = path.lastIndexOf("/")
+    ) {
+      path = path.slice(0, slash);
+      if (regularPaths.has(path) && !directoryPaths.has(path)) return false;
+    }
+    return true;
+  };
 };
 
 interface SelectedOccurrence {
@@ -543,25 +559,50 @@ const planSelectedEntries = async ({
     readonly selectedItem: SelectedOccurrence;
     readonly destinationPath: string;
   }[] = [];
-  const inventoriedNonFile = new Map(
-    inventory.occurrences
-      .filter(
-        (occurrence) =>
-          occurrence.logical_path !== "." &&
-          (occurrence.entry_kind === "directory" ||
-            occurrence.entry_kind === "symlink" ||
-            occurrence.entry_kind === "metadata"),
-      )
-      .map((occurrence) => [occurrence.logical_path, occurrence] as const),
+  const isExposedByActiveReader = exposedByActiveReaderFilter(
+    inventory.occurrences,
   );
-  const observedNonFile = new Set<string>();
+  const inventoriedNonFileByPath = new Map<string, ArtifactOccurrence[]>();
+  for (const occurrence of inventory.occurrences) {
+    if (
+      occurrence.logical_path === "." ||
+      (occurrence.entry_kind !== "directory" &&
+        occurrence.entry_kind !== "symlink" &&
+        occurrence.entry_kind !== "metadata") ||
+      !isExposedByActiveReader(occurrence)
+    )
+      continue;
+    const bucket = inventoriedNonFileByPath.get(occurrence.logical_path);
+    if (bucket === undefined)
+      inventoriedNonFileByPath.set(occurrence.logical_path, [occurrence]);
+    else bucket.push(occurrence);
+  }
+  const matchedNonFileOccurrenceIds = new Set<string>();
+  const unresolvedByOccurrenceId = new Map<string, string>();
   const nonFileMismatches: string[] = [];
   for await (const entry of reader.entries(signal, traversal)) {
     const path = normalizeArtifactPath(entry.path);
     readerRegistry.add(path, entry.kind);
     if (entry.kind !== "file" && entry.kind !== "slice") {
-      observedNonFile.add(path);
-      if (!inventoriedNonFile.has(path)) {
+      const candidates = inventoriedNonFileByPath.get(path);
+      const exactMatch = candidates?.find(
+        (candidate) =>
+          candidate.entry_kind === entry.kind &&
+          !matchedNonFileOccurrenceIds.has(candidate.occurrence_id),
+      );
+      if (exactMatch !== undefined) {
+        matchedNonFileOccurrenceIds.add(exactMatch.occurrence_id);
+      } else if (candidates !== undefined && candidates.length > 0) {
+        const unmatched =
+          candidates.find(
+            (candidate) =>
+              !matchedNonFileOccurrenceIds.has(candidate.occurrence_id),
+          ) ?? candidates[0]!;
+        matchedNonFileOccurrenceIds.add(unmatched.occurrence_id);
+        const reason = `Inventoried ${unmatched.entry_kind} entry ${path} was observed as ${entry.kind} by the live reader.`;
+        unresolvedByOccurrenceId.set(unmatched.occurrence_id, reason);
+        nonFileMismatches.push(reason);
+      } else {
         nonFileMismatches.push(
           `Newly observed ${entry.kind} entry ${path} is not in the inventory snapshot.`,
         );
@@ -610,14 +651,15 @@ const planSelectedEntries = async ({
       "integrity",
       `Inventoried regular artifact entries were not materialized: ${[...byPath.keys()].sort(compareUnicodeCodePoints).join(", ")}`,
     );
-  for (const [path, occurrence] of inventoriedNonFile) {
-    if (!observedNonFile.has(path)) {
-      nonFileMismatches.push(
-        `Inventoried ${occurrence.entry_kind} entry ${path} was not observed by the live reader.`,
-      );
+  for (const occurrences of inventoriedNonFileByPath.values()) {
+    for (const occurrence of occurrences) {
+      if (!matchedNonFileOccurrenceIds.has(occurrence.occurrence_id)) {
+        const reason = `Inventoried ${occurrence.entry_kind} entry ${occurrence.logical_path} was not observed by the live reader.`;
+        unresolvedByOccurrenceId.set(occurrence.occurrence_id, reason);
+        nonFileMismatches.push(reason);
+      }
     }
   }
-  const unresolvedByOccurrenceId = new Map<string, string>();
   const limitations: string[] = [];
   let hasCaseLimitation = false;
   let hasOverLimitLimitation = false;
@@ -728,6 +770,22 @@ const createDryRunPlan = (
         status: "planned",
         reason: null,
         observed_bytes: selectedItem.node.size,
+        declared_bytes: occurrence.declared_size,
+      });
+      continue;
+    }
+    const unresolvedNonFileReason = unresolvedCaseReasons.get(
+      occurrence.occurrence_id,
+    );
+    if (unresolvedNonFileReason !== undefined) {
+      unresolvedEntries += 1;
+      entries.push({
+        occurrence_id: occurrence.occurrence_id,
+        logical_path: occurrence.logical_path,
+        entry_kind: occurrence.entry_kind,
+        status: "unresolved",
+        reason: unresolvedNonFileReason,
+        observed_bytes: null,
         declared_bytes: occurrence.declared_size,
       });
       continue;
@@ -933,7 +991,8 @@ const createExtractionResult = (
         ),
       ),
       dryRun
-        ? unresolvedPlan.byOccurrenceId.size === 0
+        ? unresolvedPlan.byOccurrenceId.size === 0 &&
+          unresolvedPlan.limitations.length === 0
           ? "Dry-run extraction validated destination admission, path collisions, and reader entries without creating destination files or directories."
           : "Dry-run extraction validated destination admission and reader entries and classified destination path collisions and length limits with unresolved entries without creating destination files or directories."
         : traversal.status === "complete"

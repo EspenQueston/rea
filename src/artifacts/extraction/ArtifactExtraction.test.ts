@@ -574,6 +574,51 @@ it("reconciles non-file directory and symlink entries against the inventory snap
     expect(stablePlan.limitations).not.toContain(
       "Non-file inventory entries were not fully reconciled with the live reader; affected directory, symlink, and metadata facts remain unresolved.",
     );
+
+    const mutatedSource = join(directory, "mutated-source");
+    await mkdir(join(mutatedSource, "empty-dir"), { recursive: true });
+    await writeFile(join(mutatedSource, "alpha.txt"), "alpha");
+    const originalClose = DirectoryArtifactReader.prototype.close;
+    let inventoryClosed = false;
+    const closeSpy = vi
+      .spyOn(DirectoryArtifactReader.prototype, "close")
+      .mockImplementation(async function (this: DirectoryArtifactReader) {
+        await originalClose.call(this);
+        if (inventoryClosed) return;
+        inventoryClosed = true;
+        await rm(join(mutatedSource, "empty-dir"), { recursive: true });
+        await symlink("alpha.txt", join(mutatedSource, "empty-dir"));
+      });
+    try {
+      const kindMismatchPlan = await extractArtifact({
+        inputPath: mutatedSource,
+        inputFormat: "asar",
+        outputRoot: join(directory, "kind-mismatch-dry-out"),
+        dryRun: true,
+        environment: {},
+        integrityPolicy: "fail",
+        resourceScope,
+      });
+      expect(kindMismatchPlan.limitations).toContain(
+        "Inventoried directory entry empty-dir was observed as symlink by the live reader.",
+      );
+      expect(kindMismatchPlan.limitations).toContain(
+        "Non-file inventory entries were not fully reconciled with the live reader; affected directory, symlink, and metadata facts remain unresolved.",
+      );
+      expect(
+        kindMismatchPlan.plan?.entries.find(
+          ({ logical_path }) => logical_path === "empty-dir",
+        ),
+      ).toMatchObject({
+        logical_path: "empty-dir",
+        entry_kind: "directory",
+        status: "unresolved",
+        reason:
+          "Inventoried directory entry empty-dir was observed as symlink by the live reader.",
+      });
+    } finally {
+      closeSpy.mockRestore();
+    }
   } finally {
     await resourceScope.close();
   }
@@ -950,9 +995,13 @@ it("retains observed_bytes on unsupported nested ASAR members without adding the
     asarHeaderBytes(
       JSON.stringify({
         files: {
-          "main.js": {
-            size: nestedPayload.byteLength,
-            offset: "0",
+          subdir: {
+            files: {
+              "main.js": {
+                size: nestedPayload.byteLength,
+                offset: "0",
+              },
+            },
           },
         },
       }),
@@ -976,7 +1025,8 @@ it("retains observed_bytes on unsupported nested ASAR members without adding the
       ({ logical_path }) => logical_path === "resources/app.asar",
     );
     const nestedMemberEntry = planned.plan?.entries.find(
-      ({ logical_path }) => logical_path === "resources/app.asar/main.js",
+      ({ logical_path }) =>
+        logical_path === "resources/app.asar/subdir/main.js",
     );
     expect(containerEntry).toMatchObject({
       logical_path: "resources/app.asar",
@@ -986,7 +1036,7 @@ it("retains observed_bytes on unsupported nested ASAR members without adding the
       declared_bytes: nestedAsar.byteLength,
     });
     expect(nestedMemberEntry).toMatchObject({
-      logical_path: "resources/app.asar/main.js",
+      logical_path: "resources/app.asar/subdir/main.js",
       entry_kind: "file",
       status: "unsupported",
       observed_bytes: nestedPayload.byteLength,
@@ -994,11 +1044,14 @@ it("retains observed_bytes on unsupported nested ASAR members without adding the
     });
     expect(planned.plan?.totals).toMatchObject({
       planned_files: 1,
-      unsupported_entries: 2,
+      unsupported_entries: 3,
       unresolved_entries: 0,
       observed_bytes_estimate: nestedAsar.byteLength,
       declared_bytes_estimate: nestedAsar.byteLength,
     });
+    expect(planned.limitations).not.toContain(
+      "Non-file inventory entries were not fully reconciled with the live reader; affected directory, symlink, and metadata facts remain unresolved.",
+    );
   } finally {
     await resourceScope.close();
   }
