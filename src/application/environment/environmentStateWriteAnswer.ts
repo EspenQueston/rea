@@ -43,6 +43,7 @@ import {
   collectionMatch,
   decodedSegment,
   isObject,
+  pointerTokens,
   scalarText,
   type JsonObject,
   type StateEntity,
@@ -375,7 +376,18 @@ export const writeAnswer = (
                     rule.rule === "clock" ? [rule.field] : [],
                   )
                 : [],
-            unloaded: plan.observation?.read?.unloaded ?? [],
+            // A member the call sent and the plan stores as sent is answered as sent; any other keeps the recorded answer.
+            unloaded: (plan.observation?.read?.unloaded ?? []).filter(
+              (path) => {
+                const [field] = pointerTokens(path);
+                return !(
+                  rendered.sent?.includes(field!) === true &&
+                  plan.rules.some(
+                    (rule) => rule.field === field && rule.rule === "echo",
+                  )
+                );
+              },
+            ),
           },
           optionalFields(plan),
         );
