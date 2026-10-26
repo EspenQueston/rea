@@ -20,10 +20,19 @@ import { dshDocument } from "./DshCordisPatch.js";
 import type { McpToolTimeoutInputs } from "../mcpStartupPolicy.js";
 import type { AnalysisProviderSelector } from "../contracts/providerSelection.js";
 
-export type ProviderRequestBudgetResolver = (
-  analysisProvider: AnalysisProviderSelector,
-  environment: Readonly<Record<string, string>>,
-) => Promise<Result<number | undefined, ConfigurationError>>;
+export interface ProviderRequestBudgetResolver {
+  (
+    analysisProvider: AnalysisProviderSelector,
+    environment: Readonly<Record<string, string>>,
+  ): Promise<Result<number | undefined, ConfigurationError>>;
+  /**
+   * Environment settings this resolver may read. Unresolved expressions in
+   * these settings block budget derivation; expressions in other settings
+   * stay preserved. An omitted set keeps the fail-closed whole-environment
+   * gate: every unresolved expression blocks the budget.
+   */
+  readonly budgetSettings?: ReadonlySet<string>;
+}
 
 export interface ClientRegistrationEnvironmentDetails {
   readonly values: Readonly<Record<string, string>>;
@@ -144,9 +153,14 @@ export const clientRegistrationEnvironmentDetailsWithBudget = async (
     platform,
   );
   if (!details.ok) return details;
+  // The budget gate stays fail-closed: settings the resolver may read must be
+  // literals, and an undeclared read set keeps every unresolved expression
+  // blocking, because an unreadable budget cannot be treated as absent.
+  const budgetSettings = resolveProviderRequestBudget?.budgetSettings;
   const unresolved = [...details.value.unresolvedSettings].filter(
     (setting) =>
-      resolveProviderRequestBudget !== undefined ||
+      (resolveProviderRequestBudget !== undefined &&
+        (budgetSettings === undefined || budgetSettings.has(setting))) ||
       TIMEOUT_INPUT_SETTINGS.has(setting),
   );
   if (details.value.timeoutInputs === undefined || unresolved.length > 0)

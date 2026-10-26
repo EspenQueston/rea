@@ -1240,6 +1240,11 @@ describe("DeepSeek Harness entry ownership", () => {
 });
 
 describe("DeepSeek Harness budget resolver expressions", () => {
+  const budgetResolver = (budgetMs: number) =>
+    Object.assign(async () => ok(budgetMs), {
+      budgetSettings: new Set(["REA_IDA_MCP_CONFIG"]),
+    });
+
   it("keeps an environment expression while a budget resolver is supplied", async () => {
     const { home, client } = await harnessClient();
     await writeFile(
@@ -1256,26 +1261,86 @@ describe("DeepSeek Harness budget resolver expressions", () => {
           GHIDRA_INSTALL_DIR: !!js process.env.GHIDRA_INSTALL_DIR
 `,
     );
-    const budgetResolver = async () => ok(45_000);
-    // A supplied budget resolver still classifies the row instead of
-    // rejecting the expression-backed environment, because the deadline
-    // derivation only needs the timeout inputs as literals.
+    const resolver = budgetResolver(45_000);
+    // A declared read set keeps the budget gate fail-closed only for settings
+    // the resolver may read, so the unrelated expression stays preserved and
+    // the row is still classified instead of rejected.
     expect(
       await readClientRegistrationStatuses(home, undefined, {
         platform: process.platform,
         environment: {},
-        resolveProviderRequestBudget: budgetResolver,
+        resolveProviderRequestBudget: resolver,
       }),
     ).toMatchObject([
       expect.objectContaining({ client: "dsh", state: "stale" }),
     ]);
     expect(
-      (await configureClientConfiguration(client, {}, command, budgetResolver))
+      (await configureClientConfiguration(client, {}, command, resolver))
         .status,
     ).toBe("configured");
     const text = await readFile(client.configPath, "utf8");
     expect(text).toContain("!!js process.env.GHIDRA_INSTALL_DIR");
     expect(text).not.toContain("stale-launcher");
+  });
+
+  it("derives the declared provider request budget into the written timeout", async () => {
+    const { home, client } = await harnessClient();
+    await writeFile(
+      client.configPath,
+      `- insert:
+    - id: rea-mcp
+      name: "@deepseek-ai/dsh-mcp-client"
+      config:
+        serverName: rea
+        transport: stdio
+        command: stale-launcher
+        args: [mcp]
+`,
+    );
+    const resolver = budgetResolver(900_000);
+    expect(
+      (await configureClientConfiguration(client, {}, command, resolver))
+        .status,
+    ).toBe("configured");
+    // The 900000 ms upstream request budget joins the allowance instead of
+    // leaving the written deadline at the startup-only estimate.
+    expect(
+      cordisPatches(await readFile(client.configPath, "utf8"))[0]?.insert?.[0]
+        ?.config?.toolCallTimeoutMs,
+    ).toBe(1_020_000);
+    expect(
+      await readClientRegistrationStatuses(home, undefined, {
+        platform: process.platform,
+        environment: {},
+        resolveProviderRequestBudget: resolver,
+      }),
+    ).toMatchObject([
+      expect.objectContaining({ client: "dsh", state: "aligned" }),
+    ]);
+  });
+
+  it("fails closed when a budget-read setting stays an expression", async () => {
+    const { client } = await harnessClient();
+    const initial = `- insert:
+    - id: rea-mcp
+      name: "@deepseek-ai/dsh-mcp-client"
+      config:
+        serverName: rea
+        transport: stdio
+        command: stale-launcher
+        args: [mcp]
+        env:
+          REA_IDA_MCP_CONFIG: !!js process.env.REA_IDA_MCP_CONFIG
+`;
+    await writeFile(client.configPath, initial);
+    const resolver = budgetResolver(900_000);
+    // The resolver may read REA_IDA_MCP_CONFIG, so an unresolved expression
+    // there blocks budget derivation instead of treating it as absent.
+    expect(
+      (await configureClientConfiguration(client, {}, command, resolver))
+        .status,
+    ).toBe("failed");
+    expect(await readFile(client.configPath, "utf8")).toBe(initial);
   });
 });
 

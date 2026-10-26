@@ -269,11 +269,10 @@ export const readClientRegistrationInspections = async (
         continue;
       }
       const registration = parsedRegistration.value;
-      // dsh keeps unevaluated Cordis expressions for settings unrelated to the
-      // deadline, so it never gates on the provider request budget: only the
-      // timeout inputs require literals.
       const registrationEnvironment =
-        client.name === "kimi" || client.name === "codex"
+        client.name === "kimi" ||
+        client.name === "codex" ||
+        client.name === "dsh"
           ? await clientRegistrationEnvironmentDetailsWithBudget(
               parsed,
               {},
@@ -281,15 +280,7 @@ export const readClientRegistrationInspections = async (
               options.resolveProviderRequestBudget,
               options.platform,
             )
-          : client.name === "dsh"
-            ? await clientRegistrationEnvironmentDetailsWithBudget(
-                parsed,
-                {},
-                "effective",
-                undefined,
-                options.platform,
-              )
-            : undefined;
+          : undefined;
       if (
         registrationEnvironment !== undefined &&
         !registrationEnvironment.ok
