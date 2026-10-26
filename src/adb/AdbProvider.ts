@@ -105,6 +105,7 @@ import {
   type AdbBinarySelection,
   type AdbClientIdentity,
 } from "./AdbConfiguration.js";
+import { snapshotEnvironment } from "../process/snapshotEnvironment.js";
 import {
   displayDevicePath,
   parseAdbDevicesOutput,
@@ -891,7 +892,7 @@ export class AdbProvider {
   #outputCleanupPromise: Promise<void> | undefined;
 
   constructor(options: AdbProviderOptions = {}) {
-    this.environment = options.environment ?? process.env;
+    this.environment = snapshotEnvironment(options.environment ?? process.env);
     this.#createRuntimeRoot =
       options.createRuntimeRoot ??
       ((rootOptions) => PrivateRuntimeRoot.create(rootOptions));
@@ -1378,7 +1379,7 @@ export class AdbProvider {
         {
           device: "serial" in request.input ? request.input.serial : operation,
         },
-        selection.binary,
+        selection,
         adbArguments(
           "serial" in request.input ? request.input.serial : undefined,
           ["shell", ...arguments_],
@@ -1398,7 +1399,7 @@ export class AdbProvider {
         const ran = await runAdb(
           operation,
           { device: "adb-devices" },
-          selection.binary,
+          selection,
           ["devices", "-l"],
           {
             timeoutMs: DEVICES_TIMEOUT_MS,
@@ -1435,7 +1436,7 @@ export class AdbProvider {
         const ran = await runAdb(
           operation,
           { device: request.input.serial },
-          selection.binary,
+          selection,
           adbArguments(request.input.serial, ["shell", "getprop"]),
           {
             timeoutMs: SHELL_TIMEOUT_MS,
@@ -1670,7 +1671,7 @@ export class AdbProvider {
         const ran = await runAdbCapture(
           operation,
           { device: request.input.serial, path: request.input.device_path },
-          selection.binary,
+          selection,
           adbArguments(request.input.serial, [
             "shell",
             "sh",
@@ -1989,7 +1990,7 @@ export class AdbProvider {
     const paths = await runAdb(
       operation,
       { device: serial },
-      selection.binary,
+      selection,
       adbArguments(serial, ["shell", "pm", "path", packageName]),
       {
         timeoutMs: PM_PATH_TIMEOUT_MS,
@@ -2214,7 +2215,7 @@ export class AdbProvider {
           path: entry.device_path,
           localPath,
         },
-        selection.binary,
+        selection,
         adbArguments(serial, ["pull", entry.device_path, localPath]),
         { timeoutMs: PULL_TIMEOUT_MS, maxOutputBytes: PULL_MAX_OUTPUT_BYTES },
         signal,
@@ -2408,7 +2409,7 @@ export class AdbProvider {
         path: input.device_path,
         localPath,
       },
-      selection.binary,
+      selection,
       adbArguments(input.serial, ["pull", input.device_path, localPath]),
       { timeoutMs: PULL_TIMEOUT_MS, maxOutputBytes: PULL_MAX_OUTPUT_BYTES },
       signal,
@@ -2513,7 +2514,7 @@ export class AdbProvider {
           operation,
           input.serial,
           input.device_path,
-          selection.binary,
+          selection,
           { timeoutMs: SETTINGS_TIMEOUT_MS, maxOutputBytes: 1024 },
           signal,
         );
@@ -2525,7 +2526,7 @@ export class AdbProvider {
           operation,
           input.serial,
           devicePath,
-          selection.binary,
+          selection,
           { timeoutMs: SETTINGS_TIMEOUT_MS, maxOutputBytes: 1024 },
           signal,
         );
@@ -2545,7 +2546,7 @@ export class AdbProvider {
             path: input.device_path,
             localPath: digest.path,
           },
-          selection.binary,
+          selection,
           adbArguments(input.serial, ["push", digest.path, input.device_path]),
           { timeoutMs: PULL_TIMEOUT_MS, maxOutputBytes: PULL_MAX_OUTPUT_BYTES },
           signal,
@@ -2586,7 +2587,7 @@ export class AdbProvider {
         const deviceDigest = await runAdb(
           operation,
           { device: input.serial, path: devicePath },
-          selection.binary,
+          selection,
           adbArguments(input.serial, ["shell", "sha256sum", devicePath]),
           { timeoutMs: SHELL_TIMEOUT_MS, maxOutputBytes: 1024 },
           signal,
@@ -2717,7 +2718,7 @@ export class AdbProvider {
         const installed = await runAdb(
           operation,
           { device: input.serial, path: apkPath, localPath: digest.path },
-          selection.binary,
+          selection,
           adbArguments(input.serial, [
             "install",
             ...(input.replace ? ["-r"] : []),
@@ -2789,7 +2790,7 @@ export class AdbProvider {
     const uninstalled = await runAdb(
       operation,
       { device: input.serial },
-      selection.binary,
+      selection,
       adbArguments(input.serial, [
         "shell",
         "pm",
@@ -2856,7 +2857,7 @@ export class AdbProvider {
     const resolved = await runAdb(
       operation,
       { device: input.serial },
-      selection.binary,
+      selection,
       adbArguments(input.serial, [
         "shell",
         "cmd",
@@ -2976,7 +2977,7 @@ export class AdbProvider {
     const started = await runAdb(
       operation,
       { device: serial },
-      selection.binary,
+      selection,
       adbArguments(serial, ["shell", "am", "start", "-W", ...arguments_]),
       { timeoutMs: SHELL_TIMEOUT_MS, maxOutputBytes: PM_PATH_MAX_OUTPUT_BYTES },
       signal,
@@ -3064,7 +3065,7 @@ export class AdbProvider {
     const stopped = await runAdb(
       operation,
       { device: input.serial },
-      selection.binary,
+      selection,
       adbArguments(input.serial, ["shell", "am", "force-stop", input.package]),
       { timeoutMs: SHELL_TIMEOUT_MS, maxOutputBytes: PM_PATH_MAX_OUTPUT_BYTES },
       signal,
@@ -3207,7 +3208,7 @@ export class AdbProvider {
     const captured = await runAdbCapture(
       operation,
       { device: input.serial },
-      selection.binary,
+      selection,
       adbArguments(input.serial, ["exec-out", "screencap", "-p"]),
       {
         timeoutMs: SCREEN_TIMEOUT_MS,
@@ -3361,7 +3362,7 @@ export class AdbProvider {
         const collected = await runAdb(
           operation,
           { device: input.serial },
-          selection.binary,
+          selection,
           adbArguments(input.serial, ["bugreport", stagingDirectory]),
           {
             timeoutMs: BUGREPORT_TIMEOUT_MS,
