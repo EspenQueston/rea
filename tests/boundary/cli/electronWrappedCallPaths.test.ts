@@ -896,6 +896,10 @@ const descriptorCases: readonly (readonly [
     "{value" + descriptorSender.slice("function".length) + "}",
     true,
   ],
+  ["patch-after-sender", `{value:${descriptorSender}}`, true],
+  ["negative-prototype", `{__proto__:-1,value:${descriptorSender}}`, true],
+  ["bigint-prototype", `{__proto__:-1n,value:${descriptorSender}}`, true],
+  ["namespaced-noop", `{value:${descriptorNoop}}`, true],
   ["patch-after", `{value:${descriptorNoop}}`, false],
   ["outer-patch-after", `{value:${descriptorNoop}}`, false],
   ["mutating-intrinsic", `{value:${descriptorSender}}`, false],
@@ -1023,10 +1027,10 @@ cliTest.for(["CLI", "stdio MCP"] as const)(
           2(module) { module.exports = require("electron"); },
           5(module, exports, load) {
             const electron = load(2);
-            ${name === "patched-intrinsic" ? "Object.defineProperty=()=>{};" : name === "mutating-intrinsic" ? "Object.defineProperty=(target,key)=>{target[key]=" + descriptorNoop + ";};" : ""}
-            exports.sender = ${["accessor-noop", "patched-intrinsic", "patch-after", "outer-patch-after", "mutating-intrinsic"].includes(name) ? descriptorSender : descriptorNoop};
+            ${name === "namespaced-noop" ? "globalThis.Object.defineProperty=()=>{};" : name === "patched-intrinsic" ? "Object.defineProperty=()=>{};" : name === "mutating-intrinsic" ? "Object.defineProperty=(target,key)=>{target[key]=" + descriptorNoop + ";};" : ""}
+            exports.sender = ${["accessor-noop", "namespaced-noop", "patched-intrinsic", "patch-after", "outer-patch-after", "mutating-intrinsic"].includes(name) ? descriptorSender : descriptorNoop};
             Object.defineProperty(exports, "sender", ${descriptor});
-            ${name === "patch-after" ? "Object.defineProperty=()=>{};" : ""}
+            ${name.startsWith("patch-after") ? "Object.defineProperty=()=>{};" : ""}
             function send(channel, ...args) { electron.ipcRenderer.send(channel, ...args); }
           },
           9(module, exports, load) {

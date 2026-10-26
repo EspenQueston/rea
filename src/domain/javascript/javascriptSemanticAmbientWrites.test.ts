@@ -277,6 +277,21 @@ it.each([
     ["unknown"],
   ],
   [
+    "a later write within one activation",
+    "function run(){inspect(Object.defineProperty);Object.defineProperty=()=>{};}",
+    ["unmodified"],
+  ],
+  [
+    "a namespaced replacement read directly",
+    "globalThis.Object.defineProperty=()=>{};inspect(Object.defineProperty);",
+    ["replacement"],
+  ],
+  [
+    "a direct replacement read through the namespace",
+    "Object.defineProperty=()=>{};inspect(globalThis.Object.defineProperty);",
+    ["replacement"],
+  ],
+  [
     "a namespaced global",
     "inspect(globalThis.Object.defineProperty);globalThis.Object.defineProperty=()=>{};inspect(globalThis.Object.defineProperty);",
     ["unmodified", "replacement"],

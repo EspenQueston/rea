@@ -19,6 +19,7 @@ import { isImportMetaUrl } from "./javascriptStaticAnalysisHelpers.js";
 import {
   semanticBindingAtRead,
   semanticEffectTiming,
+  semanticReadPrecedesEffectWithinActivation,
   semanticDefiniteEffectPrecedesReference,
 } from "./javascriptSemanticMutationInitializers.js";
 import {
@@ -880,7 +881,14 @@ export const createGlobalReferenceReader = (
     }
     if (effects.length === 0) return { status: "unknown" };
     const active = effects.filter(
-      (effect) => semanticEffectTiming(callee, effect.node, state) !== "after",
+      (effect) =>
+        semanticEffectTiming(callee, effect.node, state) !== "after" &&
+        (effect.node === undefined ||
+          !semanticReadPrecedesEffectWithinActivation(
+            callee,
+            effect.node,
+            state.parentsByNode,
+          )),
     );
     if (active.length === 0) return { status: "unmodified" };
     if (
@@ -896,7 +904,7 @@ export const createGlobalReferenceReader = (
       const write = effect.node;
       if (
         t.isAssignmentExpression(write, { operator: "=" }) &&
-        globalReferenceNamespace(write.left, state, path) === namespace &&
+        globalReferenceNamespace(write.left, state, path) !== undefined &&
         semanticDefiniteEffectPrecedesReference(
           write,
           callee,
