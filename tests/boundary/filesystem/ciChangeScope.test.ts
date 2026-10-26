@@ -739,6 +739,14 @@ it.each([
     { code: true, apple: true, package: false, runtime: false },
   ],
   [
+    "tests/process-global/dmgCancellationReason.test.ts",
+    { code: true, apple: true, package: false, runtime: false },
+  ],
+  [
+    "tests/boundary/providers/native/nativeDmgArtifactReader.test.ts",
+    { code: true, apple: true, package: false, runtime: false },
+  ],
+  [
     "scripts/verify/apple/example.mjs",
     { code: true, apple: true, package: false, runtime: false },
   ],

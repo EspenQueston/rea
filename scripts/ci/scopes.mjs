@@ -76,6 +76,8 @@ export const SCOPES = {
     "bridge/process/**",
     "scripts/verify/apple/**",
     "tests/acceptance/artifactDmgAttachmentRecoveryCli.test.ts",
+    "tests/boundary/providers/native/nativeDmgArtifactReader.test.ts",
+    "tests/process-global/dmgCancellationReason.test.ts",
     "tests/boundary/filesystem/installScript.test.ts",
     "tests/boundary/filesystem/nibNativeHierarchy.test.ts",
     "tests/boundary/filesystem/interfaceBuilderBundle.test.ts",
