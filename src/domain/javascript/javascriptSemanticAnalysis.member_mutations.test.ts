@@ -948,4 +948,27 @@ describe("results of methods on an escaped receiver", () => {
       value: 1,
     });
   });
+
+  it("does not prune escape paths when the settle budget is exhausted (#6127)", () => {
+    const branches = Array.from(
+      { length: 600 },
+      (_, i) => `if (cond${i}) x = { prop: { val: ${i} } };`,
+    ).join("\n");
+    const ir = analyzeJavaScriptSemantics(`
+      export function test(f) {
+        let x = { prop: { val: "init" } };
+        ${branches}
+        x.prop.val = "mutated";
+        const obj = { field: "initial" };
+        f(obj);
+        return obj.field;
+      }
+    `);
+    expect(ir.coverage.resourceLimits).toContain("alias-selections");
+    const callable = onlyCallable(ir, "test");
+    expect(callable.returnSites[0]?.value).not.toEqual({
+      status: "literal",
+      value: "initial",
+    });
+  });
 });

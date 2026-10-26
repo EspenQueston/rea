@@ -1332,8 +1332,10 @@ const observableMutationPaths = (
     // each collection only when it contains a fact or relationship.
     read === undefined ? {} : { read };
   let settleSteps = 0;
+  let settleBudgetExhausted = false;
   const chargeSettleBudget = (): boolean => {
     if (++settleSteps > SEMANTIC_MEMBER_MUTATION_TOTAL_STEPS_LIMIT) {
+      settleBudgetExhausted = true;
       state.valueResourceLimits.add("alias-selections");
       return false;
     }
@@ -1599,6 +1601,7 @@ const observableMutationPaths = (
     if (effect === "escape") {
       observer = project(observer, path);
       settle();
+      if (settleBudgetExhausted) return path;
       const origins = observer.origins;
       return origins === undefined ||
         origins.size === 0 ||
@@ -1606,6 +1609,7 @@ const observableMutationPaths = (
         ? null
         : path;
     }
+    if (settleBudgetExhausted) return path;
     if ((observer.origins?.size ?? 0) === 0)
       return path.length === 0 ? path : [null];
     for (let offset = 0; offset < path.length; offset++) {
@@ -1627,6 +1631,7 @@ const observableMutationPaths = (
     bindingId: string,
     prefix: PropertyPath,
   ): boolean => {
+    if (settleBudgetExhausted) return true;
     const key = JSON.stringify([bindingId, prefix]);
     const cached = repeated.get(key);
     if (cached !== undefined) return cached;
@@ -1636,6 +1641,10 @@ const observableMutationPaths = (
     while (observer !== undefined && prefix.length > 0) {
       observer = project(observer, prefix);
       settle();
+      if (settleBudgetExhausted) {
+        result = true;
+        break;
+      }
       if ((observer.origins?.size ?? 0) === 0) break;
       const signature = JSON.stringify(
         [...(observer.origins ?? [])]
