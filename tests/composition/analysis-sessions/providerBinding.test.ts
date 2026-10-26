@@ -128,45 +128,6 @@ describe("target-bound provider routing", () => {
     expect(beta.clients[0]?.closed).toBe(true);
   });
 
-  it("preserves bundle-root identity for artifact inventory operations", async () => {
-    const directory = await createTestTempDirectory("rea-provider-bundle-");
-    const target = join(directory, "Fixture.app");
-    const executable = join(target, "Fixture");
-    const infoPlist = join(target, "Info.plist");
-    await mkdir(target);
-    await writeFile(
-      infoPlist,
-      "<plist><dict><key>CFBundleExecutable</key><string>Fixture</string></dict></plist>",
-    );
-    await writeFile(executable, thinMach(0xfeedfacf, 0x0100000c));
-    const analysis = deepProvider("alpha");
-    const artifact = auxiliaryProvider("artifact", "inventory_artifact");
-    const session = selectableSession([analysis.provider], artifact);
-    onTestFinished(async () => {
-      await session.close();
-    });
-
-    expect((await session.open(target, { providerId: "alpha" })).ok).toBe(true);
-    expect(session.activeTarget()).toMatchObject({
-      path: await realpath(executable),
-      sourcePath: await realpath(target),
-      bundleInfoPlist: await realpath(infoPlist),
-    });
-    const result = await session.execute("inventory_artifact", {});
-    if (!result.ok) throw result.error;
-
-    expect(result).toMatchObject({
-      ok: true,
-      value: {
-        subject: {
-          path: target,
-          sha256: "f".repeat(64),
-          format: "directory",
-        },
-      },
-    });
-  });
-
   it("preserves the active client when a provider switch is cancelled while draining", async () => {
     const target = await databaseTarget();
     const alpha = deepProvider("alpha");
@@ -206,6 +167,45 @@ describe("target-bound provider routing", () => {
     expect(alpha.clients).toHaveLength(1);
     await session.close();
     expect(alpha.clients[0]?.closed).toBe(true);
+  });
+});
+
+it("preserves bundle-root identity for artifact inventory operations", async () => {
+  const directory = await createTestTempDirectory("rea-provider-bundle-");
+  const target = join(directory, "Fixture.app");
+  const executable = join(target, "Fixture");
+  const infoPlist = join(target, "Info.plist");
+  await mkdir(target);
+  await writeFile(
+    infoPlist,
+    "<plist><dict><key>CFBundleExecutable</key><string>Fixture</string></dict></plist>",
+  );
+  await writeFile(executable, thinMach(0xfeedfacf, 0x0100000c));
+  const analysis = deepProvider("alpha");
+  const artifact = auxiliaryProvider("artifact", "inventory_artifact");
+  const session = selectableSession([analysis.provider], artifact);
+  onTestFinished(async () => {
+    await session.close();
+  });
+
+  expect((await session.open(target, { providerId: "alpha" })).ok).toBe(true);
+  expect(session.activeTarget()).toMatchObject({
+    path: await realpath(executable),
+    sourcePath: await realpath(target),
+    bundleInfoPlist: await realpath(infoPlist),
+  });
+  const result = await session.execute("inventory_artifact", {});
+  if (!result.ok) throw result.error;
+
+  expect(result).toMatchObject({
+    ok: true,
+    value: {
+      subject: {
+        path: target,
+        sha256: "f".repeat(64),
+        format: "directory",
+      },
+    },
   });
 });
 
