@@ -181,22 +181,36 @@ try {
     { path: values.target, provider_id: "ghidra" },
     "open",
   );
-  if (values.expected === "mismatch") {
+  if (["mismatch", "stale"].includes(values.expected)) {
     phase = "mismatched-project";
-    const rejected = await client.callTool(
-      { name: "list_procedures", arguments: { detail: "summary" } },
-      { timeout: 900000, toolDefinition: definitions.get("list_procedures") },
-    );
+    const marker =
+      values.expected === "stale" ? await readFile(values.project) : undefined;
+    if (marker !== undefined)
+      await writeFile(
+        values.project,
+        Buffer.concat([marker, Buffer.from("\n")]),
+      );
+    let rejected;
+    try {
+      rejected = await client.callTool(
+        { name: "list_procedures", arguments: { detail: "summary" } },
+        { timeout: 900000, toolDefinition: definitions.get("list_procedures") },
+      );
+    } finally {
+      if (marker !== undefined) await writeFile(values.project, marker);
+    }
     assert.equal(rejected.isError, true);
     assert.match(
       JSON.stringify(rejected),
-      /imported-byte digest does not match/u,
+      values.expected === "stale"
+        ? /changed while being read|artifact.changed/iu
+        : /imported-byte digest does not match/u,
     );
     await writeFile(
       join(values.output, "rejection.json"),
       JSON.stringify(rejected),
     );
-    report.rejected_mismatch = true;
+    report[`rejected_${values.expected}`] = true;
   } else {
     const summary = await call(
       "list_procedures",
