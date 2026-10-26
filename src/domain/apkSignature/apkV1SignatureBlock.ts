@@ -24,9 +24,7 @@ export type ApkV1BlockError =
   | {
       readonly kind: "budget-exceeded";
       readonly resource:
-        | "v1-block-certificates"
-        | "v1-signer-infos"
-        | "asn1-elements";
+        "v1-block-certificates" | "v1-signer-infos" | "asn1-elements";
       readonly limit: number;
     };
 
@@ -189,13 +187,17 @@ const equalBytes = (a: Uint8Array, b: Uint8Array): boolean =>
  * is clear, and a leading 0xff is redundant while that bit is set. apksig
  * compares certificate serials as those integer values, not as raw contents.
  */
-const derIntegerContentsEqual = (left: Uint8Array, right: Uint8Array): boolean => {
+const derIntegerContentsEqual = (
+  left: Uint8Array,
+  right: Uint8Array,
+): boolean => {
   const minimal = (bytes: Uint8Array): Uint8Array => {
     let index = 0;
     while (index < bytes.length - 1) {
       const head = bytes[index] ?? 0;
       const nextHigh = ((bytes[index + 1] ?? 0) & 0x80) !== 0;
-      const redundant = (head === 0x00 && !nextHigh) || (head === 0xff && nextHigh);
+      const redundant =
+        (head === 0x00 && !nextHigh) || (head === 0xff && nextHigh);
       if (!redundant) break;
       index += 1;
     }
