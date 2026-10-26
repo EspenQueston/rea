@@ -3,7 +3,10 @@ import { mkdir, readFile, realpath, writeFile } from "node:fs/promises";
 import { join, sep } from "node:path";
 import { expect } from "vitest";
 
-import { NativeDmgArtifactReader } from "../../src/artifacts/NativeDmgArtifactReader.js";
+import {
+  NativeDmgArtifactReader,
+  DMG_EXISTING_ATTACHMENT_RECOVERY,
+} from "../../src/artifacts/NativeDmgArtifactReader.js";
 import { parseNativeDmgInfo } from "../../src/artifacts/NativeDmgOwnership.js";
 import { createTestTempDirectory } from "../fixtures/temporaryDirectory.js";
 import { cliTest } from "../support/cli/cliFixture.js";
@@ -87,9 +90,9 @@ cliTest.skipIf(process.platform !== "darwin")(
       expect(busy.json).toMatchObject({
         code: "artifact_operation_failed",
         category: "unavailable",
-        message: expect.stringContaining("existing attachment"),
+        message: DMG_EXISTING_ATTACHMENT_RECOVERY,
         remediation: {
-          action: expect.stringContaining("owner to release it when safe"),
+          action: DMG_EXISTING_ATTACHMENT_RECOVERY,
         },
         details: {
           reason: "unavailable",

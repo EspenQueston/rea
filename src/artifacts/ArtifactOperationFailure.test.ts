@@ -25,12 +25,12 @@ it.each(["capacity", "file-size", "memory"] as const)(
 );
 
 it("keeps producer-owned recovery through cleanup wrapping and public projection", () => {
+  const userMessage = "Caller-selected reader recovery";
   const failure = new ArtifactReaderFailure(
     "unavailable",
     "Exact command diagnostic",
     {
-      userMessage:
-        "Release the existing attachment through its owner when safe, then retry.",
+      userMessage,
     },
   );
   const wrapped = ArtifactReaderFailure.withCleanup(failure, {
@@ -40,8 +40,8 @@ it("keeps producer-owned recovery through cleanup wrapping and public projection
   const projected = projectAnalysisError(
     translateArtifactFailure("inspect_artifact", wrapped),
   );
-  expect(projected.message).toContain("Release the existing attachment");
-  expect(projected.remediation.action).toContain("owner when safe");
+  expect(projected.message).toBe(userMessage);
+  expect(projected.remediation.action).toBe(userMessage);
   expect(projected.details?.detail).toBe("Exact command diagnostic");
   expect(projected.details?.cleanup).toBeDefined();
 });

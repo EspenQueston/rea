@@ -7,10 +7,13 @@ import { createTestTempDirectory } from "../../tests/fixtures/temporaryDirectory
 import { scanCanonicalArtifactInventory } from "../../tests/fixtures/artifactInventory.js";
 import {
   NativeDmgArtifactReader,
+  DMG_EXISTING_ATTACHMENT_RECOVERY,
   type NativeDmgHost,
 } from "./NativeDmgArtifactReader.js";
 import { translateArtifactFailure } from "./ArtifactOperationFailure.js";
 import { projectAnalysisError } from "../domain/analysisErrorProjection.js";
+import { analysisErrorUserMessage } from "../domain/analysisErrorPresentation.js";
+import { ArtifactOperationError } from "../domain/artifactOperationError.js";
 
 it.each(["same", "other", "missing-path", "no-path", "empty-group"] as const)(
   "retains DMG root facts and limits existing-attachment guidance to a resolved image path: %s",
@@ -106,12 +109,15 @@ it.each(["same", "other", "missing-path", "no-path", "empty-group"] as const)(
       expect.objectContaining({ kind: "artifact-inventory" }),
     );
     if (listed === "same") {
-      expect(projected.message).toContain("existing attachment");
-      expect(projected.remediation.action).toContain("owner");
-      expect(projected.remediation.action).toContain("when safe");
+      expect(projected.message).toBe(DMG_EXISTING_ATTACHMENT_RECOVERY);
+      expect(projected.remediation.action).toBe(
+        DMG_EXISTING_ATTACHMENT_RECOVERY,
+      );
     } else {
       expect(projected.message).toBe(
-        "Artifact processing is unavailable. Review the reported availability reason and resolve that condition before retrying.",
+        analysisErrorUserMessage(
+          new ArtifactOperationError("inspect_artifact", "unavailable"),
+        ),
       );
     }
     expect(calls).not.toContain("detach");
