@@ -459,11 +459,41 @@ const MAX_PORTABLE_NAME_BYTES = 255;
 const MAX_PORTABLE_POSIX_PATH_BYTES = 1023;
 const MAX_PORTABLE_WIN32_PATH_LENGTH = 259;
 
-const overLimitDestinationReason = (
+const probeDestinationComponentLimit = async (
+  destinationParent: string,
+  segment: string,
+  cache: Map<string, string | null>,
+  signal?: AbortSignal,
+): Promise<string | null> => {
+  const cached = cache.get(segment);
+  if (cached !== undefined) return cached;
+  abortIfNeeded(signal);
+  const probeFailure = await lstat(join(destinationParent, segment)).then(
+    () => null,
+    (cause: unknown) => {
+      if (cause instanceof Error && "code" in cause && cause.code === "ENOENT")
+        return null;
+      return cause instanceof Error &&
+        "code" in cause &&
+        typeof cause.code === "string"
+        ? cause.code
+        : cause instanceof Error
+          ? cause.message
+          : String(cause);
+    },
+  );
+  cache.set(segment, probeFailure);
+  return probeFailure;
+};
+
+const overLimitDestinationReason = async (
   resolvedOutputRoot: string,
+  destinationParent: string,
   destinationPath: string,
   platform: NodeJS.Platform,
-): string | undefined => {
+  componentLimitCache: Map<string, string | null>,
+  signal?: AbortSignal,
+): Promise<string | undefined> => {
   const segments = destinationPath.split("/");
   for (const segment of segments) {
     const byteLength = Buffer.byteLength(segment, "utf8");
@@ -472,6 +502,14 @@ const overLimitDestinationReason = (
       segment.length > MAX_PORTABLE_NAME_BYTES
     )
       return `Destination filesystem component length limit (such as 255-byte NAME_MAX) is not observed without creating files; segment of ${String(byteLength)} UTF-8 bytes in ${destinationPath} remains unresolved during dry-run.`;
+    const probeFailure = await probeDestinationComponentLimit(
+      destinationParent,
+      segment,
+      componentLimitCache,
+      signal,
+    );
+    if (probeFailure !== null)
+      return `Destination filesystem component length probe on ${destinationParent} rejected or could not verify segment of ${String(byteLength)} UTF-8 bytes in ${destinationPath} (${probeFailure}); path remains unresolved during dry-run.`;
   }
   const fullDestination = join(resolvedOutputRoot, ...segments);
   if (
@@ -669,11 +707,16 @@ const planSelectedEntries = async ({
       : destinationCaseCollisions(
           staged.map(({ destinationPath }) => destinationPath),
         );
+  const destinationParent = dirname(outputRoot);
+  const componentLimitCache = new Map<string, string | null>();
   for (const { selectedItem, destinationPath } of staged) {
-    const overLimitReason = overLimitDestinationReason(
+    const overLimitReason = await overLimitDestinationReason(
       outputRoot,
+      destinationParent,
       destinationPath,
       platform,
+      componentLimitCache,
+      signal,
     );
     if (overLimitReason !== undefined) {
       unresolvedByOccurrenceId.set(

@@ -163,7 +163,9 @@ export class SafeOutputTree {
       if (
         cause instanceof Error &&
         "code" in cause &&
-        ["ENOTDIR", "EACCES", "EPERM"].includes(String(cause.code))
+        ["ENOTDIR", "EACCES", "EPERM", "EINVAL", "ENAMETOOLONG"].includes(
+          String(cause.code),
+        )
       )
         throw new SafeOutputTreeDestinationRefusal(
           "Extraction output path is unavailable",
@@ -203,6 +205,10 @@ export class SafeOutputTree {
     if (!isAbsolute(outputRoot))
       throw new SafeOutputTreeDestinationRefusal(
         "Extraction output root must be absolute",
+      );
+    if (hasUnpairedSurrogate(outputRoot))
+      throw new SafeOutputTreeDestinationRefusal(
+        "Extraction output root contains unpaired UTF-16 surrogates",
       );
     // Path syntax follows the host; `platform` selects only the name policy.
     const requested = absoluteCallerPath(outputRoot);
@@ -735,11 +741,37 @@ const WINDOWS_RESERVED_SEGMENT =
  * Validate and normalize a logical extraction path using the destination
  * filesystem's path-safety rules before or during extraction.
  */
+const hasUnpairedSurrogate = (value: string): boolean => {
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code >= 0xd800 && code <= 0xdbff) {
+      const next = value.charCodeAt(index + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        index += 1;
+        continue;
+      }
+      return true;
+    }
+    if (code >= 0xdc00 && code <= 0xdfff) return true;
+  }
+  return false;
+};
+
 export const normalizeDestinationPath = (
   relativePath: string,
   platform: NodeJS.Platform = process.platform,
 ): string => {
+  if (hasUnpairedSurrogate(relativePath))
+    throw new ArtifactReaderFailure(
+      "path",
+      `Destination filesystem cannot materialize artifact path with unpaired UTF-16 surrogates: ${JSON.stringify(relativePath)}; host UTF-8 encoding replaces lone surrogates with U+FFFD.`,
+    );
   const path = normalizeArtifactPath(relativePath);
+  if (hasUnpairedSurrogate(path))
+    throw new ArtifactReaderFailure(
+      "path",
+      `Destination filesystem cannot materialize artifact path with unpaired UTF-16 surrogates: ${JSON.stringify(path)}; host UTF-8 encoding replaces lone surrogates with U+FFFD.`,
+    );
   if (platform === "win32" && path.includes("\\"))
     throw new ArtifactReaderFailure(
       "path",

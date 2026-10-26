@@ -1,3 +1,20 @@
+let lstatOverride:
+  | ((targetPath: string) => Promise<never> | undefined)
+  | undefined;
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  return {
+    ...actual,
+    lstat: (async (...args: Parameters<typeof actual.lstat>) => {
+      const targetPath = String(args[0]);
+      const overridden = lstatOverride?.(targetPath);
+      if (overridden !== undefined) return overridden;
+      return actual.lstat(...args);
+    }) as typeof actual.lstat,
+  };
+});
+
 import {
   link,
   mkdir,
@@ -1408,6 +1425,87 @@ it("revalidates unpacked ASAR companion files during dry-run planning", async ()
     expect(mismatchPlan.limitations).toContain(
       "1 selected file(s) contradict declared integrity metadata; their bytes are observed-untrusted.",
     );
+  } finally {
+    await resourceScope.close();
+  }
+});
+
+it("rejects unpaired UTF-16 surrogates in archive entries and output roots and marks short destination component limits unresolved", async () => {
+  const directory = await createTestTempDirectory("rea-extract-surrogate-");
+  const resourceScope = new ArtifactResourceScope();
+  try {
+    const payload = Buffer.from("surrogate-payload");
+    const digest = createHash("sha256").update(payload).digest("hex");
+    const surrogateAsar = Buffer.concat([
+      asarHeaderBytes(
+        `{"files":{"\\ud800.txt":{"size":${String(payload.byteLength)},"offset":"0","integrity":{"algorithm":"SHA256","hash":"${digest}","blockSize":4194304,"blocks":["${digest}"]}},"\\ud801.txt":{"size":${String(payload.byteLength)},"offset":"0","integrity":{"algorithm":"SHA256","hash":"${digest}","blockSize":4194304,"blocks":["${digest}"]}}}}`,
+      ),
+      payload,
+    ]);
+    const surrogateArchive = join(directory, "surrogate.asar");
+    await writeFile(surrogateArchive, surrogateAsar);
+
+    for (const dryRun of [true, false]) {
+      const outputRoot = join(directory, `surrogate-out-${String(dryRun)}`);
+      await expect(
+        extractArtifact({
+          inputPath: surrogateArchive,
+          inputFormat: "asar",
+          outputRoot,
+          dryRun,
+          environment: {},
+          integrityPolicy: "fail",
+          resourceScope,
+        }),
+      ).rejects.toMatchObject({
+        reason: "path",
+        message: expect.stringMatching(/unpaired UTF-16 surrogates/),
+      });
+      await expect(stat(outputRoot)).rejects.toMatchObject({ code: "ENOENT" });
+    }
+
+    const illFormedRoot = join(directory, "bad-\ud800-root");
+    await expect(
+      SafeOutputTree.checkDestination(illFormedRoot, { resourceScope }),
+    ).rejects.toThrow(/unpaired UTF-16 surrogates/);
+
+    const shortLimitSegment = `${"e".repeat(176)}.txt`;
+    const shortLimitArchive = join(directory, "short-limit.zip");
+    const writer = new ZipWriter(new Uint8ArrayWriter());
+    await writer.add(shortLimitSegment, new TextReader("ecryptfs-probe"));
+    await writeFile(shortLimitArchive, Buffer.from(await writer.close()));
+
+    lstatOverride = (targetPath: string) => {
+      if (targetPath === join(directory, shortLimitSegment))
+        return Promise.reject(
+          Object.assign(new Error("ENAMETOOLONG: file name too long"), {
+            code: "ENAMETOOLONG",
+          }),
+        );
+      return undefined;
+    };
+    try {
+      const dryRunResult = await extractArtifact({
+        inputPath: shortLimitArchive,
+        inputFormat: "zip",
+        outputRoot: join(directory, "short-limit-out"),
+        dryRun: true,
+        environment: {},
+        integrityPolicy: "fail",
+        resourceScope,
+      });
+      expect(dryRunResult.plan?.totals).toMatchObject({
+        planned_files: 0,
+        unresolved_entries: 1,
+      });
+      expect(dryRunResult.plan?.entries[0]).toMatchObject({
+        logical_path: shortLimitSegment,
+        status: "unresolved",
+        reason: expect.stringMatching(/ENAMETOOLONG/),
+      });
+    } finally {
+      lstatOverride = undefined;
+    }
   } finally {
     await resourceScope.close();
   }
