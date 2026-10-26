@@ -25,6 +25,9 @@ import { registerWasmTools } from "./registerWasmTools.js";
 import type { ApkSignatureService } from "../application/apkSignature/ApkSignatureService.js";
 import { apkSignatureModule } from "../composition/apkSignature.js";
 import { registerApkSignatureTools } from "./registerApkSignatureTools.js";
+import type { DexDebugMetadataService } from "../application/dex/DexDebugMetadataService.js";
+import { dexDebugMetadataModule } from "../composition/dex.js";
+import { registerDexTools } from "./registerDexTools.js";
 import { snapshotEnvironment } from "../process/snapshotEnvironment.js";
 import { captureProviderEnvironment } from "./providerEnvironment.js";
 import {
@@ -224,6 +227,7 @@ export interface CreateServerOptions {
   readonly signalRecording?: SignalRecordingService;
   readonly wasmArtifact?: WasmArtifactService;
   readonly apkSignature?: ApkSignatureService;
+  readonly dexDebugMetadata?: DexDebugMetadataService;
   readonly providerEnvironment?: Readonly<NodeJS.ProcessEnv>;
   readonly evmInterface?: EvmInterfaceService;
   readonly sqliteDatabase?: SqliteDatabaseService;
@@ -558,6 +562,10 @@ export const createServer = (
     environment,
     options.apkSignature,
   );
+  const dexDebugMetadata = dexDebugMetadataModule.create(
+    environment,
+    options.dexDebugMetadata,
+  );
   const packetCapture =
     options.packetCapture ?? createPacketCaptureService(environment);
   const signalRecording =
@@ -580,6 +588,7 @@ export const createServer = (
       fridaInstrumentation.closeAll(),
       wasmArtifact.close(),
       apkSignature.close(),
+      dexDebugMetadata.close(),
       packetCapture.close(),
       signalRecording.close(),
       apktool.close(),
@@ -810,6 +819,7 @@ export const createServer = (
     android,
     wasmArtifact,
     apkSignature,
+    dexDebugMetadata,
     evmInterface,
     jeb,
     firmwareAnalysis,
@@ -931,6 +941,7 @@ const registerConfiguredAnalysisTools = (
   android: AndroidAnalysisPort,
   wasmArtifact: Pick<WasmArtifactService, "inspect" | "close">,
   apkSignature: Pick<ApkSignatureService, "inspect" | "close">,
+  dexDebugMetadata: Pick<DexDebugMetadataService, "inspect" | "close">,
   evmInterface: EvmInterfaceService,
   jeb: JebAnalysisPort,
   firmwareAnalysis: FirmwareAnalysisService,
@@ -1088,6 +1099,13 @@ const registerConfiguredAnalysisTools = (
     recordEvidence,
     withAdmittedAnalysis,
     evidenceById,
+  );
+  registerDexTools(
+    server,
+    dexDebugMetadata,
+    toolLogger,
+    recordEvidence,
+    withAdmittedAnalysis,
   );
   registerEvmTools(
     server,

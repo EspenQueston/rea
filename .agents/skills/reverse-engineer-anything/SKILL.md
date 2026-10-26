@@ -193,6 +193,12 @@ explicit path or endpoint and do not need it.
   whether each signed digest still matches the bytes (self-consistency). This
   is identity and integrity, not a trust or authenticity verdict.
   See the [APK signature guide](https://github.com/morluto/rea/blob/main/docs/apk-signature.md).
+- Explicit local Android DEX (or a `classes*.dex` inside an APK/ZIP):
+  `inspect_dex_debug_metadata`. Reports the DEX `debug_info` (source files, line
+  positions, local-variable names/types/scopes, parameter names) as a whole-file
+  readiness summary, or full per-method detail for one `class_descriptor`. No
+  Android code executes, no device/adb; `odex`/`vdex`/`oat`/`cdex` are refused.
+  See the [DEX guide](https://github.com/morluto/rea/blob/main/docs/dex-debug-metadata.md).
 - Explicit local EVM bytecode carrier: `inspect_evm_interface` with caller-selected
   `raw` or `hex` encoding. The owned worker deadline is `timeout_ms` (default
   30000 ms, range 1..2147483647, next call). It does not raise the fixed byte,

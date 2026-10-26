@@ -289,6 +289,21 @@ lineage, and the strongest scheme.
 It never claims authenticity: no signature or lineage is cryptographically
 verified.
 
+## Offline DEX debug metadata
+
+Use `inspect_dex_debug_metadata` for a selected local `.dex`, or a
+`classes*.dex` inside an APK/ZIP (`entry` selects one member; omitting it
+summarizes the auto-loaded `classes.dex`, `classes2.dex`, … sequence). Without `class_descriptor` it returns a whole-file
+readiness summary per member (methods with code/debug_info/parameter names, line
+positions, local declarations, distinct source files, and a derived
+`present | partial | stripped | unknown`: `present` has line positions and local
+names, `partial` exactly one (a typical R8 release keeps lines only), `stripped`
+neither, and `unknown` means unreadable structures leave it open); with `class_descriptor` (e.g. `Lcom/example/Foo;`)
+it returns full per-method detail — names, JVM-form descriptors, and locals
+(including the implicit `this` and parameters) with register/type/scope. Line
+positions may be R8-renumbered synthetic lines needing a mapping file. No Android
+code executes and no device/adb is involved; `odex`/`vdex`/`oat`/`cdex` are refused.
+
 ## Native targets
 
 After `open_binary`, use focused search, procedure, or function tools directly.
