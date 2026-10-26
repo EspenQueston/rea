@@ -47,7 +47,7 @@ interface PerformActionInput {
   readonly signal?: AbortSignal | undefined;
 }
 
-/** Start waiting for the response a click or key press names in `save_response`, before the step acts. */
+/** Watch the response selector before the UI action; matching does not prove action causality. */
 const savingResponse = (
   input: PerformActionInput,
   action: Extract<BrowserScenarioAction, { action: "click" | "press" }>,

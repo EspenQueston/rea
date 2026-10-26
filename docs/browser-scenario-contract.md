@@ -487,10 +487,12 @@ id the application assigns:
 
 - A `request` step saves with `save: [{name, json_pointer, secret}]`, from its
   own response. A `click` or `press` step saves with `save_response: {method,
-  path, save}`, from the response to the request it triggers, such as the create
-  a form's Save button sends: the recorder starts watching before the step acts
-  and takes only a request the step starts, so one already running, such as an
-  earlier autosave, cannot answer it. It matches the method and a path on the
+  path, save}`, from a newly observed matching response while the step waits.
+  The recorder watches before the action and excludes requests already running,
+  such as an earlier autosave. Method/path matching does not prove that the UI
+  caused the request: use a path that distinguishes the intended operation from
+  background polling. Multiple observed matches before binding fail as ambiguous;
+  requests starting after this observation window cannot be ruled out. It matches the method and a path on the
   start origin as the browser spells it, so a path may name `My List` or
   `My%20List` (`{*}` matches one segment, and the query is ignored), and fails
   the step unless a 2xx JSON response arrives before its `timeout_ms`; one still

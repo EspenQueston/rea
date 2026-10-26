@@ -1,3 +1,4 @@
+import { visit, type JSONPath } from "jsonc-parser";
 import { isExactJsonNumber } from "../domain/exactJsonNumber.js";
 import { safeParseJson } from "../domain/safeJson.js";
 import { err, ok, type Result } from "../domain/result.js";
@@ -21,25 +22,31 @@ export interface ResponseValue {
   readonly value: string | number;
 }
 
+const pointerTokens = (pointer: string): readonly string[] =>
+  pointer === ""
+    ? []
+    : pointer
+        .slice(1)
+        .split("/")
+        .map((token) => token.replaceAll("~1", "/").replaceAll("~0", "~"));
+
 /** Exact own-property lookup: an absent pointer remains distinct from a non-scalar value. */
 export const responsePointerValue = (
   value: unknown,
   pointer: string,
 ): unknown => {
   let current = value;
-  if (pointer !== "")
-    for (const token of pointer.slice(1).split("/")) {
-      const key = token.replaceAll("~1", "/").replaceAll("~0", "~");
-      if (Array.isArray(current) && /^(?:0|[1-9][0-9]*)$/u.test(key))
-        current = current[Number(key)];
-      else if (
-        typeof current === "object" &&
-        current !== null &&
-        Object.hasOwn(current, key)
-      )
-        current = (current as Record<string, unknown>)[key];
-      else return undefined;
-    }
+  for (const key of pointerTokens(pointer)) {
+    if (Array.isArray(current) && /^(?:0|[1-9][0-9]*)$/u.test(key))
+      current = current[Number(key)];
+    else if (
+      typeof current === "object" &&
+      current !== null &&
+      Object.hasOwn(current, key)
+    )
+      current = (current as Record<string, unknown>)[key];
+    else return undefined;
+  }
   return current;
 };
 
@@ -48,7 +55,10 @@ export const readResponseValues = (
   body: string | Uint8Array | undefined,
   entries: readonly BrowserScenarioSaveEntry[],
   missing: "fail" | "ignore",
-): Result<readonly ResponseValue[], ResponseValueIssue> => {
+): Result<
+  { readonly values: readonly ResponseValue[]; readonly text: string },
+  ResponseValueIssue
+> => {
   if (
     body === undefined ||
     (typeof body !== "string" && body.byteLength > MAX_SAVED_RESPONSE_BYTES)
@@ -98,7 +108,7 @@ export const readResponseValues = (
       );
     selected.push({ entry, value });
   }
-  return ok(selected);
+  return ok({ values: selected, text });
 };
 
 interface ResponseBodySource {
@@ -135,4 +145,102 @@ export const readBoundedResponseBody = async (
   return body.length > maxBytes
     ? err(issue("the response is too large to save values from."))
     : ok(body);
+};
+
+/** Replace selected JSON tokens and known decoded string secrets; preserve other source spellings and whitespace. */
+export const redactResponseSource = (
+  text: string,
+  values: readonly ResponseValue[],
+  redact: (value: string) => string,
+  maxBytes: number,
+  maxAllocationBytes: number,
+): Result<Buffer | undefined, ResponseValueIssue> => {
+  const markers = new Map(
+    values.map(({ entry, value }) => [
+      JSON.stringify(pointerTokens(entry.json_pointer)),
+      redact(String(value)),
+    ]),
+  );
+  const parts: string[] = [];
+  let cursor = 0;
+  let bytes = Buffer.byteLength(text);
+  const replace = (offset: number, length: number, marker: string): void => {
+    const replacement = JSON.stringify(marker);
+    bytes +=
+      Buffer.byteLength(replacement) -
+      Buffer.byteLength(text.slice(offset, offset + length));
+    if (bytes > maxBytes || bytes * 4 > maxAllocationBytes)
+      throw new Error(
+        "Structural source redaction exceeds the selected body allocation budget.",
+      );
+    parts.push(text.slice(cursor, offset), replacement);
+    cursor = offset + length;
+  };
+  const markerAt = (path: JSONPath): string | undefined =>
+    markers.get(JSON.stringify(path.map(String)));
+  const container = (
+    _offset: number,
+    _length: number,
+    _line: number,
+    _column: number,
+    path: () => JSONPath,
+  ): void => {
+    if (markerAt(path()) !== undefined)
+      throw new Error(
+        "A marked source field has conflicting scalar/container representations; its source content was withheld.",
+      );
+  };
+  try {
+    visit(
+      text,
+      {
+        onObjectBegin: container,
+        onArrayBegin: container,
+        onLiteralValue: (
+          value: unknown,
+          offset,
+          length,
+          _line,
+          _column,
+          path,
+        ) => {
+          let marker = markerAt(path());
+          if (marker === undefined) {
+            const raw = text.slice(offset, offset + length);
+            const rendered =
+              typeof value === "number" && !isExactJsonNumber(value, raw)
+                ? undefined
+                : String(value);
+            const decoded =
+              rendered === undefined ? undefined : redact(rendered);
+            if (decoded !== undefined && decoded !== rendered) marker = decoded;
+            if (marker === undefined && typeof value !== "string") {
+              const redacted = redact(raw);
+              if (redacted !== raw) marker = redacted;
+            }
+          }
+          if (marker !== undefined) replace(offset, length, marker);
+        },
+        onObjectProperty: (property, offset, length) => {
+          const redacted = redact(property);
+          if (redacted !== property) replace(offset, length, redacted);
+        },
+        onError: () => {
+          throw new Error("The marked source is not valid JSON.");
+        },
+      },
+      { disallowComments: true, allowTrailingComma: false },
+    );
+    if (parts.length === 0) return ok(undefined);
+    parts.push(text.slice(cursor));
+    return ok(Buffer.from(parts.join("")));
+  } catch (cause: unknown) {
+    return err(
+      issue(
+        cause instanceof Error
+          ? cause.message
+          : "Structural source redaction failed.",
+      ),
+    );
+  }
 };

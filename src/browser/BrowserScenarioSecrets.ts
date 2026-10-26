@@ -9,7 +9,10 @@ import type {
   BrowserScenarioValue,
   BrowserScenarioSaveEntry,
 } from "../domain/browserScenarioValues.js";
-import { readResponseValues } from "./BrowserScenarioResponseValues.js";
+import {
+  readResponseValues,
+  redactResponseSource,
+} from "./BrowserScenarioResponseValues.js";
 import {
   sanitizeBrowserUrl,
   type SanitizedBrowserUrl,
@@ -288,16 +291,32 @@ export class BrowserScenarioSecrets {
    * {@link MIN_REDACTED_PAGE_VALUE_LENGTH} is not redacted.
    */
   admitPageValue(label: string, value: string): void {
-    this.admit(label, value, MIN_REDACTED_PAGE_VALUE_LENGTH);
+    this.retainValues(
+      label,
+      this.valuesToAdmit(value, MIN_REDACTED_PAGE_VALUE_LENGTH),
+    );
   }
 
-  /** Redact a credential a step built or a value it saved as secret from everything recorded after it, whatever its length, as a declared secret is. */
-  admitCredential(label: string, value: string): void {
-    this.admit(label, value, 1);
-  }
-
-  private admit(label: string, value: string, shortest: number): void {
-    this.retainValues(label, this.valuesToAdmit(value, shortest));
+  /** Build only bounded Basic text; all distinct encoded spellings share the saved-value budget. */
+  basicCredential(label: string, username: string, password: string): string {
+    const bytes = Buffer.byteLength(username) + 1 + Buffer.byteLength(password);
+    const encodedCharacters = 4 * Math.ceil(bytes / 3);
+    if (encodedCharacters > MAX_RETAINED_SAVED_CHARACTERS)
+      throw new Error(
+        `Basic credentials cannot be built: their encoded form exceeds ${String(MAX_RETAINED_SAVED_CHARACTERS)} characters.`,
+      );
+    const input = Buffer.allocUnsafe(bytes);
+    let offset = input.write(username);
+    offset += input.write(":", offset);
+    input.write(password, offset);
+    const encoded = input.toString("base64");
+    this.retainSavedRedactions(
+      label,
+      this.valuesToAdmit(encoded, 1),
+      this.savedUnits,
+      "Basic credentials",
+    );
+    return encoded;
   }
 
   /** Fetch trims surrounding header whitespace; both source and sent spellings remain owned here. */
@@ -388,13 +407,20 @@ export class BrowserScenarioSecrets {
   }
 
   /** Redact the selected source fields before network Evidence can retain the body. */
-  admitResponseSecrets(request: object, body: Uint8Array): void {
+  admitResponseSecrets(
+    request: object,
+    body: Buffer,
+    retention?: {
+      readonly maxBytes: number;
+      readonly maxAllocationBytes: number;
+    },
+  ): Buffer {
     const source = this.responseSecrets.get(request);
-    if (source === undefined) return;
+    if (source === undefined) return body;
     const selected = readResponseValues(body, source.entries, "ignore");
     if (!selected.ok)
       throw new Error(`Step ${source.stepId}: ${selected.error.message}`);
-    for (const { entry, value } of selected.value) {
+    for (const { entry, value } of selected.value.values) {
       const additions = this.valuesToAdmit(String(value), 1);
       this.retainSavedRedactions(
         `${source.stepId}.${entry.name}`,
@@ -403,6 +429,40 @@ export class BrowserScenarioSecrets {
         entry.name,
       );
     }
+    if (retention === undefined) return body;
+    const redacted = redactResponseSource(
+      selected.value.text,
+      selected.value.values,
+      (value) => this.redact(value),
+      retention.maxBytes,
+      retention.maxAllocationBytes,
+    );
+    if (!redacted.ok) throw new Error(redacted.error.message);
+    return redacted.value ?? body;
+  }
+
+  /** Decode JSON only when redaction is active; other bytes retain their existing binary policy. */
+  redactJsonBody(
+    body: Buffer,
+    retention: {
+      readonly maxBytes: number;
+      readonly maxAllocationBytes: number;
+    },
+  ): Buffer {
+    if (body.length === 0 || this.textPatterns.length === 0) return body;
+    const text = new TextDecoder("utf-8", {
+      fatal: true,
+      ignoreBOM: true,
+    }).decode(body);
+    const redacted = redactResponseSource(
+      text,
+      [],
+      (value) => this.redact(value),
+      retention.maxBytes,
+      retention.maxAllocationBytes,
+    );
+    if (!redacted.ok) throw new Error(redacted.error.message);
+    return redacted.value ?? body;
   }
 
   private retainSavedRedactions(

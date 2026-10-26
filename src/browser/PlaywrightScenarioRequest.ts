@@ -150,9 +150,7 @@ const headerValue = async (
         `Request step ${stepId} has a Basic username with a colon, which the server would read as the end of the username.`,
       );
     const pass = await credentialPart(step, password!, `${label}.password`);
-    const encoded = Buffer.from(`${user}:${pass}`).toString("base64");
-    secrets.admitCredential(label, encoded);
-    return encoded;
+    return secrets.basicCredential(label, user, pass);
   }
   return readPageValue(step, value, label);
 };
@@ -512,9 +510,9 @@ export interface SavedResponseWait {
 }
 
 /**
- * Start waiting, before a UI step acts, for the response its `save_response` names to a request the step starts; one
- * already running when the step began, such as an earlier autosave, cannot answer it. The step fails unless a 2xx JSON
- * response arrives before its timeout, or the page's default timeout when it sets none.
+ * Observe a new matching response while the UI step waits; matching does not prove action causality.
+ * Requests already running are excluded. Competing requests observed before binding are ambiguous.
+ * The step still requires a 2xx JSON response within its timeout or the page's default timeout.
  */
 export const awaitSavedResponse = (
   page: Page,
@@ -559,6 +557,13 @@ export const awaitSavedResponse = (
         `Step ${stepId}: no ${spec.method} ${spec.path} response arrived before the step's timeout, so nothing was saved.`,
       );
     }
+    const assertUnambiguous = (): void => {
+      if (started.size !== 1)
+        throw new ScenarioRequestError(
+          `Step ${stepId}: multiple matching requests make the response ambiguous, so nothing was saved. Narrow the response path or record without competing background requests.`,
+        );
+    };
+    assertUnambiguous();
     if (response.status() < 200 || response.status() > 299)
       throw new ScenarioRequestError(
         `Step ${stepId}: the ${spec.method} ${spec.path} response answered ${String(response.status())}; values are saved only from a 2xx response.`,
@@ -571,6 +576,7 @@ export const awaitSavedResponse = (
     );
     if (!body.ok)
       throw new ScenarioRequestError(`Step ${stepId}: ${body.error.message}`);
+    assertUnambiguous();
     saveValues(stepId, body.value, spec.save, secrets);
   };
   return { saved, stop: () => page.off("request", watch) };
@@ -617,7 +623,7 @@ const saveValues = (
   for (const {
     entry: { name, secret },
     value,
-  } of selected.value) {
+  } of selected.value.values) {
     try {
       secrets.save(`${stepId}.${name}`, name, value, secret);
     } catch (cause) {

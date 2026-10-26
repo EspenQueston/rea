@@ -422,6 +422,40 @@ export const retainFixed = (
   if (fixed.length > 0) context.io.retain(64 + jsonTextCodeUnits(fixed) * 2);
 };
 
+/** Retain only exemplars that may acquire a composed rule; state already owns and charges their entity facts. */
+export const retainCreateExemplar = (
+  context: EffectContext,
+  input: CreateEvidence,
+  rules: readonly FieldRule[],
+): CreateEvidence | undefined => {
+  if (
+    !Object.entries(input.entity).some(
+      ([field, value]) =>
+        typeof value === "string" &&
+        !rules.some((rule) => rule.field === field),
+    )
+  )
+    return undefined;
+  // Snapshot arrays borrow immutable entity fields whose state charges last
+  // throughout simulation. Their containers and the request reader's temporary
+  // facts need their own retained charge before the draft adopts them.
+  const references = [...new Set([input.collection, input.type])].reduce(
+    (count, items) => count + items.length,
+    0,
+  );
+  context.io.retain(
+    192 +
+      references * 8 +
+      jsonTextCodeUnits(input.call.body) * 2 +
+      input.call.path.length * 2 +
+      [...input.call.pathValues].reduce(
+        (bytes, [key, value]) => bytes + 64 + (key.length + value.length) * 2,
+        0,
+      ),
+  );
+  return input;
+};
+
 /** An update's targets, and its recorded outcome: the entity takes what its observation shows, attributed to no tool. */
 const outcomes = (
   context: EffectContext,

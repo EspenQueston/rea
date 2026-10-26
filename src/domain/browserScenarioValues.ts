@@ -210,7 +210,7 @@ const saveEntrySchema = z.strictObject({
 });
 export type BrowserScenarioSaveEntry = z.infer<typeof saveEntrySchema>;
 
-/** Values a UI step keeps from the JSON response to a request it triggers. */
+/** Values a UI step keeps from a newly observed matching response; matching does not prove causality. */
 const saveResponseSchema = z
   .strictObject({
     method: z.enum(BROWSER_SCENARIO_REQUEST_METHODS),
@@ -221,7 +221,7 @@ const saveResponseSchema = z
     save: z.array(saveEntrySchema).min(1),
   })
   .describe(
-    "Save values from the 2xx JSON response to a request this step triggers.",
+    "Save values from a newly observed matching 2xx JSON response; matching does not prove the UI caused it. Multiple observed matches fail.",
   );
 export type BrowserScenarioSaveResponse = z.infer<typeof saveResponseSchema>;
 

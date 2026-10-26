@@ -17,6 +17,7 @@ const { values } = parseArgs({
     origin: { type: "string" },
     credentials: { type: "string" },
     browser: { type: "string" },
+    "source-only": { type: "boolean", default: false },
   },
 });
 assert.ok(
@@ -219,7 +220,7 @@ try {
   await client.connect(transport);
   catalog = await client.listTools();
   await writeFile(join(output, "catalog.json"), JSON.stringify(catalog));
-  for (const temperature of ["cold", "warm"]) {
+  for (const temperature of values["source-only"] ? [] : ["cold", "warm"]) {
     const saved = values.mode === "after";
     const start = performance.now(),
       firstCall = calls.length;
@@ -328,6 +329,72 @@ try {
       evidence_id: parent.evidence_id,
       record_id: id,
       quantity_type: typeof actual.quantity,
+    });
+  }
+  if (values["source-only"]) {
+    assert.equal(values.mode, "after");
+    const captured = await invoke(
+      "capture_browser_scenario",
+      scenario(
+        [
+          {
+            step_id: "source",
+            action: "request",
+            method: "GET",
+            path: "/escaped-values.json",
+            save: [
+              { name: "token", json_pointer: "/token", secret: true },
+              { name: "code", json_pointer: "/code", secret: true },
+            ],
+          },
+          {
+            step_id: "later",
+            action: "request",
+            method: "GET",
+            path: "/escaped-values.json",
+          },
+        ],
+        [],
+      ),
+    );
+    assert.ok(
+      captured.normalized_result.summary.steps.every(
+        (step) => step.status === "completed",
+      ),
+    );
+    const path = join(output, "source-evidence.json");
+    await invoke("export_evidence_bundle", { path });
+    const bundle = JSON.parse(await readFile(path, "utf8"));
+    const parent = bundle.records.find(
+      (record) =>
+        record.evidence_id === captured.normalized_result.parent_evidence_id,
+    );
+    assert.ok(parent);
+    const bodies = decodeBodies(parent.normalized_result).filter(
+      (body) =>
+        Object.hasOwn(body ?? {}, "token") && Object.hasOwn(body, "code"),
+    );
+    assert.equal(
+      bodies.length,
+      2,
+      "Both actual source and later response must be observed",
+    );
+    for (const body of bodies) {
+      assert.equal(body.token, "[REDACTED:page:source.token]");
+      assert.equal(body.code, "[REDACTED:page:source.code]");
+    }
+    const expected = Buffer.from(
+      '{"token":"[REDACTED:page:source.token]","code":"[REDACTED:page:source.code]","unknown":1e-400}',
+    ).toString("base64");
+    assert.equal(
+      JSON.stringify(parent.normalized_result).split(JSON.stringify(expected))
+        .length - 1,
+      2,
+      "Both source bodies must preserve the unmarked numeric spelling exactly",
+    );
+    runs.push({
+      verification: "source-and-later-JSON-spellings",
+      verified_bodies: bodies.length,
     });
   }
   await writeFile(join(output, "calls.json"), JSON.stringify(calls), {

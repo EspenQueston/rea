@@ -222,6 +222,68 @@ it.each([true, false])(
   },
 );
 
+it.each([
+  ['{"token":"\\u0073ecret-token"}', "/token"],
+  ['{"token":"secret\\/token"}', "/token"],
+  ['{"token":1e3}', "/token"],
+  ['{"token":1000.0}', "/token"],
+  ['{"items":[{"a/b":"\\u0073ecret-token"}]}', "/items/0/a~1b"],
+  ['{"token":"shadowed","token":"\\u0073ecret-token"}', "/token"],
+])(
+  "redacts the selected source JSON token structurally: %s",
+  async (body, pointer) => {
+    const { collector, events, secrets } = harness({
+      request_body: false,
+      response_body: true,
+      header_values: false,
+    });
+    const request = new RequestFixture("marked");
+    request.responseSize = Buffer.byteLength(body);
+    secrets.responseProtector("login", [
+      { name: "token", json_pointer: pointer, secret: true },
+    ])?.(request);
+    collector.request(request);
+    collector.response(new ResponseFixture(request, body));
+    collector.finished(request);
+    await collector.finish();
+    const content = events.find(
+      (event) => event.kind === "network-content" && event.phase === "response",
+    );
+    expect(content).toBeDefined();
+    const text = bodyText(content!);
+    expect(text).not.toMatch(/secret|0073|shadowed|1e3|1000/u);
+    expect(JSON.parse(text)).toBeDefined();
+    expect(text).toContain("[REDACTED:page:login.token]");
+  },
+);
+
+it("preserves unselected source spellings while redacting escaped aliases", async () => {
+  const { collector, events, secrets } = harness({
+    request_body: false,
+    response_body: true,
+    header_values: false,
+  });
+  const request = new RequestFixture("marked");
+  const body =
+    '{ "token":"secret-token", "mirror":"\\u0073ecret-token", "unknown":1e-400 }';
+  request.responseSize = Buffer.byteLength(body);
+  secrets.responseProtector("login", [
+    { name: "token", json_pointer: "/token", secret: true },
+  ])?.(request);
+  collector.request(request);
+  collector.response(new ResponseFixture(request, body));
+  collector.finished(request);
+  await collector.finish();
+  const content = events.find(
+    (event) => event.kind === "network-content" && event.phase === "response",
+  );
+  const text = bodyText(content!);
+  expect(text).toContain('"unknown":1e-400');
+  expect(text).toContain('{ "token":');
+  expect(text).not.toMatch(/secret|0073/u);
+  expect(JSON.parse(text).mirror).toBe("[REDACTED:page:login.token]");
+});
+
 it("associates sensitive fields by request identity while keeping same-URL unmarked values", async () => {
   const { collector, events, secrets } = harness({
     request_body: false,
@@ -1114,4 +1176,39 @@ it("stamps when each request was observed, and the browser's own start and durat
   expect(failure).toBeDefined();
   expect(failure).not.toHaveProperty("started_at");
   expect(failure).not.toHaveProperty("elapsed_ms");
+});
+
+it.each([
+  { name: "structural expansion", body: '{"token":1}', limit: 16 },
+  {
+    name: "shadowed container",
+    body: '{"token":{},"token":"source-private"}',
+    limit: 2048,
+  },
+])("withholds marked content for $name", async ({ body, limit }) => {
+  const { collector, events, secrets } = harness(
+    selection,
+    undefined,
+    "declared-private",
+    { max_network_body_bytes: limit },
+  );
+  const request = new RequestFixture("marked");
+  request.responseSize = Buffer.byteLength(body);
+  secrets.responseProtector("login", [
+    { name: "token", json_pointer: "/token", secret: true },
+  ])?.(request);
+  const response = new ResponseFixture(request, body);
+  collector.request(request);
+  collector.response(response);
+  collector.finished(request);
+  await collector.finish();
+  expect(events).toContainEqual(
+    expect.objectContaining({
+      kind: "network-content",
+      phase: "response",
+      body: expect.objectContaining({ state: "unavailable" }),
+      headers: expect.objectContaining({ state: "unavailable" }),
+    }),
+  );
+  expect(response.bodyReads).toBe(1);
 });

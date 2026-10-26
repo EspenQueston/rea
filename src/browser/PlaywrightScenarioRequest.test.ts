@@ -1139,6 +1139,42 @@ describe("values a URL path or Basic header cannot carry", () => {
   });
 });
 
+describe("bounded derived credentials", () => {
+  it("charges distinct Basic credentials while admitting repeated identical spellings once", () => {
+    const secrets = resolved(scenario([requestStep({})]));
+    const password = "x".repeat(300_000);
+    secrets.save("create.token", "token", password, false);
+    const first = secrets.basicCredential("login.auth", "operator-0", password);
+    for (let index = 0; index < 8; index++)
+      expect(
+        secrets.basicCredential("again.auth", "operator-0", password),
+      ).toBe(first);
+    expect(() => {
+      for (let index = 1; index < 16; index++)
+        secrets.basicCredential(
+          `s${String(index)}.auth`,
+          `operator-${String(index)}`,
+          password,
+        );
+    }).toThrow("more than 4000000 characters");
+    expect(secrets.savedValue("token")).toBe(password);
+    expect(secrets.redact(first)).not.toContain(first);
+  });
+
+  it("refuses excessive base64 expansion before allocating the credential buffer", () => {
+    const secrets = resolved(scenario([requestStep({})]));
+    const allocate = vi.spyOn(Buffer, "allocUnsafe");
+    try {
+      expect(() =>
+        secrets.basicCredential("login.auth", "u", "x".repeat(3_000_001)),
+      ).toThrow("encoded form exceeds");
+      expect(allocate).not.toHaveBeenCalled();
+    } finally {
+      allocate.mockRestore();
+    }
+  });
+});
+
 describe("saved value retention", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
@@ -1346,6 +1382,60 @@ const clickSaving = (path: string) =>
       },
     },
   ]);
+
+describe("ambiguous saved response observations", () => {
+  it("refuses an ambiguous poll and click request without choosing either identity", async () => {
+    const parsed = clickSaving("/api/items");
+    const secrets = resolved(parsed);
+    const { page, listeners } = uiPage([
+      {
+        method: "POST",
+        url: `${ORIGIN}/api/items`,
+        status: 201,
+        body: '{"id":"poll"}',
+      },
+      {
+        method: "POST",
+        url: `${ORIGIN}/api/items`,
+        status: 201,
+        body: '{"id":"created"}',
+      },
+    ]);
+    await expect(perform(page, parsed.actions[0]!, secrets)).rejects.toThrow(
+      "ambiguous",
+    );
+    expect(() => secrets.savedValue("item")).toThrow("No earlier step saved");
+    expect(listeners.size).toBe(0);
+  });
+
+  it("refuses a second matching request observed while the selected body is pending", async () => {
+    const parsed = clickSaving("/api/items");
+    const secrets = resolved(parsed);
+    let release!: (body: string) => void;
+    const late = new Promise<string>((resolve) => {
+      release = resolve;
+    });
+    const { page, listeners, reads } = uiPage([
+      {
+        method: "POST",
+        url: `${ORIGIN}/api/items`,
+        status: 201,
+        body: "",
+        size: 30,
+        late,
+      },
+    ]);
+    const running = perform(page, parsed.actions[0]!, secrets);
+    const rejected = expect(running).rejects.toThrow("ambiguous");
+    await vi.waitFor(() => expect(reads.count).toBe(1));
+    for (const listener of listeners)
+      listener({ method: () => "POST", url: () => `${ORIGIN}/api/items` });
+    release('{"id":"wrong-object"}');
+    await rejected;
+    expect(() => secrets.savedValue("item")).toThrow("No earlier step saved");
+    expect(listeners.size).toBe(0);
+  });
+});
 
 describe("saving from a UI step's response", () => {
   it("waits before clicking, and saves from the response the step names", async () => {

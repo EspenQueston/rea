@@ -131,3 +131,50 @@ link caught by the first documentation build was corrected.
 
 Historical upstream multi-application/model results were not rerun. Required
 integration gates and CI outcomes are recorded in the associated PR.
+
+## Automated review follow-up
+
+Seven reproductions failed against `275854261`: six noncanonical source JSON
+spellings/duplicate fields and an ambiguous poll/click response selection. A
+separate later-response escaped-string/exponent reproduction also failed before
+the shared JSON-body correction. The owning response parser now supplies decoded
+facts and original text together. A bounded `jsonc-parser` visitor replaces
+sensitive value/key tokens without rebuilding unrelated numbers or whitespace;
+JSON-labelled bodies use the same implementation for later responses. Bodies
+with no active redactions avoid parsing, observed empty bodies stay empty, and
+allocation admission precedes optional JSON decoding. Unreadable JSON remains
+unavailable. Non-JSON byte bodies retain their existing spelling policy.
+
+Real stdio MCP fetched an owned PocketBase static JSON fixture twice: the first
+request saved a Unicode-escaped string and an exponent-spelled numeric secret,
+and the second response exercised already-known secret handling. Both retained
+bodies matched the exact expected redacted JSON bytes, preserving the unrelated
+`1e-400` spelling. This non-vacuous two-body check passed in 6.806 s elapsed,
+8.019 s CPU and 1,599,725,568 bytes sampled family peak RSS, with backend costs
+unmeasured. It is a real HTTP/Chromium transport check over an owned fixture,
+rather than a claim that PocketBase emits these spellings in its auth API.
+
+To reproduce that additional check, place these exact bytes in the owned static
+public directory as `escaped-values.json`, then run the existing verifier with
+`--mode after --source-only` and a new output directory:
+
+```json
+{ "token": "\u0073ource-token", "code": 1e3, "unknown": 1e-400 }
+```
+
+UI matching is explicitly observational. Requests already running are excluded;
+multiple matches observed before binding, including while its body is pending,
+refuse the binding. A matching method/path does not establish action causality,
+and cannot exclude requests starting after that observation window. Choose a
+selector distinct from background polling; no causal provenance is invented.
+
+Derived Basic credentials now have bounded base64 construction and share the
+single retained spelling budget, including deduplication. Create re-explanation
+keeps only exemplars with unresolved string fields, charging request facts and
+unique snapshot-array references before adoption; state-owned immutable entity
+payloads retain their existing simulation-lifetime charges and are not rebilled.
+The seven focused source suites passed **419 cases** after these changes, with
+additional budget, late-ambiguity, escaped alias, empty-body and decoder-admission
+coverage. Real Basic-auth server compatibility and real Grafana write inference
+were not rerun; their encoding/accounting and inference semantics are covered by
+source/boundary regressions and the attributed upstream evidence remains separate.

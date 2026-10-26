@@ -42,6 +42,7 @@ import {
   refuse,
   requestBodyPlan,
   retainFixed,
+  retainCreateExemplar,
   searchFrom,
   startOf,
   UNKNOWN,
@@ -453,7 +454,7 @@ const buildCreate = (
     insert: draft.candidates[0]!,
   });
   draft.observed = evidence.observed.object;
-  draft.exemplarInput = input;
+  draft.exemplarInput = retainCreateExemplar(context, input, explained.rules);
   noteHeldAmpersands(draft.ampersands, explained.rules, held);
   noteAmpersands(draft.ampersands, explained.rules, evidence.observed.object);
   for (const entity of held) noteFixedWidths(draft.fixedWidth, entity);

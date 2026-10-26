@@ -10,7 +10,7 @@ frontend builds from a login token, could not be sent at all, so the agent
 stopped and asked for an API key.
 
 Steps now save strings and numbers from JSON responses, and later steps send
-them. A click or key press saves from the response to the request it triggers,
+them. A click or key press saves from a newly observed matching response,
 so a scenario can create an object the way the application's UI does and then
 open, read, edit or delete it by the id the application assigned. A request
 header can send Basic credentials built from literal, secret, saved or page

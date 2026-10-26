@@ -172,7 +172,9 @@ About `request` steps:
   source response before its body or headers are retained. Compressed or
   unknown-size UI responses cannot supply saved values. On a `click` or `press`,
   `save_response: {method, path, save}` keeps values from the response to the
-  request the step triggers (`{*}` in `path` matches one segment); the step
+  new request observed while the step waits (`{*}` in `path` matches one segment).
+  Matching does not prove UI causality: choose a path distinct from polling;
+  multiple observed matches fail as ambiguous. The step
   fails unless a 2xx JSON response arrives before its `timeout_ms`. Later
   steps send a saved value as `{saved:name}` in a request `path` (and its
   query) or a `goto` URL; in the `json` body, where a string that is only

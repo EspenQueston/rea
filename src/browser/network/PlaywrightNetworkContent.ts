@@ -1,3 +1,7 @@
+import {
+  isJson,
+  mediaTypeEssence,
+} from "../../domain/analysisView/recordedMediaType.js";
 import { createHash } from "node:crypto";
 
 import {
@@ -141,12 +145,26 @@ export const captureNetworkBody = async (
         limit_bytes: maxBodyBytes,
         observed_bytes: observed.length,
       };
+    let sourceBody = observed;
     if (protection !== undefined) {
-      secrets.admitResponseSecrets(protection.request, observed);
+      sourceBody = secrets.admitResponseSecrets(
+        protection.request,
+        observed,
+        protection.retainBody
+          ? {
+              maxBytes: options.maxBodyBytes,
+              maxAllocationBytes: options.maxBodyAllocationBytes,
+            }
+          : undefined,
+      );
       if (!protection.retainBody) return { state: "not_requested" };
     }
-    const bodyAllocationCost = secrets.redactionAllocationCost(observed.length);
-    const base64AllocationCost = Math.ceil(observed.length / 3) * 4 * 8 + 2;
+    const contentType = source.headers()["content-type"];
+    const bodyAllocationCost = secrets.redactionAllocationCost(
+      Math.max(observed.length, sourceBody.length),
+    );
+    const base64AllocationCost =
+      Math.ceil(Math.max(observed.length, sourceBody.length) / 3) * 4 * 8 + 2;
     const maxBodyAllocationBytes = options.maxBodyAllocationBytes;
     const observedBodyAllocationBytes = Math.max(
       bodyAllocationCost,
@@ -161,7 +179,6 @@ export const captureNetworkBody = async (
         limit_allocation_bytes: maxBodyAllocationBytes,
         observed_allocation_bytes: observedBodyAllocationBytes,
       };
-    const contentType = source.headers()["content-type"];
     if (
       contentType !== undefined &&
       secrets.redactionAllocationCost(contentType.length) >
@@ -177,6 +194,14 @@ export const captureNetworkBody = async (
           contentType.length,
         ),
       };
+    const jsonBody =
+      protection !== undefined ||
+      (contentType !== undefined && isJson(mediaTypeEssence(contentType)));
+    if (protection === undefined && jsonBody)
+      sourceBody = secrets.redactJsonBody(observed, {
+        maxBytes: options.maxBodyBytes,
+        maxAllocationBytes: options.maxBodyAllocationBytes,
+      });
     const admission = await preflight?.({
       observedBytes: observed.length,
       allocationBytes: observedBodyAllocationBytes,
@@ -184,7 +209,7 @@ export const captureNetworkBody = async (
     });
     if (admission?.status === "omitted")
       return { state: "omitted", reason: admission.reason };
-    const retained = secrets.redactBytes(observed);
+    const retained = jsonBody ? sourceBody : secrets.redactBytes(sourceBody);
     if (retained.length > maxBodyBytes)
       return {
         state: "unavailable",
