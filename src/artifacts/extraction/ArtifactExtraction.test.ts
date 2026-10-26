@@ -544,6 +544,36 @@ it("plans dry-run extraction with unresolved/unsupported entries and labeled byt
     expect(planned.extraction_manifest.selected_occurrence_ids).toEqual(
       materialized.extraction_manifest.selected_occurrence_ids,
     );
+    expect(planned.limitations).not.toContain(
+      "Non-file inventory entries were not fully reconciled with the live reader; affected directory, symlink, and metadata facts remain unresolved.",
+    );
+  } finally {
+    await resourceScope.close();
+  }
+});
+
+it("reconciles non-file directory and symlink entries against the inventory snapshot in dry-run mode", async () => {
+  const directory = await createTestTempDirectory(
+    "rea-extraction-dry-run-non-file-reconcile-",
+  );
+  const source = join(directory, "source");
+  await mkdir(join(source, "empty-dir"), { recursive: true });
+  await writeFile(join(source, "alpha.txt"), "alpha");
+  await symlink("alpha.txt", join(source, "alias.txt"));
+  const resourceScope = new ArtifactResourceScope();
+  try {
+    const stablePlan = await extractArtifact({
+      inputPath: source,
+      inputFormat: "asar",
+      outputRoot: join(directory, "stable-dry-out"),
+      dryRun: true,
+      environment: {},
+      integrityPolicy: "fail",
+      resourceScope,
+    });
+    expect(stablePlan.limitations).not.toContain(
+      "Non-file inventory entries were not fully reconciled with the live reader; affected directory, symlink, and metadata facts remain unresolved.",
+    );
   } finally {
     await resourceScope.close();
   }

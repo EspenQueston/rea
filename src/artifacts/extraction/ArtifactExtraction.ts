@@ -359,6 +359,7 @@ const materializeSelection = async ({
         zipSource !== undefined || reader.prepareContainer !== undefined;
       unresolvedPlan = await planSelectedEntries({
         reader,
+        inventory,
         outputRoot: resolvedOutputRoot,
         platform,
         caseSensitivity: destinationCaseSensitivity,
@@ -513,6 +514,7 @@ const verifyPlannedEntry = async (
 
 const planSelectedEntries = async ({
   reader,
+  inventory,
   outputRoot,
   platform,
   caseSensitivity,
@@ -523,6 +525,7 @@ const planSelectedEntries = async ({
   signal,
 }: {
   readonly reader: ArtifactReader;
+  readonly inventory: ArtifactInventorySnapshot;
   readonly outputRoot: string;
   readonly platform: NodeJS.Platform;
   readonly caseSensitivity: DestinationCaseSensitivity;
@@ -540,10 +543,31 @@ const planSelectedEntries = async ({
     readonly selectedItem: SelectedOccurrence;
     readonly destinationPath: string;
   }[] = [];
+  const inventoriedNonFile = new Map(
+    inventory.occurrences
+      .filter(
+        (occurrence) =>
+          occurrence.logical_path !== "." &&
+          (occurrence.entry_kind === "directory" ||
+            occurrence.entry_kind === "symlink" ||
+            occurrence.entry_kind === "metadata"),
+      )
+      .map((occurrence) => [occurrence.logical_path, occurrence] as const),
+  );
+  const observedNonFile = new Set<string>();
+  const nonFileMismatches: string[] = [];
   for await (const entry of reader.entries(signal, traversal)) {
     const path = normalizeArtifactPath(entry.path);
     readerRegistry.add(path, entry.kind);
-    if (entry.kind !== "file" && entry.kind !== "slice") continue;
+    if (entry.kind !== "file" && entry.kind !== "slice") {
+      observedNonFile.add(path);
+      if (!inventoriedNonFile.has(path)) {
+        nonFileMismatches.push(
+          `Newly observed ${entry.kind} entry ${path} is not in the inventory snapshot.`,
+        );
+      }
+      continue;
+    }
     const selectedItem = byPath.get(path);
     if (selectedItem === undefined) {
       throw new ArtifactReaderFailure(
@@ -586,6 +610,13 @@ const planSelectedEntries = async ({
       "integrity",
       `Inventoried regular artifact entries were not materialized: ${[...byPath.keys()].sort(compareUnicodeCodePoints).join(", ")}`,
     );
+  for (const [path, occurrence] of inventoriedNonFile) {
+    if (!observedNonFile.has(path)) {
+      nonFileMismatches.push(
+        `Inventoried ${occurrence.entry_kind} entry ${path} was not observed by the live reader.`,
+      );
+    }
+  }
   const unresolvedByOccurrenceId = new Map<string, string>();
   const limitations: string[] = [];
   let hasCaseLimitation = false;
@@ -639,6 +670,12 @@ const planSelectedEntries = async ({
         ? "Destination directory case sensitivity is unknown because the destination parent has no observable cased entry; case-colliding paths remain unresolved in the dry-run plan."
         : "Non-ASCII case-folding paths depend on the destination filesystem case table and cannot be verified without creating files; affected paths remain unresolved in the dry-run plan.",
     );
+  if (nonFileMismatches.length > 0) {
+    limitations.push(
+      ...nonFileMismatches,
+      "Non-file inventory entries were not fully reconciled with the live reader; affected directory, symlink, and metadata facts remain unresolved.",
+    );
+  }
   return { byOccurrenceId: unresolvedByOccurrenceId, limitations };
 };
 
