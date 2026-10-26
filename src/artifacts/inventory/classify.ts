@@ -6,7 +6,7 @@ import type { Stats } from "node:fs";
 import type { StableRegularFileDescriptor } from "../../filesystem/RegularFile.js";
 import type { OwnedFileHandle } from "../../filesystem/OwnedFileHandle.js";
 
-import { containsPyInstallerArchive } from "../pyinstaller/CArchiveLayout.js";
+import { findPyInstallerCookie } from "../pyinstaller/CArchiveLayout.js";
 import { decodeNodeSeaBlob } from "../nodeSea/NodeSeaBlob.js";
 import { locateNodeSea, readNodeSeaBlob } from "../nodeSea/NodeSeaLocation.js";
 import { classifyArtifactContent } from "./ArtifactGraphConstruction.js";
@@ -21,6 +21,7 @@ import {
   zipRootPackageFormat,
 } from "../../domain/zipPackageFormat.js";
 import { ArtifactReaderFailure } from "../ArtifactReader.js";
+import { findDotnetBundleHeader } from "../dotnet/DotnetBundle.js";
 import type { ArtifactResourceOwner } from "../ArtifactResourceScope.js";
 import type { HashResult } from "../ArtifactHash.js";
 import {
@@ -102,6 +103,7 @@ export const classifyAndHashRootForInventory = async (
       format === "mach-o-universal" ||
       format === "godot-pck" ||
       format === "pyinstaller" ||
+      format === "dotnet-bundle" ||
       format === "node-sea";
     outcome = {
       kind: "completed",
@@ -212,13 +214,24 @@ const classifyRootFormat = async (
       );
       return "node-sea";
     }
-    const packaged = await containsPyInstallerArchive(
-      handle,
-      archiveBytes,
-      signal,
-    );
+    const packaged = await findPyInstallerCookie(handle, archiveBytes, signal);
     abortIfNeeded(signal);
-    if (packaged) return "pyinstaller";
+    // A CArchive payload may contain another apphost whose offsets belong to
+    // that member. Only a marker before the payload can claim the outer host.
+    const markerSearchEnd = packaged?.ok
+      ? packaged.value.archiveStart
+      : archiveBytes;
+    if (
+      format !== "mach-o-universal" &&
+      (await findDotnetBundleHeader(
+        handle,
+        archiveBytes,
+        signal,
+        markerSearchEnd,
+      )) !== undefined
+    )
+      return "dotnet-bundle";
+    if (packaged?.ok) return "pyinstaller";
   }
   return format;
 };

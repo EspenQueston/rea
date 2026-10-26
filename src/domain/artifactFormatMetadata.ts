@@ -89,6 +89,14 @@ export type PyInstallerEntryMetadata = z.infer<
   typeof pyInstallerEntryMetadataSchema
 >;
 
+/** Ordinary .NET bundle manifest facts, not proof of managed assembly validity. */
+export const dotnetBundleEntryMetadataSchema = z.strictObject({
+  kind: z.literal("dotnet-bundle-entry"),
+  major_version: uint32,
+  minor_version: uint32,
+  file_type: z.number().int().min(0).max(255),
+});
+
 /**
  * Node.js single-executable blob facts. Lengths follow the Node 24 64-bit
  * little-endian `size_t` reader. The fuse sentinel is a separate carrier scan.
@@ -137,6 +145,7 @@ export const artifactFormatMetadataSchema = z.discriminatedUnion("kind", [
   godotPckEntryMetadataSchema,
   pyInstallerMetadataSchema,
   pyInstallerEntryMetadataSchema,
+  dotnetBundleEntryMetadataSchema,
   nodeSeaMetadataSchema,
   nodeSeaEntryMetadataSchema,
 ]);

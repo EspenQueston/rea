@@ -15,6 +15,7 @@ import { SafeOutputTreeDestinationRefusal } from "../SafeOutputTreeAdmission.js"
 import { compareUnicodeCodePoints } from "../../domain/unicodeCodePointOrder.js";
 import { digestCanonicalValue } from "../../domain/canonicalDigest.js";
 import { AsarArtifactReader } from "../AsarArtifactReader.js";
+import { DotnetBundleArtifactReader } from "../DotnetBundleArtifactReader.js";
 import { GodotPckArtifactReader } from "../GodotPckArtifactReader.js";
 import {
   ArtifactPathRegistry,
@@ -37,6 +38,7 @@ import { MachOSliceArtifactReader } from "../MachOSliceArtifactReader.js";
 import { NodeSeaArtifactReader } from "../NodeSeaArtifactReader.js";
 import { PyInstallerArtifactReader } from "../PyInstallerArtifactReader.js";
 import { containsPyInstallerArchive } from "../pyinstaller/CArchiveLayout.js";
+import { findDotnetBundleHeader } from "../dotnet/DotnetBundle.js";
 import { locateNodeSea } from "../nodeSea/NodeSeaLocation.js";
 import {
   artifactExtractionResultSchema,
@@ -94,6 +96,17 @@ const extractArtifactInScope = async (
       ? undefined
       : { ...zipSource, releaseAttempted: false };
   try {
+    if (
+      (input.inputFormat === "pe" || input.inputFormat === "elf") &&
+      !["dotnet-bundle", "pyinstaller", "godot-pck", "node-sea"].includes(
+        snapshot.manifest.root_format,
+      )
+    )
+      throw new AnalysisUnsupportedTargetError(
+        "extract_artifact",
+        input.inputPath,
+        `Artifact format has no extraction reader: ${input.inputFormat}`,
+      );
     return await materializeArtifactInventoryInScope(
       input,
       sourcePath,
@@ -568,7 +581,10 @@ const requireExtractableFormat = async (
         abortIfNeeded(signal);
         const packaged = await containsPyInstallerArchive(handle, size, signal);
         abortIfNeeded(signal);
-        return packaged;
+        return (
+          packaged ||
+          (await findDotnetBundleHeader(handle, size, signal)) !== undefined
+        );
       },
     );
     if (!pack)
@@ -595,6 +611,8 @@ const createReader = async (
   signal?: AbortSignal,
   zipSource?: ActiveZipInventorySource,
 ): Promise<ArtifactReader> => {
+  if (containerFormat === "dotnet-bundle")
+    return new DotnetBundleArtifactReader(path);
   if (zipSource !== undefined && isZipPackageFormat(containerFormat))
     return new ZipArtifactReader(
       path,

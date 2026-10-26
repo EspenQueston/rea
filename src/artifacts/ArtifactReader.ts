@@ -44,6 +44,8 @@ export interface ArtifactEntry {
   readonly executable: boolean;
   readonly encrypted: boolean;
   readonly byteOffset: number | null;
+  /** Stored source extent; expanded size may differ for compressed members. */
+  readonly byteLength?: number;
   readonly declaredIntegrity: ArtifactIntegrityClaim | null;
   readonly formatMetadata?: ArtifactFormatMetadata;
   readonly unpacked: boolean;
@@ -107,6 +109,7 @@ export const sameArtifactEntry = (
   entry.executable === produced.executable &&
   entry.encrypted === produced.encrypted &&
   entry.byteOffset === produced.byteOffset &&
+  entry.byteLength === produced.byteLength &&
   sameDeclaredIntegrity(entry.declaredIntegrity, produced.declaredIntegrity) &&
   sameFormatMetadata(entry.formatMetadata, produced.formatMetadata) &&
   entry.unpacked === produced.unpacked &&
@@ -176,6 +179,7 @@ export interface ArtifactReader {
     | "asar"
     | "godot-pck"
     | "pyinstaller"
+    | "dotnet-bundle"
     | "node-sea"
     | "file";
   entries(
