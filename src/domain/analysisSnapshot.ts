@@ -358,25 +358,26 @@ type SnapshotExecutionProjection = Pick<
   | "subject"
 >;
 
-/** Project one authenticated execution into the shared persisted snapshot shape. */
+/** Own one execution's snapshot data independently of its caller-visible result. */
 const snapshotExecutionProjection = (
   execution: SnapshotExecution,
   provider: AnalysisSnapshotEntry["execution"]["provider"],
-): SnapshotExecutionProjection => ({
-  result: execution.result,
-  raw_result: execution.rawResult,
-  provider,
-  limitations: [...execution.limitations],
-  relationship_coverage: execution.relationshipCoverage ?? null,
-  locations: [...execution.locations],
-  subject:
-    execution.subject === null
-      ? null
-      : subjectSchema.parse({
-          ...execution.subject,
-          architecture: execution.subject.architecture ?? null,
-        }),
-});
+): SnapshotExecutionProjection =>
+  entrySchema.shape.execution.parse({
+    result: execution.result,
+    raw_result: execution.rawResult,
+    provider,
+    limitations: execution.limitations,
+    relationship_coverage: execution.relationshipCoverage ?? null,
+    locations: execution.locations,
+    subject:
+      execution.subject === null
+        ? null
+        : {
+            ...execution.subject,
+            architecture: execution.subject.architecture ?? null,
+          },
+  });
 
 const canonicalJson = (value: unknown): string => {
   const json = jsonValueSchema.parse(value);
@@ -549,7 +550,7 @@ export const createAnalysisSnapshotWorkflowEntry = (input: {
         execution,
         execution.analysisProfile.provider,
       ),
-      analysis_profile: execution.analysisProfile,
+      analysis_profile: analysisProfileSchema.parse(execution.analysisProfile),
     },
   };
 };
@@ -607,13 +608,21 @@ export const createAnalysisSnapshotEntry = (input: {
 const validatedSnapshots = new WeakMap<object, AnalysisSnapshot>();
 
 /** Parse a provider/profile-exact snapshot and verify its entries and evidence. */
-export const parseAnalysisSnapshot = (input: unknown): AnalysisSnapshot => {
+export const parseAnalysisSnapshot = (input: unknown): AnalysisSnapshot =>
+  authenticateSnapshot(input).parsed;
+
+const authenticateSnapshot = (
+  input: unknown,
+): {
+  readonly parsed: AnalysisSnapshot;
+  readonly restored: AnalysisSnapshot;
+} => {
   if (typeof input === "object" && input !== null) {
     const owned = validatedSnapshots.get(input);
-    if (owned !== undefined) return owned;
+    if (owned !== undefined) return { parsed: owned, restored: owned };
   }
   const parsed = analysisSnapshotSchema.parse(input);
-  restoreSnapshot(
+  const restored = restoreSnapshot(
     parsed,
     parseEvidenceBundle(parsed.evidence_bundle),
     parsed.entries.map((entry) => ({
@@ -635,12 +644,12 @@ export const parseAnalysisSnapshot = (input: unknown): AnalysisSnapshot => {
       ),
     })),
   );
-  return parsed;
+  return { parsed, restored };
 };
 
 /** Own an authenticated immutable cache while preserving mutable caller exports. */
 export const immutableAnalysisSnapshot = (input: unknown): AnalysisSnapshot =>
-  sealSnapshot(parseAnalysisSnapshot(input));
+  sealSnapshot(authenticateSnapshot(input).restored);
 
 const sealSnapshot = (snapshot: AnalysisSnapshot): AnalysisSnapshot => {
   for (const entry of [...snapshot.entries, ...snapshot.workflow_entries]) {
