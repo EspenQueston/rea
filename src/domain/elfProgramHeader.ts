@@ -1,5 +1,7 @@
 import { err, ok } from "./result.js";
 
+export const PT_INTERP = 3;
+
 /** Fixed ELF32/ELF64 program declarations; consumers own type, precision and mapping admission. */
 export const readElfProgramHeader = (
   bytes: Uint8Array,
