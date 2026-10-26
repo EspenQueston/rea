@@ -411,29 +411,30 @@ export const performScenarioRequest = async (input: {
     saveValues(action.step_id, response.body, action.save, secrets);
 };
 
-/** A path or URL with its `placeholder`s filled, each value percent-encoded; a request path's are spelled as written. A value a URL path would drop as a dot segment fails the step. */
+/** A URL path segment a URL parser drops or folds into its parent: `.`, `..` or a percent-encoded spelling of one. */
+const DOT_SEGMENT = /^(?:\.|%2e){1,2}$/iu;
+
+/** A path or URL with its `placeholder`s filled, each value percent-encoded; a request path's are spelled as written. A filled path segment a URL path would drop as a dot segment fails the step. */
 export const withSavedPlaceholders = (
   text: string,
   secrets: BrowserScenarioSecrets,
   placeholder: RegExp = SAVED_PLACEHOLDER,
 ): string => {
+  const fill = (part: string): string =>
+    part.replace(placeholder, (_placeholder, name: string) =>
+      encodeURIComponent(String(secrets.savedValue(name))),
+    );
   const pathEnd = text.search(/[?#]/u);
-  return text.replace(
-    placeholder,
-    (match: string, name: string, offset: number) => {
-      const encoded = encodeURIComponent(String(secrets.savedValue(name)));
-      const end = offset + match.length;
-      const segment =
-        (pathEnd < 0 || end <= pathEnd) &&
-        (offset === 0 || text[offset - 1] === "/") &&
-        (end === text.length || "/?#".includes(text[end]!));
-      if (segment && (encoded === "." || encoded === ".."))
-        throw new Error(
-          `Saved value ${name} is a dot segment, which a URL path drops, so the step cannot send it.`,
-        );
-      return encoded;
-    },
-  );
+  const path = pathEnd < 0 ? text : text.slice(0, pathEnd);
+  const segments = path.split("/").map((segment) => {
+    const filled = fill(segment);
+    if (filled !== segment && DOT_SEGMENT.test(filled))
+      throw new Error(
+        `A saved value makes the path segment ${JSON.stringify(segment)} a dot segment, which a URL path drops, so the step cannot send it.`,
+      );
+    return filled;
+  });
+  return segments.join("/") + (pathEnd < 0 ? "" : fill(text.slice(pathEnd)));
 };
 
 /** Whether a request a UI step triggered is the one its `save_response` names: method, start origin, and path with `{*}` matching one segment. */

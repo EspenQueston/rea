@@ -34,7 +34,8 @@ values.
   the placeholder becomes the saved value with its JSON type, and a placeholder
   inside a longer string is filled as text. Header values and Basic credential
   parts send `{source: "saved", name}`. Other braces are sent as written. A
-  saved `.` or `..` that fills a whole path segment fails the step.
+  saved value that makes a path segment `.` or `..`, alone or with the text
+  beside it, fails the step.
 - `basic_credentials` sends the base64 of `username:password` from `parts:
   [username, password]`, each a literal, declared secret, saved value, cookie or
   local storage entry. The encoded value and parts read from the page are

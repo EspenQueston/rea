@@ -502,13 +502,14 @@ id the application assigns:
   longer.
 - `{saved:name}` sends a saved value in a request step's `path`, including its
   query, and in a `goto` destination's `url`, percent-encoded; a destination's
-  structured `query` values are sent as declared. A saved `.` or `..` that fills
-  a whole path segment fails the step, since the URL would drop it. In a request
-  step's `json` body, a string that is only `{saved:name}` becomes the saved
-  value with the JSON type it was saved with, so a saved number id is sent as a
-  number, and `{saved:name}` inside a longer string is filled as text. A header
-  value or Basic credentials part sends one as `{"source": "saved", "name"}`.
-  Other braces, such as `{id}`, are sent as written, and so is a percent-encoded
+  structured `query` values are sent as declared. A saved value that makes a
+  path segment `.` or `..`, alone or with the text beside it (including `%2e`),
+  fails the step, since the URL would drop it. In a request step's `json` body,
+  a string that is only `{saved:name}` becomes the saved value with the JSON
+  type it was saved with, so a saved number id is sent as a number, and
+  `{saved:name}` inside a longer string is filled as text. A header value or
+  Basic credentials part sends one as `{"source": "saved", "name"}`. Other
+  braces, such as `{id}`, are sent as written, and so is a percent-encoded
   `%7Bsaved:name%7D` anywhere but a `goto` URL, whose parsed form spells the
   braces that way.
 - Validation refuses a saved value that no earlier step saves. A later save of

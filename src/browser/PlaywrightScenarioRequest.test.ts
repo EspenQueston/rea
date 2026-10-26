@@ -1022,6 +1022,35 @@ describe("values a URL path or Basic header cannot carry", () => {
     },
   );
 
+  it.each([
+    ["/api/items/{saved:item}.", `${ORIGIN}/items/{saved:item}.`],
+    ["/api/items/%2e{saved:item}", `${ORIGIN}/items/%2E{saved:item}`],
+  ])(
+    "fails a step whose saved . and the text beside it make a dot segment (%s)",
+    async (path, url) => {
+      const parsed = scenario([
+        requestStep({ save: [{ name: "item", json_pointer: "/id" }] }),
+        {
+          step_id: "open",
+          action: "goto",
+          destination: { url },
+          wait_until: "load",
+        },
+        requestStep({ step_id: "edit", path }),
+      ]);
+      const secrets = resolved(parsed);
+      secrets.save("create.item", "item", ".", false);
+      const goto = vi.fn(async () => null);
+      await expect(
+        perform({ goto } as unknown as Page, parsed.actions[1]!, secrets),
+      ).rejects.toThrow("dot segment");
+      expect(goto).not.toHaveBeenCalled();
+      await expect(
+        perform(fakePage({}), parsed.actions[2]!, secrets),
+      ).rejects.toThrow("dot segment");
+    },
+  );
+
   it("sends dots that are part of a segment or of the query", async () => {
     const parsed = scenario([
       requestStep({ save: [{ name: "item", json_pointer: "/id" }] }),
