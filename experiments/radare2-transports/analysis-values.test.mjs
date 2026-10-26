@@ -23,7 +23,7 @@ const graph = (base) => [
   },
 ];
 
-test("CFG arithmetic preserves wide addresses and unresolved calls", () => {
+void test("CFG arithmetic preserves wide addresses and unresolved calls", () => {
   const result = decodeGraph(graph("0x20000000000001"));
   assert.equal(result.basic_blocks[0].end, "0x20000000000005");
   assert.deepEqual(result.basic_blocks[0].successors, []);
@@ -34,7 +34,7 @@ test("CFG arithmetic preserves wide addresses and unresolved calls", () => {
   );
 });
 
-test("native struct member sizes are already aggregate; ABI padding remains unknown", () => {
+void test("native struct member sizes are already aggregate; ABI padding remains unknown", () => {
   const layout = decodeStructLayout(
     {
       name: "Buffer",
@@ -53,7 +53,7 @@ test("native struct member sizes are already aggregate; ABI padding remains unkn
   );
 });
 
-test("non-default p-code spaces remain outside native CFG scope without losing operations", () => {
+void test("non-default p-code spaces remain outside native CFG scope without losing operations", () => {
   const flow = decodeHighPcode(
     `<result><function name="selected">
     <addr space="ram" offset="0x1000"/>
@@ -72,7 +72,7 @@ test("non-default p-code spaces remain outside native CFG scope without losing o
   ]);
 });
 
-test("unobserved parameter flow retains source omissions and unknown selection", () => {
+void test("unobserved parameter flow retains source omissions and unknown selection", () => {
   const flow = {
     producer: "r2ghidra-pdgx",
     ir: "ghidra-high-pcode",

@@ -20,7 +20,7 @@ const value = (xml) => {
   return result.value;
 };
 
-test("SSA references separate register versions and retain 64-bit identities", () => {
+void test("SSA references separate register versions and retain 64-bit identities", () => {
   const graph = value(
     model(
       vn("0x20000000000001", "0x4000", 'input="true"') +
@@ -62,7 +62,7 @@ test("SSA references separate register versions and retain 64-bit identities", (
   assert.equal(graph.truncated, false);
 });
 
-test("space and INDIRECT operation operands preserve positions and authority", () => {
+void test("space and INDIRECT operation operands preserve positions and authority", () => {
   const graph = value(
     model(
       vn(1) + vn(2) + vn(3) + vn(4),
@@ -89,7 +89,7 @@ test("space and INDIRECT operation operands preserve positions and authority", (
   );
 });
 
-test("anonymous pointer descriptors and an explicit void return survive parsing", () => {
+void test("anonymous pointer descriptors and an explicit void return survive parsing", () => {
   const graph = value(
     model(
       vn(1, "0x4008", 'input="true"'),
@@ -118,7 +118,7 @@ test("anonymous pointer descriptors and an explicit void return survive parsing"
   assert.equal(graph.return_type.storage, null);
 });
 
-test("DTD, entities, malformed models and dangling SSA references fail explicitly", () => {
+void test("DTD, entities, malformed models and dangling SSA references fail explicitly", () => {
   for (const xml of [
     '<!DOCTYPE result [<!ENTITY secret SYSTEM "file:///etc/passwd">]><result>&secret;</result>',
     "<!DOCTYPE result><result/>",
@@ -136,14 +136,14 @@ test("DTD, entities, malformed models and dangling SSA references fail explicitl
   }
 });
 
-test("unknown opcodes retain their numeric identity without invented semantics", () => {
+void test("unknown opcodes retain their numeric identity without invented semantics", () => {
   const graph = value(model(vn(1), op(1, 999, ref(1))));
   assert.equal(graph.operations[0].opcode, null);
   assert.equal(graph.operations[0].opcode_number, 999);
   assert.match(graph.unknowns.join("\n"), /Opcode 999/u);
 });
 
-test("model budgets report omitted operations, inputs and SSA edges", () => {
+void test("model budgets report omitted operations, inputs and SSA edges", () => {
   const varnodes = Array.from({ length: 3_003 }, (_, index) =>
     vn(index + 1),
   ).join("");
@@ -163,13 +163,13 @@ test("model budgets report omitted operations, inputs and SSA edges", () => {
   assert.equal(graph.truncated, true);
 });
 
-test("XML capacity rejection is distinct from malformed producer output", () => {
+void test("XML capacity rejection is distinct from malformed producer output", () => {
   const result = parseHighPcode(" ".repeat(16 * 1024 * 1024 + 1));
   assert.equal(result.ok, false);
   assert.equal(result.error._tag, "AnalysisResourceConstraintError");
 });
 
-test("operation and input subtrees are bounded during parsing with examined coverage", () => {
+void test("operation and input subtrees are bounded during parsing with examined coverage", () => {
   const graph = value(
     model(
       vn(1),
@@ -189,7 +189,7 @@ test("operation and input subtrees are bounded during parsing with examined cove
   assert.equal(wide.known_omitted_inputs, 50_000 - 64);
 });
 
-test("tree and depth capacity fail before unbounded XML model allocation", () => {
+void test("tree and depth capacity fail before unbounded XML model allocation", () => {
   for (const xml of [
     model("<addr/>".repeat(220_000), ""),
     model(vn(1), "", "<type>".repeat(600) + "</type>".repeat(600)),
@@ -203,7 +203,7 @@ test("tree and depth capacity fail before unbounded XML model allocation", () =>
   }
 });
 
-test("retained operations follow producer order and unrelated metadata cannot consume their budget", () => {
+void test("retained operations follow producer order and unrelated metadata cannot consume their budget", () => {
   const xml = model(
     vn(1),
     op(2, 10, "<void/>" + ref(1)),

@@ -7,7 +7,7 @@ import { test } from "node:test";
 import { createAnalysisExperiment } from "./analysis.mjs";
 import { retryNativeByteCleanup } from "./native-bytes.mjs";
 
-test("operation deadline cancels pre-observation hashing without a caller signal", async () => {
+void test("operation deadline cancels pre-observation hashing without a caller signal", async () => {
   const root = await mkdtemp(join(tmpdir(), "rea-analysis-deadline-"));
   const path = join(root, "large-sparse-target");
   const handle = await open(path, "w");
@@ -33,7 +33,7 @@ test("operation deadline cancels pre-observation hashing without a caller signal
   }
 });
 
-test(
+void test(
   "a FIFO without a writer is rejected before a blocking open or provider launch",
   { skip: process.platform === "win32" },
   async () => {

@@ -122,7 +122,7 @@ function verifyAnalysis(result) {
 }
 
 for (const transport of ["exec", "r2pipe", "r2mcp"]) {
-  test(`real ${transport}: JSON, decompilers, diagnostics and owned cleanup`, async () => {
+  void test(`real ${transport}: JSON, decompilers, diagnostics and owned cleanup`, async () => {
     const selected =
       transport === "exec"
         ? [{ cmd: "aa; aflj", json: true }, "aa; pdg @ main", "aa; pdc @ main"]
@@ -143,7 +143,7 @@ for (const transport of ["exec", "r2pipe", "r2mcp"]) {
       );
     }
   });
-  test(`real ${transport}: analyst CFG, inferred types, layouts and value dependencies`, async () => {
+  void test(`real ${transport}: analyst CFG, inferred types, layouts and value dependencies`, async () => {
     const experiment = createAnalysisExperiment(
       { transport, path: artifact, settings: { "bin.relocs.apply": true } },
       {
@@ -237,7 +237,7 @@ for (const transport of ["exec", "r2pipe", "r2mcp"]) {
   });
 }
 
-test("numeric decoding preserves native strings and unsafe JSON literals", async () => {
+void test("numeric decoding preserves native strings and unsafe JSON literals", async () => {
   for (const transport of ["exec", "r2pipe", "r2mcp"]) {
     const result = await probe({
       transport,
@@ -260,7 +260,7 @@ test("numeric decoding preserves native strings and unsafe JSON literals", async
   }
 });
 
-test("analyst MCP advertises valid schemas and pages retained producer facts", async () => {
+void test("analyst MCP advertises valid schemas and pages retained producer facts", async () => {
   const configuration = join(root, "analysis.json");
   await writeFile(
     configuration,
@@ -394,7 +394,7 @@ async function verifyStringNumbers(selected) {
   assert.ok(result.value.transcript.every((entry) => !entry.numeric_literals));
 }
 
-test("r2pipe2 retains native error status and logs", async () => {
+void test("r2pipe2 retains native error status and logs", async () => {
   const result = await probe({
     transport: "r2pipe",
     path: artifact,
@@ -406,7 +406,7 @@ test("r2pipe2 retains native error status and logs", async () => {
   assert.equal(typeof output[1].res.bin.arch, "string");
 });
 
-test("invalid native JSON preserves output on both old and corrected engines", async () => {
+void test("invalid native JSON preserves output on both old and corrected engines", async () => {
   const result = await probe({
     transport: "r2pipe",
     path: artifact,
@@ -440,7 +440,7 @@ async function close(server) {
   );
 }
 
-test("real HTTP: POST r2pipe2 to an existing session without taking ownership", async () => {
+void test("real HTTP: POST r2pipe2 to an existing session without taking ownership", async () => {
   // Reserve an available port, then release it before launching the owned fixture server.
   const reservation = createServer();
   const port = await listen(reservation);
@@ -508,7 +508,7 @@ test("real HTTP: POST r2pipe2 to an existing session without taking ownership", 
   await verifyStringNumbers({ transport: "http", endpoint });
 });
 
-test("HTTP preserves command bytes, status and URL; rejects redirects and remote hosts", async () => {
+void test("HTTP preserves command bytes, status and URL; rejects redirects and remote hosts", async () => {
   const requests = [];
   const server = createServer(async (request, response) => {
     let body = "";
@@ -586,7 +586,7 @@ test("HTTP preserves command bytes, status and URL; rejects redirects and remote
   }
 });
 
-test("HTTP cancellation after dispatch returns unknown completion without replay", async () => {
+void test("HTTP cancellation after dispatch returns unknown completion without replay", async () => {
   const controller = new AbortController();
   let dispatched = 0;
   const server = createServer(async (request) => {

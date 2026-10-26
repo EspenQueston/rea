@@ -135,7 +135,7 @@ after(async () => {
   await rm(root, { recursive: true, force: true });
 });
 
-test("retained #3521 session feeds the shared instruction and Evidence contracts", async () => {
+void test("retained #3521 session feeds the shared instruction and Evidence contracts", async () => {
   const prior = manager.status(sessionId);
   assert.equal(prior.caller_selected_path, targetPath);
   assert.equal(prior.resolved_path, targetPath);
@@ -195,7 +195,7 @@ test("retained #3521 session feeds the shared instruction and Evidence contracts
   );
 });
 
-test("cancelled queued read never dispatches and leaves retained state usable", async () => {
+void test("cancelled queued read never dispatches and leaves retained state usable", async () => {
   const controller = new AbortController();
   const first = manager.execute(sessionId, "?v rea_shared_session_marker");
   const cancelled = manager.execute(

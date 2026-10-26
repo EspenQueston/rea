@@ -63,7 +63,7 @@ after(async () => {
   await rm(folder, { recursive: true, force: true });
 });
 
-test("wide virtual coordinates and quoted bytes verify against a real file handle", async () => {
+void test("wide virtual coordinates and quoted bytes verify against a real file handle", async () => {
   const source = native();
   const observed = requireValue(
     await readNativeBytes(
@@ -85,7 +85,7 @@ test("wide virtual coordinates and quoted bytes verify against a real file handl
   assert.equal(observed.raw, source.value.raw);
 });
 
-test("full padded counts, virtual tails and ambiguous mappings never prove completeness", async () => {
+void test("full padded counts, virtual tails and ambiguous mappings never prove completeness", async () => {
   for (const sections of [
     [],
     [{ ...section, size: 1 }],
@@ -114,7 +114,7 @@ test("full padded counts, virtual tails and ambiguous mappings never prove compl
   assert.equal(external.result.complete, null);
 });
 
-test("overlay differences and stale reader digests preserve both native and file observations", async () => {
+void test("overlay differences and stale reader digests preserve both native and file observations", async () => {
   const overlay = requireValue(
     await readNativeBytes(
       input,
@@ -148,7 +148,7 @@ test("overlay differences and stale reader digests preserve both native and file
   );
 });
 
-test("malformed byte arrays fail with the observed payload intact", async () => {
+void test("malformed byte arrays fail with the observed payload intact", async () => {
   const hole = [48, 64, 80, 96];
   delete hole[2];
   for (const bytes of [[256], ["1.5"], [null], hole, [1, 2, 3, 4, 5]]) {
@@ -160,7 +160,7 @@ test("malformed byte arrays fail with the observed payload intact", async () => 
   }
 });
 
-test("cancellation is a Result and preserves bytes observed before independent verification", async () => {
+void test("cancellation is a Result and preserves bytes observed before independent verification", async () => {
   const early = new AbortController();
   early.abort();
   let calls = 0;
@@ -189,7 +189,7 @@ test("cancellation is a Result and preserves bytes observed before independent v
   assert.equal(partial.error.partialObservation.result.bytes_hex, "30405060");
 });
 
-test("cancellation during final file close preserves observed bytes and the caller reason", async (context) => {
+void test("cancellation during final file close preserves observed bytes and the caller reason", async (context) => {
   const controller = new AbortController();
   const reason = new Error("Caller cancelled during final file close");
   const originalOpen = fs.open;
@@ -228,7 +228,7 @@ test("cancellation during final file close preserves observed bytes and the call
   }
 });
 
-test("failed file cleanup preserves completed verification or primary failure, blocks admission and retries", async (context) => {
+void test("failed file cleanup preserves completed verification or primary failure, blocks admission and retries", async (context) => {
   for (const failRead of [false, true]) {
     const originalOpen = fs.open;
     const primary = new Error("Independent read failed before close");
@@ -289,7 +289,7 @@ test("failed file cleanup preserves completed verification or primary failure, b
   }
 });
 
-test("an opaque cleanup-shaped abort reason during a file read never transfers an unrelated owner", async (context) => {
+void test("an opaque cleanup-shaped abort reason during a file read never transfers an unrelated owner", async (context) => {
   let unrelatedCloses = 0;
   const reason = new RegularFileCleanupFailure({
     path: "/unrelated-owner",
@@ -329,7 +329,7 @@ test("an opaque cleanup-shaped abort reason during a file read never transfers a
   }
 });
 
-test("the capture-derived length bound and uint64 extent reject before reading", async () => {
+void test("the capture-derived length bound and uint64 extent reject before reading", async () => {
   assert.equal(MAX_NATIVE_READ_BYTES, 1024 * 1024);
   assert.equal(
     byteInputSchema.safeParse({ address: "0x0", length: MAX_NATIVE_READ_BYTES })

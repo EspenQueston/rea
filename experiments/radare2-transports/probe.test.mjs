@@ -105,7 +105,7 @@ async function ownedHost(args, environment = process.env) {
   return { launched, owner };
 }
 
-test("server shutdown during configuration or connect never leaves an open stdio peer", async () => {
+void test("server shutdown during configuration or connect never leaves an open stdio peer", async () => {
   for (const phase of ["configuration", "connect"])
     for (const signal of ["SIGINT", "SIGTERM"]) {
       const configuration = join(root, randomUUID() + ".json");
@@ -165,7 +165,7 @@ test("server shutdown during configuration or connect never leaves an open stdio
 });
 
 for (const transport of ["r2pipe", "r2mcp"]) {
-  test(`${transport}: interrupted partial frame retains exact bytes and cleanup`, async () => {
+  void test(`${transport}: interrupted partial frame retains exact bytes and cleanup`, async () => {
     const { connection, options, ready } = fixture(transport, "partial");
     const controller = new AbortController();
     const pending = probe(
@@ -188,7 +188,7 @@ for (const transport of ["r2pipe", "r2mcp"]) {
   });
 }
 
-test("captured environments replace ambient variables on every owned transport", async () => {
+void test("captured environments replace ambient variables on every owned transport", async () => {
   const previous = process.env.REA_FAULT_OMITTED;
   process.env.REA_FAULT_OMITTED = "synthetic-ambient-value";
   try {
@@ -209,7 +209,7 @@ test("captured environments replace ambient variables on every owned transport",
   }
 });
 
-test("MCP retains exact frames, full envelopes, notifications and catalog-authorized requests", async () => {
+void test("MCP retains exact frames, full envelopes, notifications and catalog-authorized requests", async () => {
   const { connection, options } = fixture("r2mcp", "mcp-success");
   const result = await probe({ ...connection, commands: ["ij"] }, options);
   assert.equal(result.ok, true, JSON.stringify(result));
@@ -249,7 +249,7 @@ test("MCP retains exact frames, full envelopes, notifications and catalog-author
   );
 });
 
-test("semantic HTTP endpoint refusals remain input errors before dispatch", async () => {
+void test("semantic HTTP endpoint refusals remain input errors before dispatch", async () => {
   for (const endpoint of [
     "https://127.0.0.1/cmd",
     "http://example.com/cmd",
@@ -269,7 +269,7 @@ test("semantic HTTP endpoint refusals remain input errors before dispatch", asyn
   }
 });
 
-test("MCP binds unique valid named contracts and validates arguments before dispatch", async () => {
+void test("MCP binds unique valid named contracts and validates arguments before dispatch", async () => {
   const open = { name: "open_file", inputSchema: { type: "object" } };
   const command = { name: "run_command", inputSchema: { type: "object" } };
   for (const tools of [
@@ -326,7 +326,7 @@ test("MCP binds unique valid named contracts and validates arguments before disp
   }
 });
 
-test("analysis projection retains XML capacity coverage beside complete producer replies", async () => {
+void test("analysis projection retains XML capacity coverage beside complete producer replies", async () => {
   const xml =
     '<function name="f"><addr space="ram" offset="4096"/><ast><varnodes>' +
     "<addr/>".repeat(220_000) +
@@ -371,7 +371,7 @@ test("analysis projection retains XML capacity coverage beside complete producer
   }
 });
 
-test("preparation cancellation never adopts an opaque reason's unrelated cleanup", async (context) => {
+void test("preparation cancellation never adopts an opaque reason's unrelated cleanup", async (context) => {
   for (const transport of ["r2pipe", "r2mcp", "exec"]) {
     const { connection, options, ready } = fixture(transport, "completed");
     const controller = new AbortController();
@@ -419,7 +419,7 @@ test("preparation cancellation never adopts an opaque reason's unrelated cleanup
   }
 });
 
-test("a distinct preparation failure stays primary when cancellation follows it", async (context) => {
+void test("a distinct preparation failure stays primary when cancellation follows it", async (context) => {
   const { connection, options, ready } = fixture("r2pipe", "completed");
   const controller = new AbortController();
   const primary = new Error("physical preparation failure");
@@ -445,7 +445,7 @@ test("a distinct preparation failure stays primary when cancellation follows it"
   }
 });
 
-test("actual preparation cleanup retains its exact owner separately from the opaque cancellation reason", async (context) => {
+void test("actual preparation cleanup retains its exact owner separately from the opaque cancellation reason", async (context) => {
   for (const transport of ["r2pipe", "exec"]) {
     const { connection, options, ready } = fixture(transport, "completed");
     const controller = new AbortController();
@@ -510,7 +510,7 @@ test("actual preparation cleanup retains its exact owner separately from the opa
 });
 
 for (const transport of ["exec", "r2pipe"]) {
-  test(`${transport}: failed cleanup stops the batch, blocks admission and resolves returned errors on retry`, async (context) => {
+  void test(`${transport}: failed cleanup stops the batch, blocks admission and resolves returned errors on retry`, async (context) => {
     const { connection, options } = fixture(transport, "completed");
     const owners = new Set();
     const intercepted = context.mock.method(
@@ -564,7 +564,7 @@ for (const transport of ["exec", "r2pipe"]) {
   });
 }
 
-test("frame and transcript capacity failures preserve their tag, limits and partial observations", async () => {
+void test("frame and transcript capacity failures preserve their tag, limits and partial observations", async () => {
   const { connection, options } = fixture("r2pipe", "overflow");
   const frame = await probe({ ...connection, commands: ["ij"] }, options);
   assert.equal(frame.error._tag, "AnalysisResourceConstraintError");
@@ -623,7 +623,7 @@ test("frame and transcript capacity failures preserve their tag, limits and part
   }
 });
 
-test("cancellation during failed process cleanup preserves its exact reason after retry", async (context) => {
+void test("cancellation during failed process cleanup preserves its exact reason after retry", async (context) => {
   for (const transport of ["exec", "r2pipe"]) {
     const { connection, options } = fixture(transport, "completed");
     const controller = new AbortController();
@@ -664,7 +664,7 @@ test("cancellation during failed process cleanup preserves its exact reason afte
   }
 });
 
-test("a cancelled queued probe cannot admit a successor before the active owner finishes", async () => {
+void test("a cancelled queued probe cannot admit a successor before the active owner finishes", async () => {
   const { connection, options, ready } = fixture("r2pipe", "blocked");
   const active = new AbortController();
   const pending = probe(
@@ -702,7 +702,7 @@ for (const [resource, surface] of [
   ["file", "analysis"],
   ["file", "analysis-server"],
 ]) {
-  test(`${surface}: ${resource} cleanup survives shutdown until retry succeeds`, async () => {
+  void test(`${surface}: ${resource} cleanup survives shutdown until retry succeeds`, async () => {
     const { connection, options, ready } = fixture("r2pipe", "linger");
     const release = join(root, randomUUID());
     const stopped = join(root, randomUUID());
@@ -836,7 +836,7 @@ for (const [resource, surface] of [
   });
 }
 
-test("blocked pipe write cancels before releasing the analyst queue", async () => {
+void test("blocked pipe write cancels before releasing the analyst queue", async () => {
   const { connection, options, ready } = fixture("r2pipe", "blocked");
   const controller = new AbortController();
   const experiment = createAnalysisExperiment(connection, {
@@ -856,7 +856,7 @@ test("blocked pipe write cancels before releasing the analyst queue", async () =
   assert.throws(() => process.kill(pid, 0), { code: "ESRCH" });
 });
 
-test("blocked pipe write observes the batch deadline", async () => {
+void test("blocked pipe write observes the batch deadline", async () => {
   const { connection, options } = fixture("r2pipe", "blocked");
   const began = performance.now();
   const result = await probe(
@@ -867,7 +867,7 @@ test("blocked pipe write observes the batch deadline", async () => {
   assert.ok(performance.now() - began < 5_000);
 });
 
-test("cancellation after provider cleanup retains completed replies and preserves earlier failures", async (context) => {
+void test("cancellation after provider cleanup retains completed replies and preserves earlier failures", async (context) => {
   for (const [mode, surface] of [
     ["completed", "probe"],
     ["invalid", "probe"],
@@ -920,7 +920,7 @@ test("cancellation after provider cleanup retains completed replies and preserve
 });
 
 for (const mode of ["timeout", "missing", "changed"]) {
-  test(`final hash ${mode} preserves completed replies and reports target status`, async () => {
+  void test(`final hash ${mode} preserves completed replies and reports target status`, async () => {
     const { connection, options, ready } = fixture(
       "exec",
       `final-hash-${mode}`,
@@ -989,7 +989,7 @@ for (const mode of ["timeout", "missing", "changed"]) {
 }
 
 for (const transport of ["exec", "r2pipe", "r2mcp", "http"]) {
-  test(`${transport}: invalid UTF-8 JSON cannot become normalized facts`, async () => {
+  void test(`${transport}: invalid UTF-8 JSON cannot become normalized facts`, async () => {
     const { connection, options } = fixture(transport, "invalid");
     let server;
     let selected = connection;
@@ -1029,7 +1029,7 @@ for (const transport of ["exec", "r2pipe", "r2mcp", "http"]) {
   });
 }
 
-test("ESIL observations preserve partial coverage in pages and complete replies when retention fills", async () => {
+void test("ESIL observations preserve partial coverage in pages and complete replies when retention fills", async () => {
   const instructions = [
     {
       addr: 4096,

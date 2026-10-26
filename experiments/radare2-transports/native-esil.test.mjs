@@ -58,7 +58,7 @@ const reader = (first, second) => {
   };
 };
 
-test("native straight-line slice retains lifted inputs, raw replies and exact register reduction", async () => {
+void test("native straight-line slice retains lifted inputs, raw replies and exact register reduction", async () => {
   const first = observation(instructions);
   const second = observation("x23,x3,=\n");
   const io = reader(first, second);
@@ -80,7 +80,7 @@ test("native straight-line slice retains lifted inputs, raw replies and exact re
   );
 });
 
-test("coverage, control flow and protocol boundaries fail with retained native observations", async () => {
+void test("coverage, control flow and protocol boundaries fail with retained native observations", async () => {
   for (const change of [
     (ops) => ops.slice(1),
     (ops) => {
@@ -130,7 +130,7 @@ test("coverage, control flow and protocol boundaries fail with retained native o
   }
 });
 
-test("invalid input is refused before reading and 64-bit instruction identities remain exact", async () => {
+void test("invalid input is refused before reading and 64-bit instruction identities remain exact", async () => {
   for (const change of [
     { instruction_count: 0 },
     { instruction_count: 65 },
@@ -157,7 +157,7 @@ test("invalid input is refused before reading and 64-bit instruction identities 
   assert.equal(result.value.result.end_exclusive, "0xfffffffffffffff4");
 });
 
-test("native warnings, empty reductions and conditional/GOTO semantics remain partial", async () => {
+void test("native warnings, empty reductions and conditional/GOTO semantics remain partial", async () => {
   for (const [esil, reduction, logs] of [
     ["x1,x0,=", "x1,x0,=\n", [{ type: "WARN", message: "Invalid node" }]],
     ["x1,x0,=", "\n", []],
@@ -182,7 +182,7 @@ test("native warnings, empty reductions and conditional/GOTO semantics remain pa
   }
 });
 
-test("changed artifacts fail, external HTTP identity stays unknown and cancellation retains earlier facts", async () => {
+void test("changed artifacts fail, external HTTP identity stays unknown and cancellation retains earlier facts", async () => {
   const changed = observation("x23,x3,=\n", {
     target: {
       ...target,
@@ -240,7 +240,7 @@ test("changed artifacts fail, external HTTP identity stays unknown and cancellat
   );
 });
 
-test("a second ESIL read keeps the exact file cleanup dependency through retry", async (context) => {
+void test("a second ESIL read keeps the exact file cleanup dependency through retry", async (context) => {
   const root = await fs.mkdtemp(join(tmpdir(), "rea-esil-cleanup-"));
   const path = join(root, "target");
   await fs.writeFile(path, "selected bytes");
@@ -291,7 +291,7 @@ test("a second ESIL read keeps the exact file cleanup dependency through retry",
   }
 });
 
-test("resource failures preserve their tag and limits without mutating the read owner's error", async () => {
+void test("resource failures preserve their tag and limits without mutating the read owner's error", async () => {
   const failure = new AnalysisResourceConstraintError(
     "native_read",
     "capacity",
@@ -325,7 +325,7 @@ test("resource failures preserve their tag and limits without mutating the read 
   );
 });
 
-test(
+void test(
   "native aegf receives OR and ESIL stack operators literally without command interpretation",
   { skip: !process.env.REA_R2_COMMAND },
   async () => {
