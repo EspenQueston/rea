@@ -412,3 +412,26 @@ it("accepts an empty Gemini settings placeholder like REA's own setup does", asy
     ),
   ).toMatchObject({ security: { auth: { selectedType: "oauth-personal" } } });
 });
+
+it("forwards the Codex gateway endpoint with its credentials only", async () => {
+  const root = await createTestTempDirectory("rea-agent-codex-endpoint-");
+  vi.stubEnv("CODEX_HOME", join(root, "caller"));
+  vi.stubEnv("OPENAI_API_KEY", "selected-openai-key");
+  vi.stubEnv("OPENAI_BASE_URL", "https://openai-gateway.invalid/v1");
+  vi.stubEnv("ANTHROPIC_BASE_URL", "https://claude-gateway.invalid/custom");
+  const client = await prepareAgentEvalClient(selectAgentEvalClient("codex"), {
+    evaluationRoot: root,
+    account: join(root, "account"),
+    authPaths: [],
+  });
+  const environment = agentEvalEnvironment({
+    account: join(root, "account"),
+    runId: "test",
+    client,
+  });
+  expect(environment).toMatchObject({
+    OPENAI_API_KEY: "selected-openai-key",
+    OPENAI_BASE_URL: "https://openai-gateway.invalid/v1",
+  });
+  expect(environment).not.toHaveProperty("ANTHROPIC_BASE_URL");
+});

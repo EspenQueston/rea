@@ -435,6 +435,51 @@ describe("Gemini CLI transcripts", () => {
       });
     },
   );
+});
+
+describe("Gemini CLI run facts", () => {
+  const toolUse = (id: string, name: string) => ({
+    type: "tool_use",
+    tool_name: name,
+    tool_id: id,
+    parameters: { input_path: "/tmp/app.asar" },
+  });
+
+  it("treats a success status beside an error record as a contradictory report", () => {
+    const transcript = parseGeminiCliEvents([
+      {
+        type: "tool_use",
+        tool_id: "call-1",
+        tool_name: "mcp_rea_open_binary",
+        parameters: { path: "/bin/true" },
+      },
+      {
+        type: "tool_result",
+        tool_id: "call-1",
+        status: "success",
+        output: JSON.stringify({ error: { code: "provider_unavailable" } }),
+        error: { type: "MCP_TOOL_ERROR", code: "provider_unavailable" },
+      },
+    ]);
+    expect(transcript.calls).toEqual([
+      expect.objectContaining({
+        delivered: false,
+        error: true,
+        errorCode: null,
+      }),
+    ]);
+    expect(transcript.clientFailures).toEqual([]);
+    const scenario = nativeProviderScenario("/bin/true");
+    expect(
+      scenario.assess(
+        evaluateAgentTranscript(
+          transcript,
+          scenario.expectedFirstTool,
+          scenario,
+        ),
+      ),
+    ).toBe("failed");
+  });
 
   it("does not count a result without retained output as delivered", () => {
     const transcript = parseGeminiCliEvents([

@@ -184,6 +184,11 @@ const prepareCodex = async (
     environment: {
       CODEX_HOME: profile,
       ...apiKeys("OPENAI_API_KEY", "CODEX_API_KEY"),
+      // A caller-selected gateway travels with its credentials, as for the
+      // other clients.
+      ...(process.env.OPENAI_BASE_URL === undefined
+        ? {}
+        : { OPENAI_BASE_URL: process.env.OPENAI_BASE_URL }),
     },
     // Codex has no own skill path and reads the shared agent skill root.
     skillDirectory: join(account, ".agents/skills", SKILL),

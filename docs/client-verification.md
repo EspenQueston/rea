@@ -506,7 +506,8 @@ Authentication is the client's credential file (`auth.json`,
 `ANTHROPIC_AUTH_TOKEN`, or `GEMINI_API_KEY`). The client environment is built
 from an allowlist of host, locale, temporary-directory, proxy, certificate and
 session-keyring variables, plus the selected client's own API key and endpoint
-(`ANTHROPIC_BASE_URL` or `GOOGLE_GEMINI_BASE_URL`); other credentials and
+(`OPENAI_BASE_URL`, `ANTHROPIC_BASE_URL` or `GOOGLE_GEMINI_BASE_URL`); other
+credentials and
 configuration are not inherited. Copied credential files are registered for
 removal before they are written. Claude Code also disables account-level
 claude.ai connectors. Gemini CLI reuses the caller's selected authentication

@@ -667,13 +667,19 @@ const geminiCall = (
     reported?.error,
   );
   const delivered = reported !== undefined && !failed && facts.retained;
-  return {
+  const call = {
     ...request,
     delivered,
     error: facts.failed,
     errorCode: facts.errorCode,
     resultContent: delivered ? facts.content : undefined,
   };
+  // A success status beside an error record is one contradictory report.
+  const contradictory =
+    reported !== undefined &&
+    reported.status === "success" &&
+    !absent(reported.error);
+  return contradictory ? ambiguousCall(call) : call;
 };
 
 /** Gemini reports prompt tokens including cached content tokens. */
