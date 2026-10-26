@@ -4,6 +4,7 @@ import {
   readFile,
   readdir,
   rename,
+  rm,
   stat,
   symlink,
   writeFile,
@@ -15,6 +16,7 @@ import { TextReader, Uint8ArrayWriter, ZipWriter } from "@zip.js/zip.js";
 import { expect, it, vi } from "vitest";
 
 import { asarHeaderBytes } from "../../../tests/fixtures/asarHeader.js";
+import { AsarArtifactReader } from "../AsarArtifactReader.js";
 import { DestinationCaseCollisionFailure } from "../ArtifactPaths.js";
 import { ArtifactReaderFailure } from "../ArtifactReader.js";
 import { ArtifactResourceScope } from "../ArtifactResourceScope.js";
@@ -731,6 +733,12 @@ it("refuses case-folding file and parent directory collisions in dry-run mode wh
       { logical_path: "𐐨.txt", status: "unresolved" },
     ]);
     expect(nonAsciiPlan.limitations).toContain(
+      "Dry-run extraction validated destination admission and reader entries and classified destination path collisions and length limits with unresolved entries without creating destination files or directories.",
+    );
+    expect(nonAsciiPlan.limitations).not.toContain(
+      "Dry-run extraction validated destination admission, path collisions, and reader entries without creating destination files or directories.",
+    );
+    expect(nonAsciiPlan.limitations).toContain(
       "Non-ASCII case-folding paths depend on the destination filesystem case table and cannot be verified without creating files; affected paths remain unresolved in the dry-run plan.",
     );
     await expect(stat(nonAsciiOut)).rejects.toMatchObject({ code: "ENOENT" });
@@ -843,6 +851,12 @@ it("observes destination directory case sensitivity with bounded scans and hard-
       { logical_path: "Foo.txt", status: "unresolved" },
       { logical_path: "foo.txt", status: "unresolved" },
     ]);
+    expect(unknownPlan.limitations).toContain(
+      "Dry-run extraction validated destination admission and reader entries and classified destination path collisions and length limits with unresolved entries without creating destination files or directories.",
+    );
+    expect(unknownPlan.limitations).not.toContain(
+      "Dry-run extraction validated destination admission, path collisions, and reader entries without creating destination files or directories.",
+    );
     expect(unknownPlan.limitations).toContain(
       "Destination directory case sensitivity is unknown because the destination parent has no observable cased entry; case-colliding paths remain unresolved in the dry-run plan.",
     );
@@ -1048,6 +1062,12 @@ it("classifies over-limit destination path segments and resolved symlink paths a
       { logical_path: "short.txt", status: "planned" },
     ]);
     expect(planned.limitations).toContain(
+      "Dry-run extraction validated destination admission and reader entries and classified destination path collisions and length limits with unresolved entries without creating destination files or directories.",
+    );
+    expect(planned.limitations).not.toContain(
+      "Dry-run extraction validated destination admission, path collisions, and reader entries without creating destination files or directories.",
+    );
+    expect(planned.limitations).toContain(
       "Destination filesystem component and path length limits (such as 255-byte NAME_MAX) cannot be verified without creating files; over-limit paths remain unresolved in the dry-run plan.",
     );
     await expect(stat(outputRoot)).rejects.toMatchObject({ code: "ENOENT" });
@@ -1120,5 +1140,114 @@ it("retains ownership and surfaces an owned cleanup failure when the case-probe 
   } finally {
     closeSpy.mockRestore();
     await resourceScope.close().catch(() => undefined);
+  }
+});
+
+it("revalidates unpacked ASAR companion files during dry-run planning", async () => {
+  const directory = await createTestTempDirectory(
+    "rea-extraction-dry-run-asar-unpacked-",
+  );
+  const archivePath = join(directory, "app.asar");
+  const unpackedDir = `${archivePath}.unpacked`;
+  await mkdir(unpackedDir, { recursive: true });
+  const packedPayload = Buffer.from("packed-main-payload");
+  const unpackedPayload = Buffer.from("unpacked-native-payload-v1");
+  const unpackedPath = join(unpackedDir, "native.node");
+  await writeFile(unpackedPath, unpackedPayload);
+  const asarArchive = Buffer.concat([
+    asarHeaderBytes(
+      JSON.stringify({
+        files: {
+          "main.js": {
+            size: packedPayload.byteLength,
+            offset: "0",
+          },
+          "native.node": {
+            size: unpackedPayload.byteLength,
+            unpacked: true,
+          },
+        },
+      }),
+    ),
+    packedPayload,
+  ]);
+  await writeFile(archivePath, asarArchive);
+
+  const resourceScope = new ArtifactResourceScope();
+  try {
+    const validOut = join(directory, "valid-dry-out");
+    const validPlan = await extractArtifact({
+      inputPath: archivePath,
+      inputFormat: "asar",
+      outputRoot: validOut,
+      dryRun: true,
+      environment: {},
+      integrityPolicy: "fail",
+      resourceScope,
+    });
+    expect(validPlan.limitations).toContain(
+      "Dry-run extraction validated destination admission, path collisions, and reader entries without creating destination files or directories.",
+    );
+    expect(validPlan.plan?.totals).toMatchObject({
+      planned_files: 2,
+      unresolved_entries: 0,
+      observed_bytes_estimate:
+        packedPayload.byteLength + unpackedPayload.byteLength,
+      declared_bytes_estimate:
+        packedPayload.byteLength + unpackedPayload.byteLength,
+    });
+    await expect(stat(validOut)).rejects.toMatchObject({ code: "ENOENT" });
+
+    const originalClose = AsarArtifactReader.prototype.close;
+    let mutateOnInventoryClose: "modify" | "remove" | undefined = "modify";
+    const closeSpy = vi
+      .spyOn(AsarArtifactReader.prototype, "close")
+      .mockImplementation(async function (this: AsarArtifactReader) {
+        await originalClose.call(this);
+        if (mutateOnInventoryClose === "modify") {
+          mutateOnInventoryClose = undefined;
+          await writeFile(unpackedPath, "unpacked-native-payload-v2");
+        } else if (mutateOnInventoryClose === "remove") {
+          mutateOnInventoryClose = undefined;
+          await rm(unpackedPath, { force: true });
+        }
+      });
+    try {
+      await expect(
+        extractArtifact({
+          inputPath: archivePath,
+          inputFormat: "asar",
+          outputRoot: join(directory, "modified-dry-out"),
+          dryRun: true,
+          environment: {},
+          integrityPolicy: "fail",
+          resourceScope,
+        }),
+      ).rejects.toMatchObject({
+        reason: "integrity",
+        message: "Extracted content disagrees with inventory: native.node",
+      });
+
+      await writeFile(unpackedPath, unpackedPayload);
+      mutateOnInventoryClose = "remove";
+      await expect(
+        extractArtifact({
+          inputPath: archivePath,
+          inputFormat: "asar",
+          outputRoot: join(directory, "removed-dry-out"),
+          dryRun: true,
+          environment: {},
+          integrityPolicy: "fail",
+          resourceScope,
+        }),
+      ).rejects.toMatchObject({
+        reason: "unavailable",
+        message: "ASAR unpacked entry bytes are unavailable: native.node",
+      });
+    } finally {
+      closeSpy.mockRestore();
+    }
+  } finally {
+    await resourceScope.close();
   }
 });

@@ -562,7 +562,11 @@ const planSelectedEntries = async ({
       );
     const destinationPath = normalizeDestinationPath(path, platform);
     outputRegistry.add(destinationPath, "file");
-    if (verifyContent) {
+    if (
+      verifyContent ||
+      entry.unpacked ||
+      selectedItem.occurrence.unpacked === true
+    ) {
       const stream = await reader.open(entry, signal);
       await verifyPlannedEntry(
         path,
@@ -892,7 +896,9 @@ const createExtractionResult = (
         ),
       ),
       dryRun
-        ? "Dry-run extraction validated destination admission, path collisions, and reader entries without creating destination files or directories."
+        ? unresolvedPlan.byOccurrenceId.size === 0
+          ? "Dry-run extraction validated destination admission, path collisions, and reader entries without creating destination files or directories."
+          : "Dry-run extraction validated destination admission and reader entries and classified destination path collisions and length limits with unresolved entries without creating destination files or directories."
         : traversal.status === "complete"
           ? "All regular files exposed by the active artifact reader were materialized."
           : "All inventoried regular files exposed by the active reader were materialized; source traversal coverage is unknown, so the output is not established as a complete source copy.",
