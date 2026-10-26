@@ -132,12 +132,12 @@ client with it. Match `wait_for` locators to exactly one element.
    (`wait_for_timeout` with `duration_ms: 1100`).
 5. Update both objects and read each back; delete both and read each back
    (expect 404) and the list.
-6. Vary what the two creates fill in: the first every field the form offers,
-   the second only what a person must give (its title or name), leaving the
-   other fields as the form starts them. A served create requires each member
-   both creates filled in and lets a caller leave out one a create sent empty,
-   so an agent that names only a title is not refused for fields it had no
-   reason to set.
+6. Vary what the two creates send, however you write them: the first every
+   field the application takes, the second only what a person must give (its
+   title or name), with the other fields left out or empty. A served create
+   requires each member both creates filled in and lets a caller leave out one
+   a create left out or sent empty, so an agent that names only a title is not
+   refused for fields it had no reason to set.
 
 About `request` steps:
 
@@ -196,7 +196,7 @@ withheld with its hint:
 | `no-call`             | Re-record once with a write that succeeds.                                                    |
 | `side-effect`         | Stop: the application changes other entities.                                                 |
 | `contradicted`        | Stop: a later read disagrees with the modelled effect.                                        |
-| `body-unusable`       | Stop: the body is not a JSON object.                                                          |
+| `body-unusable`       | Re-record a UI write once with `request` steps (its body was not exposed); else stop.         |
 
 Use new scratch names on each attempt; the first attempt's objects may still
 exist.
