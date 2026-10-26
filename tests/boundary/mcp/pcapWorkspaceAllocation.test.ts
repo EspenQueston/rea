@@ -14,7 +14,7 @@ import { createTestBinarySession } from "../../fixtures/binarySession.js";
 import { parseMcpToolError } from "../../fixtures/mcpToolError.js";
 import { createTestTempDirectory } from "../../fixtures/temporaryDirectory.js";
 
-// POSIX fixtures use real workspace admission/allocation under controlled parents.
+// POSIX fixtures use real mkdtemp under caller-controlled temporary parents.
 const it = test.skipIf(process.platform === "win32");
 const nonRoot = process.getuid?.() !== 0;
 const stubs = join(import.meta.dirname, "../../fixtures/pcap");
@@ -87,11 +87,8 @@ it.each<readonly [string, string]>([
   "reports real %s allocation under %s as an unusable workspace, not a size limit",
   async (code) => {
     const root = await createTestTempDirectory("rea-pcap-workspace-");
-    const blocker = join(root, "parent");
-    // Traverse a file to observe a real ENOTDIR from parent admission; a direct
-    // file parent is now rejected explicitly before mkdtemp (covered below).
-    const parent = code === "ENOTDIR" ? join(blocker, "nested") : blocker;
-    if (code === "ENOTDIR") await writeFile(blocker, "not a directory");
+    const parent = join(root, "parent");
+    if (code === "ENOTDIR") await writeFile(parent, "not a directory");
     else {
       await mkdir(parent, { mode: 0o500 });
       onTestFinished(() => chmod(parent, 0o700));
@@ -123,7 +120,7 @@ it.each<readonly [string, string]>([
           workspace_path: null,
           path:
             code === "ENOTDIR"
-              ? parent
+              ? `${parent}/.`
               : (expect.stringContaining(join(parent, "rea-pcap-")) as unknown),
           system_code: code,
         },
@@ -132,44 +129,6 @@ it.each<readonly [string, string]>([
     expect(JSON.stringify(error)).not.toContain("file-size");
   },
 );
-
-it("reports a directly selected non-directory parent without inventing an errno", async () => {
-  const root = await createTestTempDirectory("rea-pcap-parent-admission-");
-  const parent = join(root, "parent");
-  await writeFile(parent, "not a directory");
-  let cause: unknown;
-  const error = await inspectWith(
-    (options, create) =>
-      create({ ...options, parent }).catch((failure: unknown) => {
-        cause = failure;
-        throw failure;
-      }),
-    join(root, "missing.pcap"),
-  );
-  const reason = `Private runtime parent is not a directory: ${parent}`;
-  expect(cause).toBeInstanceOf(Error);
-  expect(cause).toMatchObject({ message: reason });
-  expect(cause).not.toHaveProperty("code");
-  expect(error).toMatchObject({
-    code: "execution_failure",
-    category: "execution_failure",
-    message: expect.stringContaining(reason),
-    remediation: { action: expect.stringContaining("TMPDIR") },
-    details: {
-      provider_id: "pcap",
-      operation: "inspect_pcap_capture",
-      diagnostics: {
-        stage: "workspace",
-        workspace_path: null,
-        path: null,
-        system_code: null,
-        reason,
-      },
-    },
-  });
-  expect(JSON.stringify(error)).not.toContain("file-size");
-  expect(await readdir(root)).toEqual(["parent"]);
-});
 
 it("reaches input admission when the workspace parent is usable", async () => {
   const root = await createTestTempDirectory("rea-pcap-workspace-");
