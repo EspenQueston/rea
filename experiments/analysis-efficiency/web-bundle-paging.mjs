@@ -120,15 +120,41 @@ if (mode === "capture") {
         "60000",
         "--total-analysis-timeout-ms",
         "90000",
+        "--detail",
+        "summary",
+        "--evidence_output",
+        join(out, "complete-evidence.json"),
+        "--view",
+        JSON.stringify({
+          kind: "web-bundle",
+          collection: "inferences",
+          limit: 1,
+        }),
         "--format",
         "json",
       ],
       { cwd: repo, env, maxBuffer: 64 * 1024 ** 2, timeout: 120000 },
     );
     await writeFile(join(out, "stderr.txt"), stderr);
-    const evidence = JSON.parse(stdout);
+    const delivery = JSON.parse(stdout);
+    const view = delivery.summary.normalized_result;
+    const complete = JSON.parse(
+      await readFile(join(out, "complete-evidence.json"), "utf8"),
+    );
+    const evidence = complete.records.find(
+      (row) => row.evidence_id === view.parent_evidence_id,
+    );
+    assert.ok(evidence);
     assert.equal(evidence.operation, "analyze_web_bundle");
     assert.ok(evidence.normalized_result.observations);
+    assert.deepEqual(
+      view.items,
+      evidence.normalized_result.inferences
+        .slice(0, 1)
+        .map((row, source_index) => ({ source_index, ...row })),
+    );
+    assert.deepEqual(view.source_unknowns, evidence.normalized_result.unknowns);
+    await writeFile(join(out, "delivery.json"), stdout);
     await writeFile(join(out, "parent.json"), JSON.stringify(evidence));
     // Public export/import format comes from the CLI's complete Evidence publication.
     console.log(
@@ -287,36 +313,42 @@ try {
     });
   }
   if (mode === "selected" && values["verify-cli"]) {
-    const input = JSON.stringify({
-      source: { kind: "evidence-file", path: bundle },
-      view: {
-        kind: "web-bundle",
-        collection: "endpoints",
-        fields: ["value", "location"],
-        limit: 32,
-      },
-    });
-    const { stdout } = await promisify(execFile)(
-      process.execPath,
-      [
-        join(repo, "scripts/rea.mjs"),
-        "inspect-analysis-view",
-        input,
-        "--format",
-        "json",
-      ],
-      { cwd: repo, env, maxBuffer: 64 * 1024 ** 2, timeout: 90000 },
-    );
-    const cli = JSON.parse(stdout);
-    assert.deepEqual(
-      cli.normalized_result.items,
-      report.observations.endpoints.slice(0, 32).map((r, source_index) => ({
-        source_index,
-        value: r.value,
-        location: r.location,
-      })),
-    );
-    await writeFile(join(out, "cli.json"), stdout);
+    for (const collection of ["endpoints", "inferences"]) {
+      const input = JSON.stringify({
+        source: { kind: "evidence-file", path: bundle },
+        view: {
+          kind: "web-bundle",
+          collection,
+          limit: 32,
+        },
+      });
+      const { stdout } = await promisify(execFile)(
+        process.execPath,
+        [
+          join(repo, "scripts/rea.mjs"),
+          "inspect-analysis-view",
+          input,
+          "--format",
+          "json",
+        ],
+        { cwd: repo, env, maxBuffer: 64 * 1024 ** 2, timeout: 90000 },
+      );
+      const cli = JSON.parse(stdout);
+      assert.deepEqual(
+        cli.normalized_result.items,
+        (collection === "endpoints"
+          ? report.observations.endpoints
+          : report.inferences
+        )
+          .slice(0, 32)
+          .map((r, source_index) => ({
+            source_index,
+            ...r,
+          })),
+      );
+      assert.deepEqual(cli.normalized_result.source_unknowns, report.unknowns);
+      await writeFile(join(out, `cli-${collection}.json`), stdout);
+    }
   }
   await writeFile(join(out, "calls.json"), JSON.stringify(calls));
   await writeFile(
