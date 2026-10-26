@@ -40,6 +40,9 @@ The 109 captures #7260 measured and #7260's 21 fresh recordings, built by `05326
 - No write goes from served to withheld, and no plan's rules, body or `insert` changes. The 11 newly served are
   EspoCRM contact deletes in seven recordings, the published EspoCRM capture's task delete, and Vikunja task updates
   in three recordings.
+- With main `c6893d1a` merged, whose `unknown-clock` withholds clock writes without an anchor on both builds, #7260
+  serves 322 and this branch 332. One of the Vikunja task updates is among the writes it withholds, so this branch
+  gains 10, and none goes from served to withheld.
 - 73 list views learn a page size they held as `inert`, valid only for its recorded values, as `limit`: 72 EspoCRM
   lists (`maxSize`) and one Umami list (`maxResults`). One EspoCRM stream list now counts a line paged only by
   `maxSize` as listing the whole collection and explains its other line's query; no view explains fewer lines.
