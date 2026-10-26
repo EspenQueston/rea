@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import type { SbpfInstruction } from "./SbpfDisassembler.js";
 import { solanaTextSection, type SolanaElfImage } from "./SolanaElf.js";
 
@@ -60,6 +62,19 @@ const writesRegister = (
   const klass = instruction.opcode & 0x07;
   return klass === 0x01 || klass === 0x04 || klass === 0x07;
 };
+
+/**
+ * The Anchor instruction discriminator for one instruction name:
+ * the first 8 bytes of sha256("global:<name>"), hex-encoded. This is the
+ * single derivation every consumer (name confirmation, receipts matching)
+ * must use.
+ */
+export const anchorDiscriminator = (name: string): string =>
+  createHash("sha256")
+    .update(`global:${name}`)
+    .digest()
+    .subarray(0, 8)
+    .toString("hex");
 
 /** Render a 64-bit constant as Anchor discriminator bytes (little-endian hex). */
 export const discriminatorHex = (imm64: bigint): string => {

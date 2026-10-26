@@ -29,7 +29,7 @@ import {
   disassembleSbpf,
   isUnknownSbpfInstruction,
 } from "./SbpfDisassembler.js";
-import { scanSolanaDispatch } from "./SolanaDispatch.js";
+import { anchorDiscriminator, scanSolanaDispatch } from "./SolanaDispatch.js";
 import {
   resolveSolanaCallSites,
   type SolanaCallResolution,
@@ -243,14 +243,6 @@ interface AnalyzedProgram {
   readonly report: SolanaProgramAnalysis;
   readonly callResolutions: readonly SolanaCallResolution[];
 }
-
-/** Anchor instruction discriminator for one caller-supplied name. */
-const anchorDiscriminator = (name: string): string =>
-  createHash("sha256")
-    .update(`global:${name}`)
-    .digest()
-    .subarray(0, 8)
-    .toString("hex");
 
 const analyzeAcquired = (
   acquired: AcquiredProgram,

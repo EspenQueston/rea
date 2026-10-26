@@ -235,6 +235,14 @@ Candidates are reconstruction leads, not verified behavior. See
 [Solana sBPF program analysis](solana-program-analysis.md) for intake,
 evidence semantics and limitations.
 
+Join an analysis with recorded differential outcomes to give every
+handler candidate a verification receipt:
+
+```bash
+rea solana-receipts --analysis /absolute/path/to/solana-analysis.json --evidence /absolute/path/to/evidence.json --json
+rea solana-receipts --out /absolute/path/to/batch --evidence /absolute/path/to/evidence.json --json
+```
+
 ## Native analysis
 
 Inspect embedded Go build metadata without installing Go or configuring a

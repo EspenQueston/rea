@@ -2,11 +2,13 @@ import type { EvidenceMcpServer } from "./EvidenceMcpServer.js";
 
 import type { SolanaProgramService } from "../application/solana/SolanaProgramService.js";
 import type { SolanaProgramBatchService } from "../application/solana/SolanaProgramBatchService.js";
+import type { SolanaReceiptsService } from "../application/solana/SolanaReceiptsService.js";
 import type { EvidenceWriter } from "../application/investigation/InvestigationRecordPort.js";
 import type { EvidenceLookup } from "../application/EvidenceInputResolver.js";
 import {
   solanaProgramBatchModule,
   solanaProgramModule,
+  solanaReceiptsModule,
 } from "../composition/solana.js";
 import type { Logger } from "pino";
 import type { WithAdmittedAnalysis } from "./analysisAdmission.js";
@@ -22,6 +24,7 @@ export const registerSolanaTools = (
   withAdmittedAnalysis?: WithAdmittedAnalysis,
   evidenceById?: EvidenceLookup,
   batchService?: SolanaProgramBatchService,
+  receiptsService?: SolanaReceiptsService,
 ): void => {
   const contract = solanaProgramModule.contract;
   const handler = createEvidenceToolHandler(
@@ -49,6 +52,21 @@ export const registerSolanaTools = (
       batchContract.name,
       applicationToolRegistrationOptions(batchContract),
       batchHandler(batchContract),
+    );
+  }
+  if (receiptsService !== undefined) {
+    const receiptsContract = solanaReceiptsModule.contract;
+    const receiptsHandler = createEvidenceToolHandler(
+      server,
+      (input, options) => receiptsService.buildReceipts(input, options),
+      logger,
+      recordEvidence,
+      withAdmittedAnalysis,
+    );
+    server.registerTool(
+      receiptsContract.name,
+      applicationToolRegistrationOptions(receiptsContract),
+      receiptsHandler(receiptsContract),
     );
   }
 };

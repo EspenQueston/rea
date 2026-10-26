@@ -4,6 +4,10 @@ import {
   solanaProgramAnalysisSchema,
   solanaProgramBatchSchema,
 } from "../../domain/solana/solanaProgram.js";
+import {
+  solanaReceiptsInputSchema,
+  solanaReceiptsResultSchema,
+} from "../../domain/solana/solanaReceipts.js";
 import type { ToolContract } from "../toolContractTypes.js";
 import { toolContractMetadata } from "../toolEffects.js";
 import { evidenceResultOf } from "../toolOutputSchemaPrimitives.js";
@@ -66,8 +70,36 @@ export const ANALYZE_SOLANA_PROGRAMS_CONTRACT = {
   ],
 } as const satisfies ToolContract;
 
+export const SOLANA_RECEIPTS_CONTRACT = {
+  name: "solana_receipts",
+  ...toolContractMetadata("solana_receipts"),
+  kind: "artifact-provider",
+  requiresActiveTarget: true,
+  description:
+    'Build differential-verification receipts for Solana program analyses: join an analysis (one solana-analysis.json, a single-run out_dir, or a batch out_dir with its index) with a caller-supplied evidence JSON recording differential outcomes, matched per program by artifact SHA-256 — a mismatch is refused, never receipted across artifacts. Evidence entries identify a handler by discriminator or by Anchor instruction name (resolved through sha256("global:<name>")[..8]) and carry a verdict (recovered | failed | not-a-handler), the VM used, evidence refs, and fixture counts as recorded; counts kept only in aggregate may be replaced by an explicit fixtures_note stating that basis. Writes one receipts.json per program (plus an aggregate at a batch root) and returns it: one receipt per handler candidate — discriminator, confirmed name when any, recovery method, branch target, verdict, fixtures, refs — where recovered requires complete all-pass fixture counts or the as-recorded note, failed and not-a-handler carry the recorded outcome, and every untested candidate stays a lead. Evidence entries matching no candidate are reported as orphans in the summary, never dropped or attached elsewhere. The tool never runs a differential itself and never executes the target program.',
+  inputSchema: solanaReceiptsInputSchema,
+  outputSchema: evidenceResultOf(solanaReceiptsResultSchema),
+  examples: [
+    {
+      title: "Receipt one analyzed program from its differential evidence",
+      input: {
+        analysis_path: "/artifacts/pump_amm/solana-analysis.json",
+        evidence_path: "/artifacts/evidence/pump_amm.json",
+      },
+    },
+    {
+      title: "Receipt every program in a batch run",
+      input: {
+        out_dir: "/artifacts/batch",
+        evidence_path: "/artifacts/evidence/all-programs.json",
+      },
+    },
+  ],
+} as const satisfies ToolContract;
+
 /** Preserve the default catalog's exact operation and ordering. */
 export const SOLANA_TOOL_CONTRACTS = [
   ANALYZE_SOLANA_PROGRAM_CONTRACT,
   ANALYZE_SOLANA_PROGRAMS_CONTRACT,
+  SOLANA_RECEIPTS_CONTRACT,
 ] as const satisfies readonly ToolContract[];

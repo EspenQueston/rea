@@ -1,10 +1,13 @@
 import { SolanaProgramService } from "../application/solana/SolanaProgramService.js";
 import { SolanaProgramBatchService } from "../application/solana/SolanaProgramBatchService.js";
+import { SolanaReceiptsService } from "../application/solana/SolanaReceiptsService.js";
 import { SolanaProgramProvider } from "../solana/SolanaProgramProvider.js";
+import { SolanaReceiptsProvider } from "../solana/SolanaReceiptsProvider.js";
 import { CLI_COMMANDS } from "../cliCommandNames.js";
 import {
   ANALYZE_SOLANA_PROGRAM_CONTRACT,
   ANALYZE_SOLANA_PROGRAMS_CONTRACT,
+  SOLANA_RECEIPTS_CONTRACT,
 } from "../contracts/solana/solanaToolContracts.js";
 
 /**
@@ -44,4 +47,15 @@ export const solanaProgramBatchModule = {
   contract: ANALYZE_SOLANA_PROGRAMS_CONTRACT,
   cliCommand: CLI_COMMANDS.analyzeSolanaPrograms,
   create: createSolanaProgramBatchService,
+} as const;
+
+/** Compose the receipts workflow: a pure join over caller-selected files. */
+export const createSolanaReceiptsService = (): SolanaReceiptsService =>
+  new SolanaReceiptsService(new SolanaReceiptsProvider());
+
+/** Static binding for the receipts operation. */
+export const solanaReceiptsModule = {
+  contract: SOLANA_RECEIPTS_CONTRACT,
+  cliCommand: CLI_COMMANDS.solanaReceipts,
+  create: createSolanaReceiptsService,
 } as const;

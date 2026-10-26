@@ -448,6 +448,7 @@ const workflowAvailabilityFor = ({
     name === "inspect_desktop_application" ||
     name === "analyze_solana_program" ||
     name === "analyze_solana_programs" ||
+    name === "solana_receipts" ||
     name === "inspect_go_binary" ||
     name === "inspect_il2cpp_metadata" ||
     name === "inspect_model_artifact" ||

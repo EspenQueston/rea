@@ -12,6 +12,7 @@ export const CLI_COMMANDS = Object.freeze({
   inspectEvmInterface: "inspect-evm-interface",
   analyzeSolanaProgram: "analyze-solana-program",
   analyzeSolanaPrograms: "analyze-solana-programs",
+  solanaReceipts: "solana-receipts",
   inspectWebNetworkCapture: "inspect-web-network-capture",
   observeWebExecution: "observe-web-execution",
   inspectWebEventListeners: "inspect-web-event-listeners",

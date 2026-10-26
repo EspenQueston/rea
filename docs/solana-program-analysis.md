@@ -106,6 +106,67 @@ status or error.
   (`rea-sbpf-decoder`). It is not a Ghidra/IDA-grade lift: no control-flow
   recovery, Rust source, types, or account layouts are produced.
 
+## Differential receipts
+
+`solana_receipts` / `solana-receipts` closes the loop the analysis opens:
+it joins an analysis with the recorded outcome of differential testing and
+emits one receipt per handler candidate, so "recovered" is a claim with a
+paper trail rather than a label. It never runs a differential itself.
+
+```sh
+rea solana-receipts --analysis ./pump_amm/solana-analysis.json --evidence ./evidence.json --json
+rea solana-receipts --out ./batch --evidence ./evidence.json --json
+```
+
+- Inputs: exactly one analysis source — `--analysis <solana-analysis.json>`
+  or `--out <dir>` holding a single run's `solana-analysis.json` or a
+  batch run's `index.json` — plus `--evidence <file>`.
+- The evidence file holds one program document, or an array of documents
+  for a batch:
+
+  ```json
+  {
+    "program": { "elf_sha256": "<sha256 of the analyzed artifact>" },
+    "handlers": [
+      {
+        "discriminator": "c9cff3724b6f2fbd",
+        "name": "create_config",
+        "verdict": "recovered",
+        "fixtures": { "total": 6, "passed": 6 },
+        "vm": "litesvm",
+        "evidence_refs": ["repro/pump_amm/create-config/", "tx:2gNxbFQQ…"]
+      }
+    ]
+  }
+  ```
+
+  Each entry identifies its handler by `discriminator` and/or `name`
+  (a name resolves through `sha256("global:<name>")[..8]`), and records a
+  `verdict` (`recovered` | `failed` | `not-a-handler`), the `vm`
+  (`litesvm`, `surfpool`, …), and `evidence_refs` (paths, transaction
+  signatures, or URLs). `fixtures` carries the case counts as recorded;
+  where the source kept counts only in aggregate program corpora, omit
+  `fixtures` and state that basis in `fixtures_note` instead — counts are
+  never synthesized.
+
+- Outputs: a `receipts.json` beside each analysis (the per-program
+  document: one receipt per candidate with its verdict, fixtures, VM, and
+  refs, plus a summary), and at a batch root an aggregate `receipts.json`.
+- Verdict rules (fail closed — this is the trust core):
+  - Evidence attaches only to the artifact whose SHA-256 it names. In
+    single mode a mismatch is an error and no receipts are emitted.
+  - A receipt reads `recovered` only when its entry's fixtures are
+    complete and all-pass (`total > 0`, `passed == total`), or when the
+    entry carries a `fixtures_note` in place of exact counts. A recovered
+    claim with failing, empty, or unexplained support is downgraded to
+    `lead` and recorded in the summary's `issues`.
+  - `failed` and `not-a-handler` carry the recorded outcome; every
+    candidate without evidence stays a `lead`.
+  - Entries matching no candidate are reported as `orphans` in the
+    summary — never dropped, never attached to a different handler. Two
+    entries claiming one handler, or an entry whose name and
+    discriminator disagree, fail the build for that program.
+
 ## Limitations
 
 - Dispatch idioms outside the three recovered shapes (and computed jumps

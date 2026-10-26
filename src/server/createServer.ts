@@ -71,7 +71,10 @@ import { registerRecordedCrashTools } from "./registerRecordedCrashTools.js";
 import { createDesktopApplicationService } from "../composition/desktop.js";
 import { registerDesktopApplicationTool } from "./registerDesktopApplicationTool.js";
 import { createGoBinaryService } from "../composition/go.js";
-import { createSolanaProgramService } from "../composition/solana.js";
+import {
+  createSolanaProgramService,
+  createSolanaReceiptsService,
+} from "../composition/solana.js";
 import type { SolanaProgramService } from "../application/solana/SolanaProgramService.js";
 import { SolanaProgramBatchService } from "../application/solana/SolanaProgramBatchService.js";
 import { registerSolanaTools } from "./registerSolanaTools.js";
@@ -1063,6 +1066,7 @@ const registerConfiguredAnalysisTools = (
     withAdmittedAnalysis,
     evidenceById,
     new SolanaProgramBatchService(solanaProgram),
+    createSolanaReceiptsService(),
   );
   registerIl2cppTools(
     server,

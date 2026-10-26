@@ -49,6 +49,21 @@ the deployed ELF. Do not use it for ordinary source-repository analysis.
    return data, and errors. A handler counts as recovered only when its
    differential receipts pass; the discriminator scan alone does not
    establish behavior, account layouts, or arithmetic.
+5. **Record the receipts.** Turn the differential outcome into a paper
+   trail with `rea solana-receipts` (MCP `solana_receipts`): point it at
+   the analysis (`--analysis <solana-analysis.json>` or `--out <dir>` —
+   a batch out_dir works too) and an evidence JSON naming, per handler,
+   the verdict (`recovered` / `failed` / `not-a-handler`), the VM, the
+   evidence refs, and the fixture counts as recorded — or a
+   `fixtures_note` stating the as-recorded basis where counts live only
+   in aggregate corpora. The builder binds evidence to the artifact by
+   SHA-256 and refuses a mismatch. Read the returned `receipts.json`:
+   a candidate reads `recovered` only on complete all-pass counts or an
+   explicit as-recorded note, unsupported recovered claims are downgraded
+   to `lead` and flagged in the summary issues, unmatched evidence is
+   reported as orphans, and everything untested stays a `lead`. Those
+   verdicts — not the scan, not the differential run alone — are what a
+   "recovered" claim may cite.
 
 ## Boundaries
 

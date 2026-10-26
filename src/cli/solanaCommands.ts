@@ -5,6 +5,7 @@ import { z } from "incur";
 import {
   solanaProgramBatchModule,
   solanaProgramModule,
+  solanaReceiptsModule,
 } from "../composition/solana.js";
 import { logCliCommand } from "../cliLogging.js";
 import type { Logger } from "pino";
@@ -209,6 +210,57 @@ export const registerSolanaCommands = (
             evidenceOutput: options.evidence_output,
           });
         }),
+      ),
+  });
+
+  const receiptsService = solanaReceiptsModule.create();
+  cli.command(solanaReceiptsModule.cliCommand, {
+    description:
+      "Build differential-verification receipts for Solana program analyses from a caller-supplied evidence JSON",
+    args: z.object({}),
+    options: z.object({
+      analysis: localPathStringSchema
+        .optional()
+        .describe("Path to one solana-analysis.json to receipt"),
+      out: localPathStringSchema
+        .optional()
+        .describe(
+          "Output directory of a single or batch analysis run; receipts are written into it",
+        ),
+      evidence: localPathStringSchema
+        .optional()
+        .describe(
+          "Differential evidence JSON: one program document, or an array of documents for a batch",
+        ),
+      evidence_output: analysisEvidenceDeliveryOptions.evidence_output,
+    }),
+    run: ({ options }) =>
+      withCommandCancellation(async (signal) =>
+        logCliCommand(logger, solanaReceiptsModule.cliCommand, async () =>
+          deliverCliAnalysisEvidence({
+            run: () =>
+              receiptsService.buildReceipts(
+                {
+                  ...(options.analysis === undefined
+                    ? {}
+                    : { analysis_path: absoluteCallerPath(options.analysis) }),
+                  ...(options.out === undefined
+                    ? {}
+                    : { out_dir: absoluteCallerPath(options.out) }),
+                  ...(options.evidence === undefined
+                    ? {}
+                    : { evidence_path: absoluteCallerPath(options.evidence) }),
+                },
+                { signal },
+              ),
+            service: receiptsService,
+            providerId: "solana-sbpf",
+            operation: "solana_receipts",
+            signal,
+            detail: "complete",
+            evidenceOutput: options.evidence_output,
+          }),
+        ),
       ),
   });
 };
