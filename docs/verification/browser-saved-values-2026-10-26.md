@@ -1,7 +1,7 @@
 # Browser saved values: integration verification
 
 Executed on Linux x64, Node 24.22.1, Chromium through `/usr/bin/chromium`,
-with PocketBase 0.40.6 on an owned loopback instance. Final measured runtime: `dd3085bf5a2511009116f2672d5aefa8e452537e`. Baseline: `6d5532a204b338a6c770fcbae61e0d55bda70793`. The imported implementation is
+with PocketBase 0.40.6 on an owned loopback instance. Final measured runtime: `e7acc5d857078e414c9d90d1cee3a018ab672bed`. Baseline: `6d5532a204b338a6c770fcbae61e0d55bda70793`. The imported implementation is
 Edgar Arakelyan's PR #7162, upstream head
 `d39f386d202fe8e98592fb2d9d26e43d8d0fb94f`; the subsequent upstream fixes through `81a275b130e85a40a227f6a61cfa2fe1162a217e`
 were compared during integration. Their numeric and slug semantics are retained
@@ -30,8 +30,8 @@ step must complete, and the selected authentication response must actually occur
 exactly once and contain a redacted token; absence would fail the oracle.
 
 - Public CLI: all eight steps completed, with eight retained JSON bodies; no
-  plaintext saved token or declared password. 7.553 s elapsed, 8.359 s CPU,
-  1,424,781,312 bytes sampled process-family peak RSS.
+  plaintext saved token or declared password. 10.525 s elapsed, 6.163 s CPU,
+  1,351,897,088 bytes sampled process-family peak RSS.
 - Public MCP: both first and subsequent tasks completed before and after. The
   baseline uses a retained event page to read the generated ID, then a second
   capture attached to the same browser. The candidate performs the same writes,
@@ -51,13 +51,13 @@ One run per condition establishes observations, not statistical speed claims.
 | Measurement                                        |                 Baseline |             Saved values |
 | -------------------------------------------------- | -----------------------: | -----------------------: |
 | Task calls, each completed task                    |                        3 |                        1 |
-| First task elapsed                                 |                  5.145 s |                  1.621 s |
-| Warm task elapsed                                  |                  1.020 s |                  0.762 s |
-| Entire verifier elapsed                            |                 11.723 s |                  7.653 s |
-| Entire verifier CPU                                |                 13.444 s |                  8.683 s |
-| Sampled process-family peak RSS                    |          2,028,253,184 B |          1,638,350,848 B |
-| Input catalog + arguments/text replies, both tasks |  34,781 estimated tokens |  25,900 estimated tokens |
-| Full SDK catalog + arguments/results, both tasks   | 368,391 estimated tokens | 351,500 estimated tokens |
+| First task elapsed                                 |                 10.778 s |                  2.627 s |
+| Warm task elapsed                                  |                  1.467 s |                  1.129 s |
+| Entire verifier elapsed                            |                 22.310 s |                 12.661 s |
+| Entire verifier CPU                                |                 26.148 s |                 14.759 s |
+| Sampled process-family peak RSS                    |          2,103,361,536 B |          1,631,567,872 B |
+| Input catalog + arguments/text replies, both tasks |  34,831 estimated tokens |  25,902 estimated tokens |
+| Full SDK catalog + arguments/results, both tasks   | 368,467 estimated tokens | 351,504 estimated tokens |
 
 `o200k_base` BPE estimates serialize compact JSON; they are not model billing.
 The model projection includes all 53 advertised tools' names, descriptions and
@@ -233,3 +233,32 @@ and the backend record count stayed unchanged. The probe took **9.200 s**,
 unmeasured. Serve `whole-json.html` alongside the original frontend when
 reproducing `--source-only`. These are transport/retention checks on an owned
 fixture, not claims of application-specific token issuance or Basic-auth support.
+
+## Final main integration and measurements
+
+Main `19b2972df` (the tested merge commit is `419dd1900`) was integrated before the final checks. The only
+conflict was two appended test groups; both were retained. The author's
+subsequent updates through `22a93fadc` were compared: malformed UTF-8 was
+already refused by the shared decoder; its encoded-spelling lower-bound
+admission is now reused before allocating rejected encoded copies. A million
+Unicode characters exceed the budget without invoking the URI encoder or
+changing the saved bindings. All **524 tests in 11 focused source suites**,
+type/lint and the runtime build passed on this final main integration.
+
+The expanded real source probe repeated successfully on final runtime
+`e7acc5d85`: **14.628 s** elapsed, **16.015 s CPU**, **1,607,163,904 B**
+sampled family peak. The metadata-only and whole-JSON checks also passed,
+including the integer backend-count oracle. The main task table above is the
+final pair against the pinned pre-feature baseline. Earlier post-review pairs
+remain relevant observations rather than discarded slower attempts:
+
+| Candidate   | First task before→after s | Warm task before→after s | Whole elapsed before→after s | Whole CPU before→after s |
+| ----------- | ------------------------: | -----------------------: | ---------------------------: | -----------------------: |
+| `dd3085bf5` |               5.145→1.621 |              1.020→0.762 |                 11.723→7.653 |             13.444→8.683 |
+| `439a389fe` |              16.121→4.429 |              2.944→1.738 |                34.296→20.053 |            32.166→19.053 |
+
+The second CI run also caught an own-PR event-budget assertion about the old
+byte-only processing path. It was corrected together with moving optional JSON
+processing after event admission and retaining the required whole-body check;
+its original capacity/coverage assertions remain. That failure is distinct from
+the independently reproduced main prewarm/SAZ failures and is not bypassed.
