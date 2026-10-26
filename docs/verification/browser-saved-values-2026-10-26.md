@@ -1,7 +1,7 @@
 # Browser saved values: integration verification
 
 Executed on Linux x64, Node 24.22.1, Chromium through `/usr/bin/chromium`,
-with PocketBase 0.40.6 on an owned loopback instance. Final measured runtime: `e7acc5d857078e414c9d90d1cee3a018ab672bed`. Baseline: `6d5532a204b338a6c770fcbae61e0d55bda70793`. The imported implementation is
+with PocketBase 0.40.6 on an owned loopback instance. Final measured runtime: `43aaaabbe7e49fde3853e36bfc131c16a9ff2441`. Baseline: `6d5532a204b338a6c770fcbae61e0d55bda70793`. The imported implementation is
 Edgar Arakelyan's PR #7162, upstream head
 `d39f386d202fe8e98592fb2d9d26e43d8d0fb94f`; the subsequent upstream fixes through `81a275b130e85a40a227f6a61cfa2fe1162a217e`
 were compared during integration. Their numeric and slug semantics are retained
@@ -30,8 +30,8 @@ step must complete, and the selected authentication response must actually occur
 exactly once and contain a redacted token; absence would fail the oracle.
 
 - Public CLI: all eight steps completed, with eight retained JSON bodies; no
-  plaintext saved token or declared password. 10.525 s elapsed, 6.163 s CPU,
-  1,351,897,088 bytes sampled process-family peak RSS.
+  plaintext saved token or declared password. 5.370 s elapsed, 5.991 s CPU,
+  1,375,653,888 bytes sampled process-family peak RSS.
 - Public MCP: both first and subsequent tasks completed before and after. The
   baseline uses a retained event page to read the generated ID, then a second
   capture attached to the same browser. The candidate performs the same writes,
@@ -51,13 +51,13 @@ One run per condition establishes observations, not statistical speed claims.
 | Measurement                                        |                 Baseline |             Saved values |
 | -------------------------------------------------- | -----------------------: | -----------------------: |
 | Task calls, each completed task                    |                        3 |                        1 |
-| First task elapsed                                 |                 10.778 s |                  2.627 s |
-| Warm task elapsed                                  |                  1.467 s |                  1.129 s |
-| Entire verifier elapsed                            |                 22.310 s |                 12.661 s |
-| Entire verifier CPU                                |                 26.148 s |                 14.759 s |
-| Sampled process-family peak RSS                    |          2,103,361,536 B |          1,631,567,872 B |
-| Input catalog + arguments/text replies, both tasks |  34,831 estimated tokens |  25,902 estimated tokens |
-| Full SDK catalog + arguments/results, both tasks   | 368,467 estimated tokens | 351,504 estimated tokens |
+| First task elapsed                                 |                  7.751 s |                  3.220 s |
+| Warm task elapsed                                  |                  1.210 s |                  0.996 s |
+| Entire verifier elapsed                            |                 15.527 s |                 11.301 s |
+| Entire verifier CPU                                |                 18.047 s |                 12.777 s |
+| Sampled process-family peak RSS                    |          2,064,392,192 B |          1,627,856,896 B |
+| Input catalog + arguments/text replies, both tasks |  34,816 estimated tokens |  25,866 estimated tokens |
+| Full SDK catalog + arguments/results, both tasks   | 368,437 estimated tokens | 351,434 estimated tokens |
 
 `o200k_base` BPE estimates serialize compact JSON; they are not model billing.
 The model projection includes all 53 advertised tools' names, descriptions and
@@ -202,13 +202,16 @@ JSON string could span tokens rather than match an individual decoded value.
 Three source-transaction regressions fail on `92b1f1cc8`; two spanning-secret
 regressions fail before restoring the whole-body byte check.
 
-The retained-event owner now finalizes only explicitly selected source
+The retained-event owner initially finalized selected source
 transaction IDs after network reads drain, including the source request's URL,
 headers and already retained body. Unknown source values withhold the affected
 URL/content and add a limitation. Replacements reserve working/retained capacity,
 preserve sequence and transaction IDs, report omissions, and finalize once so
-cleanup retry cannot repeat accounting. Same-URL unrelated transactions retain
-their earlier facts. Two retained request identities suffice to detect UI
+cleanup retry cannot repeat accounting. The final revision additionally
+rechecks retained network facts against all known marked values, including
+follow-up transactions captured before response-secret admission completed.
+Unknown source values withhold only the selected source transaction.
+Two retained request identities suffice to detect UI
 ambiguity; successful uniquely observed request bindings also establish privacy
 readiness without requiring network body retention.
 
@@ -262,3 +265,58 @@ byte-only processing path. It was corrected together with moving optional JSON
 processing after event admission and retaining the required whole-body check;
 its original capacity/coverage assertions remain. That failure is distinct from
 the independently reproduced main prewarm/SAZ failures and is not bypassed.
+
+## Final automated review: URL boundaries, follow-ups and expansion
+
+Runtime `43aaaabbe` fixes three additional actionable findings. Saved URL
+segments recognize both slash and literal backslash boundaries, preserving
+caller spelling while rejecting substituted dot segments before navigation or
+request dispatch. Two regression cases fail on `9920a9a39`.
+
+The retained-event owner applies the final known secret set to network metadata,
+headers and both body phases before publication. A deterministic follow-up
+transaction records its URL, headers and both bodies before the source response
+finishes; it leaks on `9920a9a39` and is protected by the final revision. The
+pass is bounded by existing working/retained budgets and remains idempotent on
+cleanup retry. It reuses retained bytes and does not make new target requests.
+
+Request serialization has a pre-allocation allowance derived from V8 available
+heap and Node's string ceiling, with a conservative factor of 16 for expanded
+values and transport copies. JSON accounting includes escaping and measures
+repeated saved values once per request. URL interpolation and the complete
+request envelope, including headers, are also admitted before dispatch.
+Four cases reject 1,000 references to a 3,000,000-character saved value in arrays,
+embedded strings, URLs and headers without browser dispatch. These oversized
+cases were deliberately not run against unbounded production code. The first
+header guard took 4.042 seconds in its source test; repeated header validation
+and size scans now share request-local facts, and the final case no longer appears in the slow-test output
+(the final individual duration was not separately measured). This is a local observation, not a
+general latency claim or a measurement of peak allocation avoided.
+
+All **531 cases in 11 source suites**, type/lint and the runtime build passed
+on the final production revision. The real source probe now also exercises the
+committed `immediate-followup.html`: the page consumes the selected JSON and
+immediately POSTs its token to PocketBase in a query, header and JSON body.
+Both initial attempts encountered a cached response with unknown decoded size;
+the operation correctly refused to read it. The fixture now explicitly requests
+`cache: "no-store"`, and all four real privacy cases pass. This retains the
+known-size requirement rather than enabling unbounded cache reads.
+
+CI on `9920a9a39` passed source tests, static checks, documentation, package build
+and real-browser verification. Portable output contains 29,596 passes and three
+failures: two SAZ partial-observation assertions and a Java probe diagnostic
+assertion. The two SAZ failures independently reproduce on the exact synthetic
+merge main parent `52414282b`; its isolated prewarm control passes. Cancelled
+shards remain incomplete even where they emitted passing test summaries.
+
+The final four-case real privacy probe passed in **9.675 s elapsed**, **11.092 s
+CPU**, with **1,639,161,856 B** sampled process-family peak. The final CLI and
+paired MCP measurements are in the primary tables. The preceding `e7acc5d85`
+pair remains an observation: first task 10.778→2.627 s, warm 1.467→1.129 s,
+whole elapsed 22.310→12.661 s, CPU 26.148→14.759 s, family peak
+2,103,361,536→1,631,567,872 B, model estimate 34,831→25,902 tokens.
+
+The Java diagnostic assertion also fails independently on `52414282b`
+(`keeps empty Java bitness unresolved`); the expected diagnostic includes the
+empty source spelling, while main returns only “bitness unknown”. All three
+portable failures on `9920a9a39` therefore reproduce on its actual main parent.
