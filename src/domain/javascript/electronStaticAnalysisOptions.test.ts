@@ -302,6 +302,8 @@ describe("Electron nested-function constants and module exports", () => {
     "const preferences = { nodeIntegration: true }; namespace N { export const shared = preferences; } export import Q = N.shared;",
     "const preferences = { nodeIntegration: true }; export namespace Config { export interface Window {} export namespace Inner { export const shared = preferences; } }",
     "const preferences = { nodeIntegration: true }; export namespace box { register(); }",
+    "const preferences = { nodeIntegration: true }; export enum Shared { Preferences = preferences as any }",
+    "const preferences = { nodeIntegration: true }; export enum Shared { Preferences = preferences as unknown as number }",
   ])(
     "keeps ES module constants unknown because importers may reach them: %s",
     (declaration) => {
@@ -326,11 +328,11 @@ describe("Electron nested-function constants and module exports", () => {
     "export namespace Config { export interface WindowOptions {} }",
     "export namespace Config { export type Mode = string; namespace Inner { export interface Item {} } }",
     "export namespace Config.Window { export interface Options {} }",
-    "export enum Mode { Integrated = 1 }",
+    "export enum Mode { Integrated = 1, Sandboxed = -1, Named = 'named', Next }",
     "export const enum Mode { Integrated = 1 }",
     "export {};",
   ])(
-    "resolves when an ES module exports only erased types or enums: %s",
+    "resolves when an ES module exports only erased types or literal enums: %s",
     (declaration) => {
       const analysis = analyzeJavaScriptStaticSource(`
       import { BrowserWindow } from "electron";

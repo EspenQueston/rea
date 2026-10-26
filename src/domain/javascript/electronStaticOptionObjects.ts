@@ -104,6 +104,29 @@ const exportsLocalBindings = (program: t.Program): boolean => {
 
 const localExportPrograms = new WeakMap<t.Program, boolean>();
 
+/**
+ * A type assertion such as `Member = value as any` lets an enum member hold
+ * an object. Only members without an initializer or with a literal number or
+ * string cannot.
+ */
+const enumMayHoldObject = (node: t.Node): boolean => {
+  if (!t.isTSEnumDeclaration(node)) return false;
+  if (!t.isTSEnumBody(node.body)) return true;
+  return node.body.members.some(({ initializer }) => {
+    if (initializer == null) return false;
+    const value =
+      t.isUnaryExpression(initializer) &&
+      (initializer.operator === "-" || initializer.operator === "+")
+        ? initializer.argument
+        : initializer;
+    return !(
+      t.isNumericLiteral(value) ||
+      t.isStringLiteral(value) ||
+      (t.isTemplateLiteral(value) && value.expressions.length === 0)
+    );
+  });
+};
+
 /** A namespace holding only erased declarations emits no runtime object. */
 const instantiatedNamespace = (node: t.Node): boolean => {
   if (!t.isTSModuleDeclaration(node) || node.declare === true) return false;
@@ -127,13 +150,13 @@ const programExportsLocalBindings = (program: t.Program): boolean =>
   program.body.some(
     (statement) =>
       semanticRuntimeExportValueSources(statement).length > 0 ||
-      // Instantiated namespaces and `export import` aliases publish values
-      // that the shared export helper does not list. Enum members hold only
-      // numbers and strings, so an exported enum cannot expose an object.
+      // Instantiated namespaces, enums and `export import` aliases publish
+      // values that the shared export helper does not list.
       (t.isExportNamedDeclaration(statement) &&
         statement.declaration != null &&
         !isTypeOnlyExportDeclaration(statement) &&
         (instantiatedNamespace(statement.declaration) ||
+          enumMayHoldObject(statement.declaration) ||
           (t.isTSImportEqualsDeclaration(statement.declaration) &&
             statement.declaration.importKind !== "type"))) ||
       t.isTSExportAssignment(statement),
