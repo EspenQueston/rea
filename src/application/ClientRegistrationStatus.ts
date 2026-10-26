@@ -612,7 +612,16 @@ const clientEvidencePresent = async (
   const discoveryPaths = new Set(client.discoveryPaths ?? []);
   const paths = [
     ...clientEvidencePaths(client),
-    ...(evidence.ownership ? clientOwnershipEvidencePaths(client) : []),
+    // Ownership-authorized reads retain the registration entry itself: a
+    // registration REA wrote must be refreshed even when every product root
+    // is absent (the antigravity CLI/config-only maintenance case).
+    ...(evidence.ownership
+      ? [
+          client.configPath,
+          ...(client.configPaths ?? []),
+          ...clientOwnershipEvidencePaths(client),
+        ]
+      : []),
   ];
   let unavailable:
     | { readonly path: string; readonly detail: string }
