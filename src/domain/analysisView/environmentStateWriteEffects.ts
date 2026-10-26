@@ -51,7 +51,11 @@ import {
 import { plannedBody, restampedFields } from "./environmentStateWriteStamps.js";
 import { readClock } from "./environmentStateWriteValues.js";
 import type { CreateEvidence } from "./environmentStateWriteExplain.js";
-import type { AmpersandSpelling } from "./environmentStateWriteCreateCalls.js";
+import {
+  noteAmpersands,
+  noteHeldAmpersands,
+  type AmpersandSpelling,
+} from "./environmentStateWriteCreateCalls.js";
 import {
   fittedClockFormat,
   matchesClockFormat,
@@ -401,7 +405,10 @@ const refineUpdate = (
       const shown = later.get(rule.field);
       return shown === undefined
         ? rule
-        : (reconciledUpdateRule(rule, shown, draft.kept) ?? rule);
+        : (reconciledUpdateRule(rule, shown, draft.kept, {
+            entity: evidence.after.object,
+            ampersands: draft.ampersands,
+          }) ?? rule);
     }),
     ...evidence.explained.rules.filter((rule) => !ruled.has(rule.field)),
   ];
@@ -478,8 +485,13 @@ const buildUpdate = (
     rules: evidence.explained.rules,
   });
   draft.observed = evidence.after.object;
-  for (const entity of context.state.ofType(draft.plan.target!))
-    noteFixedWidths(draft.fixedWidth, entity.fields);
+  const held = context.state.ofType(draft.plan.target!);
+  for (const entity of held) noteFixedWidths(draft.fixedWidth, entity.fields);
+  noteHeldAmpersands(
+    draft.ampersands,
+    evidence.explained.rules,
+    held.map((entity) => entity.fields),
+  );
 };
 
 /**
@@ -598,6 +610,7 @@ export const updateEntity = (
   draft.plan.rules = rules;
   noteFixedWidths(draft.fixedWidth, after.object);
   buildUpdate(context, draft, step, { after, explained, idField });
+  noteAmpersands(draft.ampersands, explained.rules, after.object);
   // Serving reads the plan's observation, so the gate does too; generated values are this call's.
   const written = updatedFields(
     draft.plan,
@@ -742,4 +755,7 @@ const contradictsPlan = (
 ): boolean =>
   contradictsEarlierCalls(draft, explained.rules) ||
   contradictsGeneratedClock(before, after, draft.plan.rules, explained) ||
-  conflictsWithPlan(draft.plan, explained, draft.kept);
+  conflictsWithPlan(draft.plan, explained, draft.kept, {
+    entity: after,
+    ampersands: draft.ampersands,
+  });

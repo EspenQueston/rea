@@ -87,7 +87,7 @@ const showsAmpersand = (rule: FieldRule, entity: JsonObject): boolean =>
  * Two calls' rules that differ only in how a slug spells `&`: the one that spells it as the word, when the call
  * spelling it otherwise slugged no `&`, and no call the plan accepted nor entity the type held dropped one (`shown`).
  */
-const ampersandSpelled = (
+export const ampersandSpelled = (
   held: FieldRule,
   later: { readonly rule: FieldRule; readonly entity: JsonObject },
   shown: AmpersandSpelling | undefined,

@@ -638,6 +638,105 @@ describe("slug spellings across creates", () => {
   });
 });
 
+/** A category whose slug the application derives from its name. */
+const category = (id: number, name: string, slug: string) => ({
+  id,
+  name,
+  slug,
+});
+
+/** Two category renames, each read back, after reading the `held` categories; a PUT sends the whole object back. */
+const renameRows = (
+  method: "PATCH" | "PUT",
+  held: readonly ReturnType<typeof category>[],
+  renames: readonly ReturnType<typeof category>[],
+): TimedCaptureRow[] => {
+  const current = new Map(held.map((entity) => [entity.id, entity]));
+  const rows: TimedCaptureRow[] = [
+    ["GET", "/api/categories", [...held]],
+    ...held.map((entity): TimedCaptureRow => [
+      "GET",
+      `/api/categories/${entity.id}`,
+      entity,
+    ]),
+  ];
+  for (const renamed of renames) {
+    const before = current.get(renamed.id)!;
+    rows.push(
+      [
+        method,
+        `/api/categories/${renamed.id}`,
+        renamed,
+        200,
+        method === "PATCH"
+          ? { name: renamed.name }
+          : { ...before, name: renamed.name },
+      ],
+      ["GET", `/api/categories/${renamed.id}`, renamed],
+    );
+    current.set(renamed.id, renamed);
+  }
+  rows.push(["GET", "/api/categories", [...current.values()]]);
+  return rows;
+};
+
+describe("slug spellings across updates", () => {
+  it.each(["PATCH", "PUT"] as const)(
+    "learns that an update's slug spells & as the word from a later %s that renames to one",
+    (method) => {
+      const rows = renameRows(
+        method,
+        [
+          category(1, "Harbour Notes", "harbour-notes"),
+          category(2, "Lamp Oil", "lamp-oil"),
+        ],
+        [
+          category(1, "Quay Notes", "quay-notes"),
+          category(2, "Tide & Wind", "tide-and-wind"),
+        ],
+      );
+      expect(
+        planOf(rows, `${method.toLowerCase()}_categories_by_id`),
+      ).toMatchObject({
+        served: true,
+        rules: expect.arrayContaining([
+          { field: "slug", rule: "slug", from: "name", ampersand: "and" },
+        ]),
+      });
+    },
+  );
+
+  it.each([
+    [
+      "a held category",
+      [
+        category(1, "Harbour Notes", "harbour-notes"),
+        category(3, "Salt & Pepper", "salt-pepper"),
+      ],
+      [category(1, "Quay Notes", "quay-notes")],
+    ],
+    [
+      "an earlier rename",
+      [
+        category(1, "Harbour Notes", "harbour-notes"),
+        category(3, "Lamp Oil", "lamp-oil"),
+      ],
+      [category(1, "Salt & Pepper", "salt-pepper")],
+    ],
+  ])(
+    "refuses a later rename that spells & as the word after %s dropped it",
+    (_, held, earlier) => {
+      const rows = renameRows("PATCH", held, [
+        ...earlier,
+        category(held[1]!.id, "Tide & Wind", "tide-and-wind"),
+      ]);
+      expect(planOf(rows, "patch_categories_by_id")).toMatchObject({
+        served: false,
+      });
+    },
+  );
+});
+
 describe("slug spellings the held entities show", () => {
   it("spells & as the held entities do when the creates slug none", () => {
     const rows = folderCreates(

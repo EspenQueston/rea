@@ -4,6 +4,10 @@ import type { JsonValue } from "../jsonValue.js";
 import { ownMember, same, type JsonObject } from "./environmentStateRules.js";
 import { storedKinds } from "./environmentStateWriteApply.js";
 import { composedValue } from "./environmentStateWriteComposed.js";
+import {
+  ampersandSpelled,
+  type AmpersandSpelling,
+} from "./environmentStateWriteCreateCalls.js";
 import type { explainUpdate } from "./environmentStateWriteExplain.js";
 import {
   alikeRules,
@@ -104,14 +108,29 @@ export interface UpdateCall {
   readonly kept: readonly string[];
 }
 
-/** Ambiguous saves may echo an already-derived slug or hold a clock in its own second. Keep the demonstrated derivation; call evidence still has to reproduce it. */
+/** How a later update's entity and the plan's calls and held entities showed `&` in the slugs it learns. */
+export interface UpdateSpelling {
+  readonly entity: JsonObject;
+  readonly ampersands: ReadonlyMap<string, AmpersandSpelling>;
+}
+
+/** Ambiguous saves may echo an already-derived slug, hold a clock in its own second, or slug no `&`. Keep the demonstrated derivation; call evidence still has to reproduce it. */
 export const reconciledUpdateRule = (
   held: FieldRule,
   later: FieldRule,
   kept: ReadonlySet<string>,
+  spelling?: UpdateSpelling,
 ): FieldRule | undefined => {
   const alike = alikeRules(held, later, kept);
   if (alike !== undefined) return alike;
+  if (spelling !== undefined) {
+    const spelled = ampersandSpelled(
+      held,
+      { rule: later, entity: spelling.entity },
+      spelling.ampersands.get(held.field),
+    );
+    if (spelled !== undefined) return spelled;
+  }
   for (const [derived, ambiguous] of [
     [held, later],
     [later, held],
@@ -142,10 +161,16 @@ export const contradictsEarlierCalls = (
 ): boolean => {
   const ruled = new Map(draft.plan.rules.map((rule) => [rule.field, rule]));
   return rules.some((rule) => {
+    const held = ruled.get(rule.field);
+    // A slug that echoes, or that spells `&` otherwise than the plan's, must reproduce every earlier call.
     if (
       !(unsentChange(rule) || regenerates(rule) || rule.rule === "clock") ||
-      (ruled.has(rule.field) &&
-        !(rule.rule === "slug" && ruled.get(rule.field)?.rule === "echo"))
+      (held !== undefined &&
+        !(
+          rule.rule === "slug" &&
+          (held.rule === "echo" ||
+            (held.rule === "slug" && held.ampersand !== rule.ampersand))
+        ))
     )
       return false;
     // Compute a structured rule's digest once, rather than once per earlier call.
@@ -223,6 +248,7 @@ export const conflictsWithPlan = (
   plan: Pick<StateWritePlan, "body" | "rules">,
   explained: ReturnType<typeof explainUpdate>,
   kept: ReadonlySet<string>,
+  spelling?: UpdateSpelling,
 ): boolean => {
   const body = plan.body!;
   const fixed = new Map(body.fixed.map((entry) => [entry.member, entry.sent]));
@@ -242,7 +268,7 @@ export const conflictsWithPlan = (
       const held = rules.get(rule.field);
       return (
         held !== undefined &&
-        reconciledUpdateRule(held, rule, kept) === undefined
+        reconciledUpdateRule(held, rule, kept, spelling) === undefined
       );
     })
   );
