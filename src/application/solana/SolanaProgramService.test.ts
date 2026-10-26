@@ -61,6 +61,17 @@ const report: SolanaProgramAnalysis = {
     dynamic_symbols: ["sol_log_"],
     defined_symbols: 2,
     undefined_symbols: 1,
+    call_sites: [
+      {
+        address: 900000,
+        immediate: 539340733,
+        resolved_name: "sol_log_",
+        basis: "dynamic-symbol",
+        note: null,
+      },
+    ],
+    resolved_calls: 1,
+    unresolved_calls: 0,
   },
   strings: { total: 3, relevant: [{ value: "sol_log_", file_offset: 64 }] },
   limitations: ["Fixture limitation."],

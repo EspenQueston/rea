@@ -53,9 +53,14 @@ rea analyze-solana-program --program pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA
   `jeq`/`jne`. That is the shape Anchor/rustc emits for instruction dispatch.
   Each candidate records the discriminator (the constant's little-endian
   bytes), the constant and comparison addresses, and the branch target.
-- Syscall surface is the ELF's undefined dynamic symbols (`sol_*` names) plus
-  call-site counts. `call` immediates are loader-resolved hashes and are not
-  name-resolved by this analyzer.
+- Syscall surface is the ELF's undefined dynamic symbols (`sol_*` names)
+  plus per-call-site resolution. A `call` immediate resolves only when it
+  verifies: an `R_BPF_64_32` relocation naming the site (captured ELFs carry
+  the `-1` placeholder at syscall sites; the relocation names the import),
+  exactly one Murmur3-32 hash candidate across the canonical syscall
+  registry and the ELF's own imports, or a pc-relative target landing
+  exactly on a defined symbol. Each site records its resolution basis;
+  unresolved sites keep the raw immediate.
 - Disassembly is a linear sweep by the bundled sBPF decoder
   (`rea-sbpf-decoder`). It is not a Ghidra/IDA-grade lift: no control-flow
   recovery, Rust source, types, or account layouts are produced.

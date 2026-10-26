@@ -31,6 +31,10 @@ import {
 } from "./SbpfDisassembler.js";
 import { scanSolanaDispatch } from "./SolanaDispatch.js";
 import {
+  resolveSolanaCallSites,
+  type SolanaCallResolution,
+} from "./SolanaSyscalls.js";
+import {
   DEFAULT_SOLANA_RPC_URL,
   fetchSolanaProgramElf,
   SolanaRpcFailure,
@@ -231,9 +235,14 @@ const extractStrings = (
   return { total, relevant };
 };
 
+interface AnalyzedProgram {
+  readonly report: SolanaProgramAnalysis;
+  readonly callResolutions: readonly SolanaCallResolution[];
+}
+
 const analyzeAcquired = (
   acquired: AcquiredProgram,
-): Result<SolanaProgramAnalysis, AnalysisError> => {
+): Result<AnalyzedProgram, AnalysisError> => {
   let image: SolanaElfImage;
   try {
     image = parseSolanaElf(acquired.bytes);
@@ -277,6 +286,7 @@ const analyzeAcquired = (
           textSection.offset,
         );
   const handlers = scanSolanaDispatch(instructions);
+  const callResolutions = resolveSolanaCallSites(instructions, image);
   const limitations = [...BASE_LIMITATIONS];
   if (textSection === undefined)
     limitations.push(
@@ -356,11 +366,24 @@ const analyzeAcquired = (
       dynamic_symbols: undefinedSymbols.map((symbol) => symbol.name).sort(),
       defined_symbols: definedSymbols,
       undefined_symbols: undefinedSymbols.length,
+      call_sites: callResolutions.map((resolution) => ({
+        address: resolution.address,
+        immediate: resolution.immediate,
+        resolved_name: resolution.resolvedName,
+        basis: resolution.basis,
+        note: resolution.note,
+      })),
+      resolved_calls: callResolutions.filter(
+        (resolution) => resolution.resolvedName !== null,
+      ).length,
+      unresolved_calls: callResolutions.filter(
+        (resolution) => resolution.resolvedName === null,
+      ).length,
     },
     strings: extractStrings(image),
     limitations,
   };
-  return ok(report);
+  return ok({ report, callResolutions });
 };
 
 /** Write the human-facing artifacts next to the machine Evidence when out_dir was selected. */
@@ -368,6 +391,7 @@ const writeArtifacts = async (
   input: AnalyzeSolanaProgramInput,
   acquired: AcquiredProgram,
   report: SolanaProgramAnalysis,
+  callResolutions: readonly SolanaCallResolution[],
 ): Promise<AnalysisError | undefined> => {
   if (input.out_dir === undefined) return undefined;
   try {
@@ -380,6 +404,11 @@ const writeArtifacts = async (
       const image = parseSolanaElf(acquired.bytes);
       const textSection = solanaTextSection(image);
       if (textSection !== undefined) {
+        const resolvedByAddress = new Map(
+          callResolutions
+            .filter((resolution) => resolution.resolvedName !== null)
+            .map((resolution) => [resolution.address, resolution]),
+        );
         const lines = disassembleSbpf(
           acquired.bytes.subarray(
             textSection.offset,
@@ -387,10 +416,13 @@ const writeArtifacts = async (
           ),
           textSection.address,
           textSection.offset,
-        ).map(
-          (instruction) =>
-            `${instruction.address.toString(16).padStart(8, "0")}  ${instruction.text}`,
-        );
+        ).map((instruction) => {
+          const line = `${instruction.address.toString(16).padStart(8, "0")}  ${instruction.text}`;
+          const resolution = resolvedByAddress.get(instruction.address);
+          return resolution === undefined
+            ? line
+            : `${line}  ; ${resolution.resolvedName as string}`;
+        });
         await writeFile(
           join(input.out_dir, "disassembly.txt"),
           `${lines.join("\n")}\n`,
@@ -431,14 +463,15 @@ export class SolanaProgramProvider implements SolanaProgramPort {
             signal,
           );
     if (!acquired.ok) return acquired;
-    const report = analyzeAcquired(acquired.value);
-    if (!report.ok) return report;
+    const analyzed = analyzeAcquired(acquired.value);
+    if (!analyzed.ok) return analyzed;
     const writeFailure = await writeArtifacts(
       input,
       acquired.value,
-      report.value,
+      analyzed.value.report,
+      analyzed.value.callResolutions,
     );
     if (writeFailure !== undefined) return err(writeFailure);
-    return report;
+    return ok(analyzed.value.report);
   }
 }

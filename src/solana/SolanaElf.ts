@@ -29,6 +29,15 @@ export interface SolanaElfSymbol {
   readonly size: number;
 }
 
+export interface SolanaElfRelocation {
+  /** Virtual address of the instruction or word the relocation applies to. */
+  readonly offset: number;
+  /** Index into the dynamic symbol table; 0 when the target is unnamed. */
+  readonly symbolIndex: number;
+  /** Relocation type (R_BPF_64_64 = 8, R_BPF_64_32 = 10 for sBPF). */
+  readonly type: number;
+}
+
 export interface SolanaElfImage {
   readonly bytes: Uint8Array;
   readonly byteOrder: "little" | "big";
@@ -38,11 +47,15 @@ export interface SolanaElfImage {
   readonly programHeaders: readonly SolanaElfProgramHeader[];
   readonly sections: readonly SolanaElfSection[];
   readonly dynamicSymbols: readonly SolanaElfSymbol[];
+  readonly relocations: readonly SolanaElfRelocation[];
   /** File size minus the end of the last extent the ELF headers declare. */
   readonly trailingBytes: number;
 }
 
 export const ELF_MACHINE_BPF = 263;
+
+/** Relocation type whose target word is a `call` immediate (sBPF). */
+export const R_BPF_64_32 = 10;
 
 /** Human-readable machine name; the format owns the architecture claim. */
 export const solanaElfMachineName = (machine: number): string => {
@@ -54,6 +67,8 @@ export const solanaElfMachineName = (machine: number): string => {
 
 const SECTION_TYPE_DYNSYM = 11;
 const SECTION_TYPE_NOBITS = 8;
+const SECTION_TYPE_REL = 4;
+const SECTION_TYPE_RELA = 9;
 
 interface ElfReader {
   readonly u16: (offset: number) => number;
@@ -199,6 +214,44 @@ const readDynamicSymbols = (
   return symbols;
 };
 
+/**
+ * Read relocation entries from REL/RELA sections. sBPF captures declare
+ * 16-byte entries (offset + info) even in RELA-typed sections — the addend
+ * lives in the relocated word itself — so entry size comes from the section
+ * header, never from the section type alone.
+ */
+const readRelocations = (
+  bytes: Uint8Array,
+  reader: ElfReader,
+  little: boolean,
+  sections: readonly SolanaElfSection[],
+): SolanaElfRelocation[] => {
+  const relocations: SolanaElfRelocation[] = [];
+  for (const section of sections) {
+    if (
+      (section.type !== SECTION_TYPE_REL &&
+        section.type !== SECTION_TYPE_RELA) ||
+      section.entrySize < 16
+    )
+      continue;
+    const count = Math.floor(section.size / section.entrySize);
+    for (let index = 0; index < count; index += 1) {
+      const offset = section.offset + index * section.entrySize;
+      if (offset + 16 > bytes.length) break;
+      // r_info packs the symbol index in its high word and the type in its
+      // low word; which file word is which follows the ELF byte order.
+      const first = reader.u32(offset + 8);
+      const second = reader.u32(offset + 12);
+      relocations.push({
+        offset: reader.u64(offset),
+        symbolIndex: little ? second : first,
+        type: little ? first : second,
+      });
+    }
+  }
+  return relocations;
+};
+
 const declaredExtentEnd = (
   programHeaders: readonly SolanaElfProgramHeader[],
   sections: readonly SolanaElfSection[],
@@ -295,6 +348,7 @@ export const parseSolanaElf = (bytes: Uint8Array): SolanaElfImage => {
     programHeaders,
     sections,
     dynamicSymbols: readDynamicSymbols(bytes, reader, sections),
+    relocations: readRelocations(bytes, reader, encoding === 1, sections),
     trailingBytes: Math.max(0, bytes.length - declaredEnd),
   };
 };

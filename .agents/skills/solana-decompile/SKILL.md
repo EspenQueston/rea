@@ -46,8 +46,11 @@ the deployed ELF. Do not use it for ordinary source-repository analysis.
   wallet. RPC intake is the only network step and is read-only.
 - Table dispatch, split 32-bit compares, and computed jumps are not
   recovered; an empty handler table is an unknown, not a negative result.
-- `call` immediates are loader-resolved syscall/function hashes; the
-  analyzer reports the dynamic-symbol surface instead of inventing names.
+- `call` immediates are resolved only when they verify: an ELF relocation
+  naming the site, exactly one Murmur3-32 hash candidate (the hash the
+  loader substitutes for a syscall name), or an exact defined-symbol
+  target. Everything else stays an unresolved immediate — never a guessed
+  name. Each resolved site records its basis in the Evidence.
 - Full sBPF-to-Rust lifting is out of scope. For deeper decompilation, feed
   the captured ELF (identity pinned by the Evidence SHA-256) to Ghidra/IDA
   through REA's native workflows and treat their output with the same

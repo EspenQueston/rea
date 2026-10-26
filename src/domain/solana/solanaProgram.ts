@@ -127,6 +127,27 @@ export const solanaProgramAnalysisSchema = z
       dynamic_symbols: z.array(z.string()),
       defined_symbols: z.int().nonnegative(),
       undefined_symbols: z.int().nonnegative(),
+      /**
+       * One row per immediate `call` site. A name is present only when it
+       * verified: an ELF relocation naming the site, exactly one Murmur3
+       * hash candidate, or an exact defined-symbol target.
+       */
+      call_sites: z.array(
+        z.strictObject({
+          address: byteOffset,
+          immediate: z.int().nonnegative(),
+          resolved_name: z.string().nullable(),
+          basis: z.enum([
+            "dynamic-symbol",
+            "known-syscall-table",
+            "symbol-table",
+            "unresolved",
+          ]),
+          note: z.string().nullable(),
+        }),
+      ),
+      resolved_calls: z.int().nonnegative(),
+      unresolved_calls: z.int().nonnegative(),
     }),
     strings: z.strictObject({
       total: z.int().nonnegative(),
