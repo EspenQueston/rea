@@ -426,6 +426,7 @@ export const createCliResultOutput = (
             ...options,
             source: value,
             selected: filtered,
+            filterPaths,
             operationFailure,
             command: metadata.command,
             duration: metadata.duration,

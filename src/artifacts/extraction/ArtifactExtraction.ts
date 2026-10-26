@@ -2,10 +2,13 @@ import type { AsarHeaderAdmission } from "../../config/asarHeaderAdmission.js";
 import { resolveAsarHeaderAdmission } from "../AsarHeader.js";
 import { locateGodotPck } from "../GodotPckLocation.js";
 import { withArtifactRegularFile } from "../ArtifactFileOperation.js";
-import type { ArtifactCleanupAttempt } from "../ArtifactResourceScope.js";
+import type {
+  ArtifactCleanupAttempt,
+  ArtifactResourceOwner,
+  ArtifactResourceScope,
+} from "../ArtifactResourceScope.js";
 import { lstat, realpath } from "node:fs/promises";
 import { dirname } from "node:path";
-import { absoluteCallerPath } from "../../filesystem/callerPath.js";
 import { isPathWithinRoot } from "../../domain/localPath.js";
 import { SafeOutputTreeDestinationRefusal } from "../SafeOutputTreeAdmission.js";
 
@@ -44,10 +47,6 @@ import {
   type ArtifactOccurrence,
 } from "../../domain/artifactGraph.js";
 import { AnalysisUnsupportedTargetError } from "../../domain/analysisErrorCore.js";
-import type {
-  ArtifactResourceOwner,
-  ArtifactResourceScope,
-} from "../ArtifactResourceScope.js";
 import type { BinaryTarget } from "../../domain/binaryTargetTypes.js";
 import type { ArtifactInventorySnapshot } from "../../domain/artifactInventorySnapshot.js";
 import { scanArtifactInventoryForExtractionInScope } from "../inventory/ArtifactInventory.js";
@@ -149,9 +148,10 @@ export const materializeArtifactInventoryInScope = async (
   if (zipSource === undefined) {
     const canonicalSource = await realpath(sourcePath);
     if ((await lstat(canonicalSource)).isDirectory()) {
-      const parent = await realpath(
-        dirname(absoluteCallerPath(input.outputRoot)),
+      const { canonicalOutput } = await SafeOutputTree.resolveDestination(
+        input.outputRoot,
       );
+      const parent = dirname(canonicalOutput);
       if (isPathWithinRoot(canonicalSource, parent))
         throw new SafeOutputTreeDestinationRefusal(
           `Extraction output parent ${parent} is inside source directory ${canonicalSource}. Choose a temporary directory outside the source.`,

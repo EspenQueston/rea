@@ -1,7 +1,11 @@
-import { readArtifactInspectionSources } from "../domain/artifactInspection.js";
+import { analysisEvidenceSources } from "../application/AnalysisEvidenceSources.js";
 import type { AnalysisViewRequest } from "../domain/analysisView/analysisView.js";
 import { z } from "incur";
-import { parseEvidence, type Evidence } from "../domain/evidence.js";
+import {
+  parseEvidence,
+  withEvidenceCallerInputPath,
+  type Evidence,
+} from "../domain/evidence.js";
 import type { JsonValue } from "../domain/jsonValue.js";
 import { projectAnalysisError } from "../domain/analysisErrorProjection.js";
 import type { AnalysisError } from "../domain/analysisErrorBase.js";
@@ -180,26 +184,25 @@ export const publishCliAnalysisEvidence = async (
     return projectAnalysisError(
       delivered.error.retainPartialObservation(complete),
     );
-  const inspectionSources =
-    complete.operation === "inspect_artifact"
-      ? readArtifactInspectionSources(complete.normalized_result)
-      : ok([]);
+  // This projection answers the same direct invocation as its parent. Later
+  // inspect_analysis_view calls own their own input and do not inherit it.
+  const selected =
+    detail === "summary" && complete.caller_input_path !== undefined
+      ? withEvidenceCallerInputPath(delivered.value, complete.caller_input_path)
+      : delivered.value;
+  const inspectionSources = analysisEvidenceSources(complete);
   if (!inspectionSources.ok)
-    return projectAnalysisError(
-      inspectionSources.error.retainPartialObservation(complete),
-    );
+    return projectAnalysisError(inspectionSources.error);
   const published = await publishEvidenceDelivery({
     bundle: createEvidenceBundle([
       ...new Map(
-        [
-          ...(input.sourceEvidence ?? []),
-          ...inspectionSources.value,
-          complete,
-        ].map((record) => [record.evidence_id, record]),
+        [...(input.sourceEvidence ?? []), ...inspectionSources.value].map(
+          (record) => [record.evidence_id, record],
+        ),
       ).values(),
     ]),
     complete,
-    delivered: delivered.value,
+    delivered: selected,
     outputPath: absoluteCallerPath(evidenceOutput),
     operation,
     signal,

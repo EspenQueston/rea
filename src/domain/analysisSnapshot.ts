@@ -38,8 +38,7 @@ import {
   jsonValueSchema,
   type JsonValue,
 } from "./jsonValue.js";
-import { digestSchema } from "./../domain/digests.js";
-import { prefixedDigestSchema } from "./../domain/digests.js";
+import { digestSchema, prefixedDigestSchema } from "./../domain/digests.js";
 import { canonicalJsonDigestSteps } from "./canonicalJsonDigestSteps.js";
 import { freezeJsonSnapshot } from "./immutableJson.js";
 import {
@@ -171,19 +170,9 @@ const entrySchema = z.object({
     subject: subjectSchema.nullable(),
   }),
 });
-const workflowEntrySchema = z.object({
-  query_id: prefixedDigestSchema("query"),
-  operation: z.string().min(1),
-  parameters: jsonObjectSchema,
-  execution: z.object({
-    result: jsonValueSchema,
-    raw_result: jsonValueSchema.nullable(),
-    provider: committedProviderSchema,
+const workflowEntrySchema = entrySchema.extend({
+  execution: entrySchema.shape.execution.extend({
     analysis_profile: analysisProfileSchema,
-    limitations: z.array(z.string()),
-    relationship_coverage: relationshipCoverageSchema.nullable(),
-    locations: z.array(evidenceLocationSchema),
-    subject: subjectSchema.nullable(),
   }),
 });
 

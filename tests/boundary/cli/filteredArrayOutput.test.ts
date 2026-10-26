@@ -4,8 +4,11 @@ import { Cli, Formatter } from "incur";
 import { estimateTokenCount } from "tokenx";
 import { expect, it } from "vitest";
 
-import { parseCliOutputArguments } from "../../../src/cliOutput.js";
-import { adaptCliOutputArgumentsForIncur } from "../../../src/cliBuiltinArguments.js";
+import {
+  parseCliOutputArguments,
+  renderCliDocument,
+} from "../../src/cliOutput.js";
+import { adaptCliOutputArgumentsForIncur } from "../../src/cliBuiltinArguments.js";
 import {
   createCliResultOutput,
   streamCliCommandResults,
@@ -166,7 +169,7 @@ it("renders only each record's own fields in heterogeneous Markdown tables", asy
     "name",
     "constructor",
     "toString",
-    "__proto__",
+    "\\_\\_proto\\_\\_",
     "enabled",
     "count",
   ]);
@@ -175,6 +178,15 @@ it("renders only each record's own fields in heterogeneous Markdown tables", asy
     ["second", "", "", "", "", ""],
     ["third", "0", "false", "null", "", ""],
   ]);
+});
+
+it("formats arrays of empty objects without columns as JSON in Markdown", async () => {
+  const value: unknown = [{}, {}];
+  freezeRecursively(value);
+  const json = await runFilteredCli(value, "json");
+  expect(JSON.parse(json)).toEqual(value);
+  const markdown = await runFilteredCli(value, "md");
+  expect(markdown).toBe("[{},{}]\n");
 });
 
 it.each(
@@ -423,10 +435,9 @@ it.each(["json", "jsonl", "yaml", "toon", "md"] as const)(
           .split("\n")
           .map((line) => JSON.parse(line)),
       ).toEqual(expected);
-    else if (format === "md") {
-      expect(outputs[0]).toContain(`| ${JSON.stringify(expected[0]!.rows)} |`);
-      expect(outputs[0]).not.toContain("[object Object]");
-    } else expect(outputs[0]).toBe(`${Formatter.format(expected, format)}\n`);
+    else if (format === "md")
+      expect(outputs[0]).toBe(renderCliDocument(expected, format, false));
+    else expect(outputs[0]).toBe(`${Formatter.format(expected, format)}\n`);
     expect(projectionSource[0]?.rows[0]?.retained).toEqual([0, 10]);
   },
 );
@@ -483,10 +494,9 @@ it.each(["json", "jsonl", "yaml", "toon", "md"] as const)(
           .split("\n")
           .map((line) => JSON.parse(line)),
       ).toEqual(expected);
-    else if (format === "md") {
-      expect(outputs[0]).toContain(`| ${JSON.stringify(expected[0]!.rows)} |`);
-      expect(outputs[0]).not.toContain("[object Object]");
-    } else expect(outputs[0]).toBe(`${Formatter.format(expected, format)}\n`);
+    else if (format === "md")
+      expect(outputs[0]).toBe(renderCliDocument(expected, format, false));
+    else expect(outputs[0]).toBe(`${Formatter.format(expected, format)}\n`);
     expect(projectionSource).toEqual(before);
   },
 );
