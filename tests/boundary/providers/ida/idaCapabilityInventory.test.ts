@@ -1,3 +1,4 @@
+import { IDA_COMPATIBILITY_PROFILES } from "../../../../src/ida/IdaConfiguration.js";
 import { expect, it } from "vitest";
 import type { CapabilityDescriptor } from "../../../../src/application/AnalysisProvider.js";
 import { buildCapabilityInventory } from "../../../../src/application/CapabilityInventory.js";
@@ -27,13 +28,16 @@ it("audits every IDA operation's network transport without adding it to the sess
 });
 
 it.each([
-  ["attached", false, false],
-  ["attached", true, true],
-  ["headless", true, false],
+  ["legacy", false],
+  ["native", true],
+  ["modern", true],
 ] as const)(
-  "covers IDA provider effects in the global audit (%s, stdio=%s, native=%s)",
-  (mode, stdio, native) => {
-    for (const descriptor of idaCapabilities(mode, stdio, native)) {
+  "covers IDA provider effects in the global audit (%s, stdio=%s)",
+  (profileName, stdio) => {
+    for (const descriptor of idaCapabilities(
+      IDA_COMPATIBILITY_PROFILES[profileName],
+      stdio,
+    )) {
       const audited = TOOL_EFFECTS[descriptor.operation];
       expect(audited, descriptor.operation).toBeDefined();
       if (descriptor.effects.mayAccessNetwork)
@@ -55,7 +59,10 @@ it.each([false, true])(
       open: true,
       kind: "executable",
       capabilities: providerCapabilitySets(
-        idaCapabilities(showUi ? "attached" : "headless", false),
+        idaCapabilities(
+          IDA_COMPATIBILITY_PROFILES[showUi ? "legacy" : "modern"],
+          false,
+        ),
       ),
     };
     const entries = buildCapabilityInventory(input, enabledPolicy);
@@ -91,7 +98,9 @@ it("omits effects of IDA calls hidden behind unavailable workflow prerequisites"
     {
       open: true,
       kind: "executable",
-      capabilities: providerCapabilitySets(idaCapabilities("attached", false)),
+      capabilities: providerCapabilitySets(
+        idaCapabilities(IDA_COMPATIBILITY_PROFILES.legacy, false),
+      ),
     },
     enabledPolicy,
   );
@@ -117,7 +126,7 @@ it("omits effects of IDA calls hidden behind unavailable workflow prerequisites"
 });
 
 it("advertises reachable IDA calls through native UI tracing", () => {
-  const ida = idaCapabilities("attached", false);
+  const ida = idaCapabilities(IDA_COMPATIBILITY_PROFILES.legacy, false);
   const source = ida[0];
   if (source === undefined) throw new Error("IDA capability fixture is empty");
   const metadata = {
@@ -167,7 +176,7 @@ it("advertises reachable IDA calls through native UI tracing", () => {
 });
 
 it("includes reachable IDA document and procedure effects in address-context discovery", () => {
-  const ida = idaCapabilities("headless", false);
+  const ida = idaCapabilities(IDA_COMPATIBILITY_PROFILES.modern, false);
   expect(TOOL_EFFECTS.inspect_address_context).toMatchObject({
     accessesNetwork: true,
     launchesProcess: true,
@@ -228,7 +237,7 @@ it("keeps native attached UI effects limited to the operations that show them", 
     open: true,
     kind: "executable",
     capabilities: providerCapabilitySets(
-      idaCapabilities("attached", true, true),
+      idaCapabilities(IDA_COMPATIBILITY_PROFILES.native, true),
     ),
   };
   const entries = buildCapabilityInventory(input, enabledPolicy);
