@@ -1,24 +1,25 @@
 # Verification
 
-Executed on macOS with Node v22.23.1 at `feat/recorder-saved-values` 8218b0b2 (on main 1173c0a9), and on Ubuntu 24.04
+Executed on macOS with Node v24.22.1 at `feat/recorder-saved-values` e42362c9 (on main 2b84efe0), and on Ubuntu 24.04
 VMs with snap Chromium for the agent recordings.
 
 ## Gates
 
-- `npm run check` (typecheck, lint, format, knip, metadata, architecture guards, typed lint), `docs:check`,
-  `mcp-catalog:check`, `verify:test-discovery`, `scan:todos` and `jscpd`: passed.
-- `npx vitest run --project domain --project services --project adapters`: 17,871 passed and 4 failed. The 4 fail the
-  same way on main in this environment: two `setupEnvironment` tests, a `GpuPayloadCodec` zstd test, and "stops
-  Inspector target authorization after the current stat settles".
+- `npm run typecheck`, `lint:built`, `format:check`, `metadata:check`, `verify:architecture-guards`, `knip:production`,
+  `lint:typed`, `docs:check`, `mcp-catalog:check`, `verify:test-discovery`, `scan:todos` and `jscpd`: passed.
+  `knip` reports one unused export, `isToolFamilyId` in `src/contracts/toolFamilies.ts`, which this branch does not
+  touch and main 2b84efe0 reports too.
+- `npx vitest run --project domain --project services --project adapters`: 18,261 passed and 1 failed, "stops Inspector
+  target authorization after the current stat settles", which fails the same way on main in this environment.
 - Browser scenario CLI and MCP boundaries, scenario input diagnostics, cancellation and cleanup, the analysis-view CLI
   and MCP boundaries, the environment build, export and serve CLI boundaries, the environment serve, served-writes and
   bundle MCP boundaries, tool schema validity, MCP schema validation, and output schema constraints and profile: 17
-  files, 122 passed.
-- The compact MCP catalog must stay under the one-megabyte frame `outputSchemaProfile.test.ts` measures. Main
-  (ff6d96bc) advertises 1,042,845 bytes. A first design with `path_params` on request and goto steps, `json_values`, and
-  separate `username` and `password` unions took 1,052,236 and failed the test. This branch takes 1,046,489: saved
-  values travel as `{saved:name}` placeholders, Basic credentials repeat their part union once, and repeated inner
-  descriptions were dropped.
+  files, 128 passed.
+- The compact MCP catalog must stay under the one-megabyte frame `outputSchemaProfile.test.ts` measures. A first
+  design with `path_params` on request and goto steps, `json_values`, and separate `username` and `password` unions
+  added 9,391 bytes on main ff6d96bc and failed the test, which then had 5,731 bytes to spare. Saved values now travel
+  as `{saved:name}` placeholders, Basic credentials repeat their part union once, and repeated inner descriptions were
+  dropped: on main 2b84efe0 the catalog takes 1,038,975 bytes and this branch 1,042,639.
 
 ## Compatibility
 
