@@ -269,6 +269,13 @@ try {
           result: record.normalized_result,
         })),
     };
+    facts.pseudocode.sort((left, right) =>
+      left.procedure < right.procedure
+        ? -1
+        : left.procedure > right.procedure
+          ? 1
+          : 0,
+    );
     report.facts_sha256 = createHash("sha256")
       .update(JSON.stringify(facts))
       .digest("hex");
