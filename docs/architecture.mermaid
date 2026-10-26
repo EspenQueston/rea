@@ -33,6 +33,7 @@ graph TD
         WASM["src/wasm/<br/>caller-supplied WABT; immutable artifact inspection<br/>owned process supervision and retryable workspace cleanup"]
         APKSIG["src/apkSignature/<br/>in-process APK Signing Block + v1 reader<br/>bounded single read, no device or execution"]
         EVM["src/evm/<br/>unchanged EVMole/WASM in bounded owned worker<br/>explicit carrier parsing and inferred interface adapter"]
+        JVM["src/jvm/<br/>in-process class-file/JAR debug-metadata reader<br/>bounded, dependency-free, no target execution"]
         HOPPER["src/hopper/<br/>Hopper launch & Unix-socket protocol<br/>BridgeLauncher, HopperClient, protocol"]
         GHIDRA["src/ghidra/<br/>Ghidra discovery, profile & function analysis<br/>snapshot, Unix/Windows transport, bounded lifecycle"]
         IDA["src/ida/<br/>Upstream MCP contract adaptation<br/>live GUI binding or owned headless database"]
@@ -120,6 +121,8 @@ graph TD
     APKSIG --> DOMAIN
     WASM --> PROCESS
     WASM --> DOMAIN
+    COMPOSITION --> JVM
+    JVM --> DOMAIN
     COMPOSITION --> PWNTOOLS
     PWNTOOLS --> PROCESS
     PWNTOOLS --> DOMAIN

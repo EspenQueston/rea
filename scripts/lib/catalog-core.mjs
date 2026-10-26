@@ -63,10 +63,12 @@ const SOURCE_PATHS = {
   signalContracts: "dist/contracts/signals/signalToolContracts.js",
   signalProvider: "dist/signals/SigrokRecordingProvider.js",
   wasmContracts: "dist/contracts/wasm/wasmToolContracts.js",
+  jvmContracts: "dist/contracts/jvm/jvmToolContracts.js",
   wasmProvider: "dist/wasm/WabtRelease.js",
   apkSignatureContracts:
     "dist/contracts/apkSignature/apkSignatureToolContracts.js",
   apkSignatureProvider: "dist/apkSignature/ApkSignatureRelease.js",
+  jvmProvider: "dist/jvm/JvmClassFileRelease.js",
   evmContracts: "dist/contracts/evm/evmToolContracts.js",
   sqliteContracts: "dist/contracts/sqlite/sqliteToolContracts.js",
   sqliteDomain: "dist/domain/sqlite/sqliteDatabase.js",

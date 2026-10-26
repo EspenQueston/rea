@@ -21,6 +21,15 @@ import type {
   AnalysisPartialObservation,
 } from "../domain/analysisErrorBase.js";
 
+/**
+ * The exact bound a `limit` failure exceeded: `key` names it as a reported
+ * limit (e.g. `max_metadata_read_bytes`) and `maximum` is its value.
+ */
+export interface ArtifactReaderLimit {
+  readonly key: string;
+  readonly maximum: number;
+}
+
 export interface ArtifactReaderFailureOptions extends ErrorOptions {
   readonly cancellation?: { readonly reason: unknown } | undefined;
   readonly cleanup?: AnalysisCleanupObservation | undefined;
@@ -31,6 +40,8 @@ export interface ArtifactReaderFailureOptions extends ErrorOptions {
   readonly boundary?: ArtifactLimitBoundary;
   /** Named admission whose recovery must not be inferred from other limit text. */
   readonly admission?: ArtifactAdmissionLimit;
+  /** The exceeded bound's name and value, when the reader knows it. */
+  readonly limit?: ArtifactReaderLimit;
 }
 
 /** Archive-neutral entry metadata. Reader adapters never choose output paths. */
@@ -49,6 +60,14 @@ export interface ArtifactEntry {
   readonly unpacked: boolean;
   readonly limitations: readonly string[];
   readonly adapterKey: string;
+  /**
+   * The name exactly as the container stores it, when it differs from `path`:
+   * for a ZIP member, the raw central-directory name (e.g. `./classes.dex`, or
+   * the name an Info-ZIP Unicode Path extra field replaces in `path`). Runtimes
+   * that look members up by stored name (the JDK, ART) must match on this, not
+   * on `path`.
+   */
+  readonly storedPath?: string;
   /** Filesystem identity captured during traversal, when supplied by an adapter. */
   readonly sourceIdentity?: {
     readonly device: bigint;
@@ -111,6 +130,7 @@ export const sameArtifactEntry = (
   sameFormatMetadata(entry.formatMetadata, produced.formatMetadata) &&
   entry.unpacked === produced.unpacked &&
   entry.adapterKey === produced.adapterKey &&
+  entry.storedPath === produced.storedPath &&
   entry.limitations.length === produced.limitations.length &&
   entry.limitations.every(
     (limitation, index) => limitation === produced.limitations[index],
@@ -203,6 +223,8 @@ export class ArtifactReaderFailure extends Error {
   readonly boundary: ArtifactLimitBoundary | undefined;
   /** Named admission for a limit whose public recovery is owned by the producer. */
   readonly admission: ArtifactAdmissionLimit | undefined;
+  /** The exceeded bound for a `limit` reason, when the reader knows it. */
+  readonly limit: ArtifactReaderLimit | undefined;
 
   constructor(
     readonly reason:
@@ -229,6 +251,7 @@ export class ArtifactReaderFailure extends Error {
     this.partialObservation = options?.partialObservation;
     this.boundary = options?.boundary;
     this.admission = options?.admission;
+    this.limit = options?.limit;
   }
 
   /** Retain completed facts when a later artifact step fails. */
@@ -282,6 +305,7 @@ export class ArtifactReaderFailure extends Error {
         ...(primary.admission === undefined
           ? {}
           : { admission: primary.admission }),
+        ...(primary.limit === undefined ? {} : { limit: primary.limit }),
         ...(mergedObservation === undefined
           ? {}
           : { partialObservation: mergedObservation }),

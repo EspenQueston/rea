@@ -228,11 +228,18 @@ it("preserves valid Info-ZIP Unicode Path overrides", async () => {
   );
 
   const inventory = await inventoryArtifact(path);
+  // The Unicode Path name wins, and no CP437 fallback note is added; the
+  // differing stored name stays visible, since lookups by stored name (the
+  // JDK, ART) see that one.
   expect(inventory.occurrences).toContainEqual(
     expect.objectContaining({
       logical_path: "café.txt",
       hash_status: "verified",
-      limitations: [],
+      limitations: [
+        expect.stringContaining(
+          'ZIP member stored name "╟╤▒█.txt" differs from its Info-ZIP Unicode Path extra field name "café.txt"',
+        ),
+      ],
     }),
   );
 });

@@ -193,6 +193,12 @@ explicit path or endpoint and do not need it.
   whether each signed digest still matches the bytes (self-consistency). This
   is identity and integrity, not a trust or authenticity verdict.
   See the [APK signature guide](https://github.com/morluto/rea/blob/main/docs/apk-signature.md).
+- Explicit local JVM `.class` file or JAR entry: `inspect_jvm_debug_metadata`.
+  Reports compiler-emitted debug metadata (SourceFile, line numbers,
+  local-variable slots and scope ranges) and per-method debugging readiness; for
+  a JAR, select a class `entry` and optional multi-release `release`. No Java
+  executes; decompiler line numbers are never substituted for compiler positions.
+  See the [JVM guide](https://github.com/morluto/rea/blob/main/docs/jvm-debug-metadata.md).
 - Explicit local EVM bytecode carrier: `inspect_evm_interface` with caller-selected
   `raw` or `hex` encoding. The owned worker deadline is `timeout_ms` (default
   30000 ms, range 1..2147483647, next call). It does not raise the fixed byte,

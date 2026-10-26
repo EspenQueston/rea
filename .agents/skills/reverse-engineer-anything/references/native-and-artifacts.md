@@ -289,6 +289,17 @@ lineage, and the strongest scheme.
 It never claims authenticity: no signature or lineage is cryptographically
 verified.
 
+## Offline JVM debug metadata
+
+Use `inspect_jvm_debug_metadata` for a selected local `.class` file, or a class
+`entry` inside a `.jar` (with optional multi-release `release`). It reports the
+compiler-emitted `SourceFile`, `LineNumberTable`, `LocalVariableTable` and
+`LocalVariableTypeTable` and classifies each method's debugging readiness
+(`present | partial | stripped | malformed | not-applicable`), binding bytecode
+offsets, local slots and scope ranges to the method's name and descriptor. No
+Java executes; `SourceDebugExtension` stays opaque; decompiler line numbers are
+never substituted for compiler positions.
+
 ## Native targets
 
 After `open_binary`, use focused search, procedure, or function tools directly.

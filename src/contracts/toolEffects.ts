@@ -166,6 +166,7 @@ export const TOOL_EFFECTS: Readonly<Record<string, ToolEffects>> = {
     writesFilesystem: true,
     launchesProcess: true,
   }),
+  inspect_jvm_debug_metadata: evidence,
   inspect_evm_interface: effects({
     mutatesSession: true,
     writesFilesystem: true,
