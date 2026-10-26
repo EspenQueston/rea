@@ -269,12 +269,7 @@ export class SafeOutputTree {
         0o600,
       ).catch(async (cause: unknown) => {
         if (isAlreadyExists(cause))
-          await throwIfDestinationCaseCollision(
-            parent.path,
-            path,
-            cause,
-            this.platform,
-          );
+          await throwIfDestinationCaseCollision(parent.path, path, cause);
         throw new ArtifactReaderFailure(
           "path",
           `Could not exclusively create extraction path: ${path}`,
@@ -584,7 +579,6 @@ export class SafeOutputTree {
           parent.path,
           logicalPath,
           creation.cause,
-          this.platform,
         );
         const identity = this.#nestedDirectories.get(current);
         if (identity === undefined) throw replacedDirectory(current);
@@ -798,9 +792,11 @@ const observeDirectoryCaseSensitivity = async (
 ): Promise<DestinationCaseSensitivity> => {
   const entries = await readdir(directory).catch(() => undefined);
   if (entries === undefined) return "unknown";
+  const entryNames = new Set(entries);
   for (const entry of entries) {
     const toggled = toggleFirstAsciiLetter(entry);
     if (toggled === undefined) continue;
+    if (entryNames.has(toggled)) return "case-sensitive";
     const [original, candidate] = await Promise.all([
       lstat(join(directory, entry), { bigint: true }).catch(() => undefined),
       lstat(join(directory, toggled), { bigint: true }).catch(() => undefined),
@@ -837,13 +833,13 @@ const throwIfDestinationCaseCollision = async (
   parentDirectory: string,
   logicalPath: string,
   cause?: unknown,
-  platform: NodeJS.Platform = process.platform,
 ): Promise<void> => {
   const names = await readdir(parentDirectory).catch(() => undefined);
   if (names === undefined) return;
-  const failure = destinationCaseCollision(logicalPath, names, {
-    ...(cause === undefined ? {} : { cause }),
-    platform,
-  });
+  const failure = destinationCaseCollision(
+    logicalPath,
+    names,
+    cause === undefined ? undefined : { cause },
+  );
   if (failure !== undefined) throw failure;
 };

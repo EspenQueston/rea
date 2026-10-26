@@ -1,4 +1,5 @@
 import {
+  link,
   mkdir,
   readFile,
   readdir,
@@ -685,22 +686,67 @@ it("refuses case-folding file and parent directory collisions in dry-run mode wh
     );
     await expect(stat(parentOut)).rejects.toMatchObject({ code: "ENOENT" });
 
-    const sigmaZip = join(directory, "sigma-case.zip");
-    const sigmaWriter = new ZipWriter(new Uint8ArrayWriter());
-    await sigmaWriter.add("σ.txt", new TextReader("medial"));
-    await sigmaWriter.add("ς.txt", new TextReader("final"));
-    await writeFile(sigmaZip, Buffer.from(await sigmaWriter.close()));
-    const sigmaOut = join(directory, "sigma-case-out");
-    const sigmaError = await extractArtifact({
-      ...zipInput(sigmaZip, sigmaOut, resourceScope),
+    const nonAsciiZip = join(directory, "non-ascii-case.zip");
+    const nonAsciiWriter = new ZipWriter(new Uint8ArrayWriter());
+    await nonAsciiWriter.add("σ.txt", new TextReader("medial"));
+    await nonAsciiWriter.add("ς.txt", new TextReader("final"));
+    await nonAsciiWriter.add("𐐀.txt", new TextReader("deseret-upper"));
+    await nonAsciiWriter.add("𐐨.txt", new TextReader("deseret-lower"));
+    await writeFile(nonAsciiZip, Buffer.from(await nonAsciiWriter.close()));
+    const nonAsciiOut = join(directory, "non-ascii-case-out");
+    const nonAsciiPlan = await extractArtifact({
+      ...zipInput(nonAsciiZip, nonAsciiOut, resourceScope),
       dryRun: true,
       platform: "win32",
-    }).catch((cause: unknown) => cause);
-    expect(sigmaError).toBeInstanceOf(DestinationCaseCollisionFailure);
-    expect((sigmaError as DestinationCaseCollisionFailure).message).toBe(
-      "Destination filesystem cannot store both ς.txt and σ.txt; inventory retains both logical names.",
+    });
+    expect(nonAsciiPlan.artifacts).toEqual([]);
+    expect(nonAsciiPlan.plan?.totals).toMatchObject({
+      planned_files: 0,
+      unresolved_entries: 4,
+      observed_bytes_estimate: 0,
+    });
+    expect(
+      nonAsciiPlan.plan?.entries.map(({ logical_path, status }) => ({
+        logical_path,
+        status,
+      })),
+    ).toEqual([
+      { logical_path: "ς.txt", status: "unresolved" },
+      { logical_path: "σ.txt", status: "unresolved" },
+      { logical_path: "𐐀.txt", status: "unresolved" },
+      { logical_path: "𐐨.txt", status: "unresolved" },
+    ]);
+    expect(nonAsciiPlan.limitations).toContain(
+      "Non-ASCII case-folding paths depend on the destination filesystem case table and cannot be verified without creating files; affected paths remain unresolved in the dry-run plan.",
     );
-    await expect(stat(sigmaOut)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(stat(nonAsciiOut)).rejects.toMatchObject({ code: "ENOENT" });
+
+    if (process.platform !== "win32") {
+      const hardlinkParent = join(directory, "hardlink-parent");
+      await mkdir(hardlinkParent, { recursive: true });
+      await writeFile(join(hardlinkParent, "Foo"), "same-inode");
+      await link(join(hardlinkParent, "Foo"), join(hardlinkParent, "foo"));
+      const hardlinkOut = join(hardlinkParent, "out");
+      const hardlinkPlan = await extractArtifact({
+        ...zipInput(fileCaseZip, hardlinkOut, resourceScope),
+        dryRun: true,
+        platform: "linux",
+      });
+      expect(hardlinkPlan.plan?.totals).toMatchObject({
+        planned_files: 2,
+        unresolved_entries: 0,
+      });
+      expect(
+        hardlinkPlan.plan?.entries.map(({ logical_path, status }) => ({
+          logical_path,
+          status,
+        })),
+      ).toEqual([
+        { logical_path: "Foo.txt", status: "planned" },
+        { logical_path: "foo.txt", status: "planned" },
+      ]);
+      await expect(stat(hardlinkOut)).rejects.toMatchObject({ code: "ENOENT" });
+    }
 
     const emptyMount = join(directory, "empty-mount");
     await mkdir(emptyMount, { recursive: true });
