@@ -1,3 +1,9 @@
+import {
+  existingGhidraAnalysisProfile,
+  ghidraPinnedLanguage,
+} from "./GhidraAnalysisProfile.js";
+import { ProviderAdapterError } from "../domain/providerAdapterError.js";
+import { resolveGhidraProject } from "./GhidraProjectSnapshot.js";
 import { DeferredAnalysisClient } from "../providers/DeferredAnalysisClient.js";
 import type { ProviderInspectionScope } from "../providers/ProviderInspectionScope.js";
 import { analysisClientFailureForOperation } from "../providers/AnalysisClientFailure.js";
@@ -64,6 +70,7 @@ import {
 import { resolveGhidraExtensions } from "./extensions/GhidraExtensions.js";
 import {
   CAPABILITIES,
+  existingProjectCapabilities,
   windowsP0Capabilities,
   GHIDRA_PROVIDER_IDENTITY,
   WINDOWS_P0_NATIVE_PE_ARCHITECTURES,
@@ -140,7 +147,9 @@ export class GhidraProvider implements AnalysisProviderCandidate {
   capabilities(): readonly CapabilityDescriptor[] {
     return (this.installationHost?.platform ?? process.platform) === "win32"
       ? windowsP0Capabilities()
-      : CAPABILITIES;
+      : this.config.ghidraExistingProject === undefined
+        ? CAPABILITIES
+        : existingProjectCapabilities();
   }
 
   async inspectAvailability(
@@ -181,7 +190,9 @@ export class GhidraProvider implements AnalysisProviderCandidate {
       availability,
       capabilities:
         readiness === undefined
-          ? CAPABILITIES
+          ? this.config.ghidraExistingProject === undefined
+            ? CAPABILITIES
+            : existingProjectCapabilities()
           : windowsP0Capabilities(readiness),
     };
   }
@@ -382,6 +393,45 @@ export class GhidraProvider implements AnalysisProviderCandidate {
       "resolve_analysis_profile",
       options?.scope,
     );
+    if (
+      this.config.ghidraExistingProject !== undefined &&
+      target.kind === "executable" &&
+      installation.status === "available"
+    ) {
+      if (
+        installation.platform === "win32" ||
+        ghidraPinnedLanguage(target) !== undefined ||
+        !(
+          target.format === "elf" ||
+          target.format === "pe" ||
+          isMachOFormat(target.format)
+        )
+      )
+        return err(
+          new ProviderAdapterError("ghidra", "resolve_analysis_profile", {
+            diagnostics: {
+              reason:
+                "Existing-project mode supports native ELF/PE/Mach-O programs on POSIX without fresh-import loader preparation or pinned language overrides; use fresh import for this target/host.",
+            },
+          }),
+        );
+      const project = await resolveGhidraProject(
+        this.config.ghidraExistingProject,
+        target.sourcePath ?? target.path,
+        this.#inspectionResources,
+        options?.signal,
+      );
+      return ok({
+        profile: existingGhidraAnalysisProfile(
+          target,
+          {
+            ...GHIDRA_PROVIDER_IDENTITY,
+            version: installation.providerVersion,
+          },
+          jsonValueSchema.parse(project),
+        ),
+      });
+    }
     const resolved = await resolveGhidraAnalysisProfile(
       target,
       GHIDRA_PROVIDER_IDENTITY,

@@ -1,3 +1,4 @@
+import { copyExistingGhidraProject } from "./GhidraProjectSnapshot.js";
 import type { ArtifactResourceScope } from "../artifacts/ArtifactResourceScope.js";
 import { GHIDRA_BRIDGE_SOURCES } from "./GhidraBridgeSources.js";
 import {
@@ -6,24 +7,8 @@ import {
 } from "./GhidraAnalysisSeeds.js";
 import type { GhidraLanguageOverride } from "../config/ghidraLanguageOverride.js";
 import { snapshotEnvironment } from "../process/snapshotEnvironment.js";
-import {
-  cp,
-  lstat,
-  mkdir,
-  readdir,
-  readFile,
-  realpath,
-} from "node:fs/promises";
-import {
-  basename,
-  dirname,
-  isAbsolute,
-  join,
-  posix,
-  relative,
-  resolve,
-  win32,
-} from "node:path";
+import { mkdir, readFile, realpath } from "node:fs/promises";
+import { basename, dirname, join, posix, win32 } from "node:path";
 
 import { writeGhidraRuntimeFile } from "./GhidraRuntimeFile.js";
 
@@ -72,103 +57,6 @@ import {
   inspectGhidraPspExtension,
   type GhidraPspExtension,
 } from "./GhidraPspExtension.js";
-
-/** Private paths and identity material for one headless Ghidra import. */
-/**
- * Copy a caller-owned pre-imported project into the owned runtime's project
- * root so the headless open reads the copy and never mutates the original.
- * The invocation selects the fixed project name `rea-project`, so a caller
- * directory without the expanded `rea-project.gpr` / `rea-project.rep` pair
- * is rejected here with its reason instead of an opaque Ghidra failure.
- * A project path that overlaps the runtime (the runtime root itself, a
- * directory inside it, or an ancestor of it) is rejected before any copy so
- * the recursive copy can never descend into its own destination.
- */
-const pathsOverlap = (first: string, second: string): boolean => {
-  const contains = (ancestor: string, descendant: string): boolean => {
-    const rel = relative(ancestor, descendant);
-    return rel === "" || (!isAbsolute(rel) && !rel.startsWith(".."));
-  };
-  return contains(first, second) || contains(second, first);
-};
-
-export const copyExistingGhidraProject = async (
-  sourcePath: string,
-  destinationRoot: string,
-  signal?: AbortSignal,
-): Promise<void> => {
-  signal?.throwIfAborted();
-  // Resolve both sides through realpath before comparing: resolve() does not
-  // follow symbolic links, so a symlinked path component could otherwise hide
-  // an overlap with the runtime from the purely lexical check below. The
-  // destination is the runtime's project root, inside the runtime root, so one
-  // comparison against the runtime root rejects a project placed at the
-  // runtime root, anywhere inside it, or an ancestor of it.
-  const realRuntime = await realpath(dirname(destinationRoot)).catch(() =>
-    resolve(dirname(destinationRoot)),
-  );
-  const realSource = await realpath(sourcePath).catch(() => undefined);
-  if (realSource !== undefined && pathsOverlap(realSource, realRuntime))
-    throw new Error(
-      `Existing Ghidra project directory overlaps the REA runtime directory; select a project outside the runtime: ${sourcePath}`,
-    );
-  const source = await lstat(sourcePath).catch(() => undefined);
-  signal?.throwIfAborted();
-  if (source === undefined || !source.isDirectory())
-    throw new Error(
-      `Existing Ghidra project directory does not exist: ${sourcePath}`,
-    );
-  const marker = await lstat(join(sourcePath, "rea-project.gpr")).catch(
-    () => undefined,
-  );
-  signal?.throwIfAborted();
-  const data = await lstat(join(sourcePath, "rea-project.rep")).catch(
-    () => undefined,
-  );
-  signal?.throwIfAborted();
-  if (!marker?.isFile() || !data?.isDirectory())
-    throw new Error(
-      `Existing Ghidra project requires a regular rea-project.gpr marker and rea-project.rep directory; restore saved .grez archives before selecting the project: ${sourcePath}`,
-    );
-  const entries = await readdir(sourcePath);
-  signal?.throwIfAborted();
-  const copyEntry = async (
-    source: string,
-    destination: string,
-  ): Promise<void> => {
-    signal?.throwIfAborted();
-    const metadata = await lstat(source);
-    signal?.throwIfAborted();
-    if (metadata.isSymbolicLink())
-      throw new GhidraLaunchError(
-        `Existing Ghidra project contains a symbolic link: ${source}`,
-      );
-    if (metadata.isDirectory()) {
-      await mkdir(destination, { mode: 0o700 });
-      signal?.throwIfAborted();
-      const children = await readdir(source);
-      signal?.throwIfAborted();
-      for (const child of children)
-        await copyEntry(join(source, child), join(destination, child));
-    } else if (metadata.isFile()) {
-      // Finish each owned write before checking cancellation or allowing cleanup.
-      // Dereferencing also prevents a raced source replacement from leaving a
-      // live symbolic link in the runtime copy.
-      await cp(source, destination, {
-        dereference: true,
-        errorOnExist: true,
-        force: false,
-      });
-    } else {
-      throw new GhidraLaunchError(
-        `Existing Ghidra project contains a non-regular entry: ${source}`,
-      );
-    }
-    signal?.throwIfAborted();
-  };
-  for (const entry of entries)
-    await copyEntry(join(sourcePath, entry), join(destinationRoot, entry));
-};
 
 export interface GhidraLaunchSession {
   readonly runtimeRoot: string;
@@ -315,22 +203,12 @@ const ghidraLaunchCommandOutput = (
   return execFileFailureCapturedOutput(failure);
 };
 
-/**
- * A pre-imported Ghidra project opened with -process so import and
- * auto-analysis costs paid outside this session are reused. The headless
- * open selects the fixed project name `rea-project`, so `projectPath` must
- * hold both the regular `rea-project.gpr` marker and `rea-project.rep`
- * directory of an expanded project; the owned copy keeps that name.
- * Archives and incomplete layouts are rejected with their reason before
- * Ghidra starts.
- */
+/** An expanded caller project opened only through an owned private copy. */
 export interface GhidraExistingProject {
-  /**
-   * Directory holding the expanded pre-imported project's `rea-project.gpr`
-   * marker and `rea-project.rep` data directory. Saved `.grez` archives must
-   * be restored outside REA before selecting this read-only workflow.
-   */
+  /** Directory holding the selected .gpr marker and .rep data directory. */
   readonly projectPath: string;
+  readonly projectName?: string;
+  readonly sha256?: string;
   /** Imported program name selected with -process. */
   readonly programName: string;
 }
@@ -460,7 +338,12 @@ export class GhidraHeadlessLauncher implements GhidraLauncher {
         await copyExistingGhidraProject(
           existingProject.projectPath,
           paths.projectRoot,
-          options.signal,
+          {
+            signal: options.signal,
+            projectName: existingProject.projectName,
+            expectedSha256: existingProject.sha256,
+            resources: options.resourceScope,
+          },
         );
       let seedPath: string | undefined;
       let gamecubeDolSectionPath: string | undefined;
@@ -497,6 +380,7 @@ export class GhidraHeadlessLauncher implements GhidraLauncher {
           target_sha256: session.targetSha256,
           provider_version: session.providerVersion,
           profile_digest: session.profileDigest,
+          ...(existingProject === undefined ? {} : { existing_project: true }),
           ...(this.options.decompileTimeoutSeconds === undefined
             ? {}
             : {
@@ -533,9 +417,7 @@ export class GhidraHeadlessLauncher implements GhidraLauncher {
           : { mipsSoftFloat: this.options.mipsSoftFloat }),
         projectRoot: paths.projectRoot,
         targetPath: session.targetPath,
-        ...(existingProject === undefined
-          ? {}
-          : { existingProject: { programName: existingProject.programName } }),
+        ...(existingProject === undefined ? {} : { existingProject }),
         bridgeScriptPath: this.options.bridgeScriptPath,
         descriptorPath: paths.descriptorPath,
         ghidraLogPath: paths.ghidraLogPath,
@@ -872,9 +754,10 @@ export interface GhidraHeadlessArgumentOptions {
   readonly projectRoot: string;
   readonly targetPath: string;
   /** Open this pre-imported program with -process instead of importing. */
-  readonly existingProject?: {
-    readonly programName: string;
-  };
+  readonly existingProject?: Pick<
+    GhidraExistingProject,
+    "programName" | "projectName"
+  >;
   readonly bridgeScriptPath: string;
   readonly descriptorPath: string;
   readonly ghidraLogPath: string;
@@ -1032,7 +915,7 @@ export const ghidraHeadlessArguments = (
     );
   return [
     options.projectRoot,
-    "rea-project",
+    existing?.projectName ?? "rea-project",
     ...(existing === undefined
       ? [
           "-import",
@@ -1154,7 +1037,8 @@ export const ghidraHeadlessArguments = (
           ),
           options.disabledAnalyzers.join(","),
         ]),
-    ...((options.platform ?? process.platform) === "win32"
+    ...(existing !== undefined ||
+    (options.platform ?? process.platform) === "win32"
       ? []
       : [
           "-postScript",

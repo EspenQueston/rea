@@ -1,3 +1,4 @@
+import { ghidraProjectCommitmentSchema } from "./GhidraProjectSnapshot.js";
 import { analysisSettingLimit } from "../domain/analysisSettingDefinitions.js";
 import { z } from "zod";
 import { analysisErrorWithCleanupFailure } from "../domain/analysisErrorCleanup.js";
@@ -93,7 +94,7 @@ import type { NativeAotPeResult } from "../domain/native/nativeAotPe.js";
 import { GhidraNativeAotSnapshotOwner } from "./GhidraNativeAotSnapshotOwner.js";
 import {
   GHIDRA_PROVIDER_IDENTITY,
-  healthLimitations,
+  ghidraHealthLimitations,
   windowsP0Limitations,
   limitationsFor,
 } from "./GhidraProviderCapabilities.js";
@@ -207,6 +208,29 @@ export const createGhidraProviderClient = (input: {
       }),
     );
   const extensions = extensionProfile.data;
+  const projectProfile = ghidraProjectCommitmentSchema
+    .optional()
+    .safeParse(committedProfile.parameters.existing_project);
+  if (
+    !projectProfile.success ||
+    (config.ghidraExistingProject === undefined) !==
+      (projectProfile.data === undefined) ||
+    (projectProfile.data !== undefined &&
+      (projectProfile.data.configured_path !==
+        config.ghidraExistingProject?.path ||
+        (config.ghidraExistingProject?.programName !== undefined &&
+          config.ghidraExistingProject.programName !==
+            projectProfile.data.program_name)))
+  )
+    return err(
+      new ProviderAdapterError("ghidra", "open_binary", {
+        diagnostics: {
+          reason:
+            "Resolve the selected Ghidra project into a fresh analysis profile before opening the session.",
+        },
+      }),
+    );
+  const project = projectProfile.data;
   const seedProfile = ghidraSeedCommitmentSchema
     .optional()
     .safeParse(committedProfile.parameters.analysis_seeds);
@@ -381,7 +405,18 @@ export const createGhidraProviderClient = (input: {
     readStartupTimeoutMs: () => config.ghidraStartupTimeoutMs,
     bridgeMaxRequestBytes: config.bridgeMaxRequestBytes,
     platform: installation.platform,
+    ...(project === undefined ? {} : { existingProject: true }),
     launcher: new GhidraHeadlessLauncher({
+      ...(project === undefined
+        ? {}
+        : {
+            existingProject: {
+              projectPath: project.project_path,
+              projectName: project.project_name,
+              programName: project.program_name,
+              sha256: project.sha256,
+            },
+          }),
       environment: input.environment,
       analyzeHeadlessPath: prerequisites.value.analyzeHeadlessPath,
       configurationDirectoryName:
@@ -588,7 +623,7 @@ export const createGhidraProviderClient = (input: {
       ...observation,
       analysisProfile: committedProfile,
       limitations: [
-        ...limitationsFor(operation),
+        ...limitationsFor(operation, project !== undefined),
         ...(observation.limitations ?? []),
         ...sessionLimitations(),
       ],
@@ -679,7 +714,10 @@ export const createGhidraProviderClient = (input: {
         return ok(
           createAnalysisExecution(started.value, committedProfile.provider, {
             analysisProfile: committedProfile,
-            limitations: [...healthLimitations, ...sessionLimitations()],
+            limitations: [
+              ...ghidraHealthLimitations(project !== undefined),
+              ...sessionLimitations(),
+            ],
           }),
         );
       }

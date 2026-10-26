@@ -39,6 +39,7 @@ export interface GhidraClientOptions {
   readonly runId?: string;
   readonly targetPath: string;
   readonly targetSha256: string;
+  readonly existingProject?: boolean;
   /** Installation host shared by runtime allocation and snapshot admission. */
   readonly platform?: NodeJS.Platform;
   readonly transport?: GhidraTransportKind;

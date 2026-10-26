@@ -573,8 +573,6 @@ describe("Ghidra existing project", () => {
       "-scriptPath",
       "/package/bridge",
       "-postScript",
-      "/package/bridge/ReaGhidraNoReturnFix.java",
-      "-postScript",
       "/package/bridge/ReaGhidraBridge.java",
       "/tmp/session.json",
     ]);
