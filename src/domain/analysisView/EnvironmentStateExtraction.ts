@@ -10,6 +10,7 @@ import {
   apiBaseLengths,
   at,
   collectionPathOf,
+  deletedFlag,
   identifies,
   IDENTITY_NAMES,
   identityCandidates,
@@ -439,7 +440,10 @@ export class EnvironmentStateExtraction {
     candidate: Candidate,
     pointer: string,
     recordings: readonly StateRecordFacts[],
-    replayed: Pick<StatePlan, "projected" | "late" | "laterFields"> = {},
+    replayed: Pick<
+      StatePlan,
+      "projected" | "late" | "laterFields" | "deletedFlag"
+    > = {},
   ): void {
     this.#plans.push({
       ...candidate,
@@ -452,19 +456,23 @@ export class EnvironmentStateExtraction {
       replayed.laterFields.length === 0
         ? {}
         : { laterFields: replayed.laterFields }),
+      ...(replayed.deletedFlag === undefined
+        ? {}
+        : { deletedFlag: replayed.deletedFlag }),
     });
   }
 
-  /** The members later plain item reads show of the entity they name, in first-seen order. */
+  /** The members later plain item reads show of the entity they name, in first-seen order, and the flag they set on one the application soft-deleted. */
   #laterFields(
     tool: StateToolFacts,
     type: string,
     entity: { readonly field: string; readonly pointer: string },
-  ): string[] {
+  ): Pick<StatePlan, "laterFields" | "deletedFlag"> {
     const limit = this.#initLimit(type);
     const names: string[] = [];
     const seen = new Set<string>();
-    if (limit === undefined) return names;
+    let flag: StatePlan["deletedFlag"];
+    if (limit === undefined) return { laterFields: names };
     for (const ordinal of tool.record_ordinals) {
       const record = this.#byOrdinal.get(ordinal);
       if (
@@ -481,6 +489,7 @@ export class EnvironmentStateExtraction {
           body === undefined ? undefined : at(body, entity.pointer);
         if (!isObject(object) || ownMember(object, entity.field) === undefined)
           return;
+        flag ??= deletedFlag(object);
         for (const name of Object.keys(object))
           if (!seen.has(name)) {
             seen.add(name);
@@ -489,7 +498,9 @@ export class EnvironmentStateExtraction {
           }
       });
     }
-    return names;
+    return flag === undefined
+      ? { laterFields: names }
+      : { laterFields: names, deletedFlag: flag };
   }
 
   /**
@@ -599,8 +610,8 @@ export class EnvironmentStateExtraction {
         this.#chronology.positions.get(left)! -
         this.#chronology.positions.get(right)!,
     );
-    const laterFields = this.#laterFields(tool, type, { field, pointer });
-    this.#addPlan(candidate, pointer, kept, { projected, late, laterFields });
+    const later = this.#laterFields(tool, type, { field, pointer });
+    this.#addPlan(candidate, pointer, kept, { projected, late, ...later });
   }
 
   /**

@@ -67,6 +67,8 @@ export interface StatePlan {
   readonly late?: readonly LateLine[];
   /** The members later plain item reads show of the entity they name. */
   readonly laterFields?: readonly string[];
+  /** The member later plain item reads set `true` on an entity the application soft-deleted. */
+  readonly deletedFlag?: StateItemView["deleted_flag"];
   /** The query keys that pick calls of the replayed reads out. */
   readonly projectedKeys?: readonly ReplayKey[];
 }
@@ -233,6 +235,9 @@ export const checkItemPlan = (
     fields: union.fields,
     required_fields: union.required,
     envelope_ordinal: plan.latest[0]!.ordinal,
+    ...(plan.deletedFlag === undefined
+      ? {}
+      : { deleted_flag: plan.deletedFlag }),
     ...declaredMembers(envelope.members, context.retain),
     checked_record_ordinals: plan.latest.map((record) => record.ordinal),
     ...replayedReads(plan),

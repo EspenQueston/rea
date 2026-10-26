@@ -2,9 +2,7 @@ import { hasRepeatedQueryArgument } from "./environmentTools.js";
 import { stateBodyJson } from "../../domain/analysisView/EnvironmentStateAccumulator.js";
 import {
   ownMember,
-  at,
   collectionMatch,
-  deletedFlag,
   collectionPathOf,
   decodedSegment,
   allLines,
@@ -277,51 +275,18 @@ export const namedEntity = (
     store.entity(type, collection, id),
   );
 
-/** Per Evidence, the member each type's recorded item reads set `true` on a soft-deleted entity, or null for none. */
-const deletedFlags = new WeakMap<
-  EnvironmentSource,
-  Map<string, string | null>
->();
-
-/** The member a type's recorded item reads set `true` on an entity the application soft-deleted, if they show one. */
+/** The member a type's item view learned its reads set `true` on an entity the application soft-deleted, if any. */
 export const softDeleteFlag = (
   serving: StateServing,
   type: string,
 ): string | undefined => {
-  let flags = deletedFlags.get(serving.source);
-  if (flags === undefined) {
-    flags = new Map();
-    deletedFlags.set(serving.source, flags);
-  }
-  if (!flags.has(type))
-    flags.set(type, recordedDeletedFlag(serving, type) ?? null);
-  return flags.get(type) ?? undefined;
-};
-
-const recordedDeletedFlag = (
-  serving: StateServing,
-  type: string,
-): string | undefined => {
-  for (const view of serving.store.state.views.values()) {
-    if (view.shape !== "item" || view.type !== type) continue;
-    const tool = serving.source.manifest.tools.find(
-      (candidate) => candidate.name === view.tool,
-    );
-    for (const ordinal of tool?.record_ordinals ?? []) {
-      const exchange = serving.source.exchanges.get(ordinal);
-      if (
-        exchange === undefined ||
-        exchange.status === null ||
-        exchange.status < 200 ||
-        exchange.status > 299
-      )
-        continue;
-      const body = recordedJson(exchange);
-      const flag =
-        body === undefined ? undefined : deletedFlag(at(body, view.pointer));
-      if (flag !== undefined) return flag;
-    }
-  }
+  for (const view of serving.store.state.views.values())
+    if (
+      view.shape === "item" &&
+      view.type === type &&
+      view.deleted_flag !== undefined
+    )
+      return view.deleted_flag;
   return undefined;
 };
 
