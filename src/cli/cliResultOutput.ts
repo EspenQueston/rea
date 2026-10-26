@@ -5,23 +5,32 @@ import { Filter } from "incur";
 import { estimateTokenCount } from "tokenx";
 
 import type { ParsedCliOutputArguments } from "../cliOutput.js";
+import { analysisErrorProjectionSchema } from "../contracts/errorSchemas.js";
 import {
   cliOperationFailureIdentity,
   cliOperationFailurePayload,
 } from "../cliLogging.js";
-import { AnalysisResourceConstraintError } from "../domain/analysisErrorCore.js";
+import {
+  AnalysisInputError,
+  AnalysisResourceConstraintError,
+} from "../domain/analysisErrorCore.js";
 import { sliceTextByTokenWindow } from "./tokenWindow.js";
 import {
   projectAnalysisError,
   type AnalysisErrorProjection,
 } from "../domain/analysisErrorProjection.js";
-import { formatCliOutput } from "./cliOutputFormatter.js";
+import {
+  CliDelimitedOutputError,
+  formatDelimitedOutputParts,
+  formatCliOutput,
+} from "./cliOutputFormatter.js";
 import { jsonLinesErrorRecord } from "./jsonLines.js";
 import { writeCliJsonLines } from "./jsonLinesOutput.js";
 import {
   jsonOutputParts,
   isTerminalOutput,
   writeJsonOutput,
+  writeOutputParts,
   writeOutputText,
 } from "./jsonOutput.js";
 import type { CliInstance } from "./types.js";
@@ -117,7 +126,14 @@ export const createCliResultOutput = (
 ): CliResultOutput | undefined => {
   let options = initialOptions;
   if (!options.validation.ok) return undefined;
-  let format = options.format as "json" | "jsonl" | "yaml" | "toon" | "md";
+  let format = options.format as
+    | "json"
+    | "jsonl"
+    | "yaml"
+    | "toon"
+    | "md"
+    | "csv"
+    | "tsv";
   let handled = false;
   let failed = false;
   let error: AnalysisErrorProjection | undefined;
@@ -176,9 +192,11 @@ export const createCliResultOutput = (
       : error;
     // Recovery must remain actionable even when a token window/count was
     // requested. Do not apply those controls to this small typed failure.
+    const recoveryFormat =
+      format === "csv" || format === "tsv" ? "json" : format;
     const text = formatCliOutput(
       format === "jsonl" ? jsonLinesErrorRecord(document) : document,
-      format,
+      recoveryFormat,
     );
     handled = true;
     try {
@@ -194,7 +212,11 @@ export const createCliResultOutput = (
     metadata: CliResultOutputMetadata,
   ): Promise<boolean> => {
     completed = undefined;
-    if (metadata.format !== format) return false;
+    if (
+      metadata.format !== format &&
+      !((format === "csv" || format === "tsv") && metadata.format === "json")
+    )
+      return false;
     try {
       return await writeResult(value, metadata);
     } catch (cause: unknown) {
@@ -301,6 +323,73 @@ export const createCliResultOutput = (
       !options.tokenCount
     )
       return false;
+    if (format === "csv" || format === "tsv") {
+      const meta = {
+        command: metadata.command,
+        duration: metadata.duration,
+      };
+      if (operationFailure !== undefined) {
+        const parsedFailure =
+          analysisErrorProjectionSchema.safeParse(operationFailure);
+        error = parsedFailure.success
+          ? parsedFailure.data
+          : delimitedOutputError(
+              metadata.command,
+              "CSV/TSV output was not produced because the command did not return a successful row collection.",
+            );
+        handled = true;
+        try {
+          await writeJsonOutput(
+            options.fullOutput
+              ? { ok: false, error: operationFailure, meta }
+              : operationFailure,
+            destination,
+          );
+        } catch (cause: unknown) {
+          failed = true;
+          throw cause;
+        }
+        return true;
+      }
+      try {
+        const selection = resolveDelimitedRows(value, filterPaths);
+        if (selection === undefined)
+          throw new CliDelimitedOutputError(
+            "--filter-output must select exactly one row-array path using object-field segments only.",
+          );
+        const delimitedOptions = {
+          fields: options.columns ?? [],
+          metadata: delimitedMetadata(selection, format, metadata),
+        };
+        const parts = formatDelimitedOutputParts(
+          selection.rows,
+          format,
+          delimitedOptions,
+        );
+        handled = true;
+        try {
+          await writeOutputParts(destination, parts);
+        } catch (cause: unknown) {
+          if (cause instanceof CliDelimitedOutputError) throw cause;
+          failed = true;
+          throw cause;
+        }
+      } catch (cause: unknown) {
+        if (!(cause instanceof CliDelimitedOutputError)) throw cause;
+        error = delimitedOutputError(metadata.command, cause.message);
+        handled = true;
+        try {
+          await writeJsonOutput(
+            options.fullOutput ? { ok: false, error, meta } : error,
+            destination,
+          );
+        } catch (writeFailure: unknown) {
+          failed = true;
+          throw writeFailure;
+        }
+      }
+      return true;
+    }
     const selected: unknown =
       operationFailure ??
       (filterPaths === undefined
@@ -547,6 +636,96 @@ const fullFailureEnvelope = (
 
 type FilterPaths = ReturnType<typeof Filter.parse>;
 type FilterPath = FilterPaths[number];
+
+interface DelimitedRowsSelection {
+  readonly rows: readonly unknown[];
+  readonly path: readonly string[];
+  readonly parent: Readonly<Record<string, unknown>> | undefined;
+}
+
+const resolveDelimitedRows = (
+  source: unknown,
+  paths: FilterPaths | undefined,
+): DelimitedRowsSelection | undefined => {
+  if (paths === undefined || paths.length !== 1) return undefined;
+  const path: string[] = [];
+  for (const segment of paths[0] ?? []) {
+    if (!("key" in segment)) return undefined;
+    path.push(segment.key);
+  }
+  if (path.length === 0) return undefined;
+  let current: unknown = source;
+  let parent: Readonly<Record<string, unknown>> | undefined;
+  for (const key of path) {
+    if (
+      typeof current !== "object" ||
+      current === null ||
+      Array.isArray(current) ||
+      !Object.hasOwn(current, key)
+    )
+      return undefined;
+    parent = current as Readonly<Record<string, unknown>>;
+    current = parent[key];
+  }
+  return Array.isArray(current) ? { rows: current, path, parent } : undefined;
+};
+
+const delimitedMetadata = (
+  selection: DelimitedRowsSelection,
+  format: "csv" | "tsv",
+  metadata: CliResultOutputMetadata,
+): Readonly<Record<string, unknown>> => {
+  const parent = selection.parent;
+  const projectOwnFields = (
+    keys: readonly string[],
+  ): Readonly<Record<string, unknown>> =>
+    Object.fromEntries(
+      keys.flatMap((key) =>
+        parent !== undefined && Object.hasOwn(parent, key)
+          ? [[key, parent[key]]]
+          : [],
+      ),
+    );
+  return {
+    version: 1,
+    format,
+    command: metadata.command,
+    duration: metadata.duration,
+    selected_path: selection.path,
+    coverage: parent?.coverage ?? null,
+    source_coverage: parent?.source_coverage ?? null,
+    source_complete: parent?.source_complete ?? null,
+    view: parent?.view ?? null,
+    provenance: projectOwnFields([
+      "parent_evidence_id",
+      "parent_operation",
+      "parent_digest",
+      "inventory_evidence_ids",
+    ]),
+    pagination: projectOwnFields([
+      "offset",
+      "limit",
+      "total",
+      "next_offset",
+      "truncated",
+      "pagination",
+    ]),
+  };
+};
+
+const delimitedOutputError = (
+  operation: string,
+  message: string,
+): AnalysisErrorProjection =>
+  projectAnalysisError(
+    new AnalysisInputError(operation, { userMessage: message }, [
+      {
+        path: ["--format"],
+        reason: "invalid_value",
+        message,
+      },
+    ]),
+  );
 
 /** Apply Incur's parsed path grammar while merging sibling array selections. */
 const applyCliOutputFilter = (value: unknown, paths: FilterPaths): unknown => {
