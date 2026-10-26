@@ -1,7 +1,7 @@
 # Browser saved values: integration verification
 
 Executed on Linux x64, Node 24.22.1, Chromium through `/usr/bin/chromium`,
-with PocketBase 0.40.6 on an owned loopback instance. Final measured runtime: `43aaaabbe7e49fde3853e36bfc131c16a9ff2441`. Baseline: `6d5532a204b338a6c770fcbae61e0d55bda70793`. The imported implementation is
+with PocketBase 0.40.6 on an owned loopback instance. Final measured runtime: `854b7a2c07f43f9145b2016c13e3a20a359a6ff2`. Baseline: `6d5532a204b338a6c770fcbae61e0d55bda70793`. The imported implementation is
 Edgar Arakelyan's PR #7162, upstream head
 `d39f386d202fe8e98592fb2d9d26e43d8d0fb94f`; the subsequent upstream fixes through `81a275b130e85a40a227f6a61cfa2fe1162a217e`
 were compared during integration. Their numeric and slug semantics are retained
@@ -30,8 +30,8 @@ step must complete, and the selected authentication response must actually occur
 exactly once and contain a redacted token; absence would fail the oracle.
 
 - Public CLI: all eight steps completed, with eight retained JSON bodies; no
-  plaintext saved token or declared password. 5.370 s elapsed, 5.991 s CPU,
-  1,375,653,888 bytes sampled process-family peak RSS.
+  plaintext saved token or declared password. 5.478 s elapsed, 5.946 s CPU,
+  1,352,437,760 bytes sampled process-family peak RSS.
 - Public MCP: both first and subsequent tasks completed before and after. The
   baseline uses a retained event page to read the generated ID, then a second
   capture attached to the same browser. The candidate performs the same writes,
@@ -51,13 +51,13 @@ One run per condition establishes observations, not statistical speed claims.
 | Measurement                                        |                 Baseline |             Saved values |
 | -------------------------------------------------- | -----------------------: | -----------------------: |
 | Task calls, each completed task                    |                        3 |                        1 |
-| First task elapsed                                 |                  7.751 s |                  3.220 s |
-| Warm task elapsed                                  |                  1.210 s |                  0.996 s |
-| Entire verifier elapsed                            |                 15.527 s |                 11.301 s |
-| Entire verifier CPU                                |                 18.047 s |                 12.777 s |
-| Sampled process-family peak RSS                    |          2,064,392,192 B |          1,627,856,896 B |
-| Input catalog + arguments/text replies, both tasks |  34,816 estimated tokens |  25,866 estimated tokens |
-| Full SDK catalog + arguments/results, both tasks   | 368,437 estimated tokens | 351,434 estimated tokens |
+| First task elapsed                                 |                  6.965 s |                  1.923 s |
+| Warm task elapsed                                  |                  1.100 s |                  0.874 s |
+| Entire verifier elapsed                            |                 15.657 s |                  9.213 s |
+| Entire verifier CPU                                |                 17.222 s |                 10.753 s |
+| Sampled process-family peak RSS                    |          2,053,414,912 B |          1,649,876,992 B |
+| Input catalog + arguments/text replies, both tasks |  34,742 estimated tokens |  25,845 estimated tokens |
+| Full SDK catalog + arguments/results, both tasks   | 368,315 estimated tokens | 351,400 estimated tokens |
 
 `o200k_base` BPE estimates serialize compact JSON; they are not model billing.
 The model projection includes all 53 advertised tools' names, descriptions and
@@ -320,3 +320,40 @@ The Java diagnostic assertion also fails independently on `52414282b`
 (`keeps empty Java bitness unresolved`); the expected diagnostic includes the
 empty source spelling, while main returns only “bitness unknown”. All three
 portable failures on `9920a9a39` therefore reproduce on its actual main parent.
+
+## Final event privacy and response-path ownership
+
+Runtime `854b7a2c0` separates learned redaction facts from source request
+readiness. The secret owner records actual runtime admission; source identity
+still independently controls withholding. Metadata-only direct requests can
+therefore learn a secret even when multiple identical source requests prevent
+attribution. The final event pass also handles typed console, page-error,
+WebSocket text/URLs, frame/worker/popup names and URLs, and download metadata.
+It preserves event identity and observed payload byte counts, admits replacement
+working/retained cost, and reports omissions once on cleanup retry. It runs
+without network selection when runtime secrets were learned.
+
+Whole HTTP response-path normalization now precedes segment matching. A
+collision-free temporary marker preserves only explicit `{*}` segments;
+literal encoded braces remain literal, and backslashes plus plain/encoded dot
+segments follow the browser URL parser. Five new negative controls fail on
+`12534c95e` before these changes. Additional cases preserve literal-marker
+paths, distinguish encoded braces, and verify bounded late text expansion.
+All **539 source cases in 11 suites**, type/lint and the runtime build passed.
+
+The owned immediate-follow-up page also logs the response token before its
+POST. Real MCP Evidence retains exactly one redacted console event and contains
+no original token in retained event text; the decoded POST body, URL and header
+checks also pass. All four privacy cases complete in **8.808 s elapsed**,
+**10.241 s CPU**, **1,625,501,696 B** sampled family peak. The final CLI and MCP
+pair are in the primary table. The prior `43aaaabbe` pair remains an observation:
+first task 7.751→3.220 s, warm 1.210→0.996 s, whole elapsed 15.527→11.301 s,
+CPU 18.047→12.777 s, peak 2,064,392,192→1,627,856,896 B, model estimate
+34,816→25,866 tokens. These repeated small runs do not establish universal
+performance or full OS-cache coldness.
+
+CI on `12534c95e` passed source/static/docs/build and real-browser lanes. Its
+portable output contains 27,517 passes and one failure: the same Java diagnostic
+assertion independently reproduced on its actual main parent `60834e391`.
+Cancelled shards are incomplete; this does not establish whether the earlier
+SAZ failures were fixed or merely unexecuted in that run.
