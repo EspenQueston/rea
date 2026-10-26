@@ -44,7 +44,7 @@ it("joins only observed PE signature bytes across stream chunks", () => {
   ).toBe("pe");
 });
 
-it("keeps an ambiguous DOS MZ inventory candidate unknown", () => {
+it("classifies original DOS header padding as an executable", () => {
   const bytes = Buffer.alloc(128);
   bytes.write("MZ", 0, "ascii");
   bytes.writeUInt16LE(128, 2);
@@ -54,8 +54,8 @@ it("keeps an ambiguous DOS MZ inventory candidate unknown", () => {
   bytes.writeUInt16LE(28, 24);
   bytes.write("ABCD", 60, "ascii");
   expect(classifyArtifactBytesAtPath("legacy.exe", bytes)).toEqual({
-    kind: "unknown",
-    format: "unknown",
+    kind: "executable",
+    format: "dos-mz",
   });
 });
 
@@ -74,17 +74,57 @@ const entry = (path: string, kind: ArtifactEntry["kind"]): ArtifactEntry => ({
 });
 
 it.each([false, true])(
-  "preserves only a declared ASAR companion fact (unpacked=%s)",
+  "preserves ASAR file storage (unpacked=%s)",
   (unpacked) => {
     const occurrence = createOccurrence(
       { ...entry("main.js", "file"), unpacked },
       "main.js",
       null,
+      { sourceFormat: "asar" },
     );
-    if (unpacked) expect(occurrence.unpacked).toBe(true);
-    else expect(occurrence).not.toHaveProperty("unpacked");
+    expect(occurrence.unpacked).toBe(unpacked);
   },
 );
+
+it.each(["directory", "symlink"] as const)(
+  "preserves positive ASAR declarations for %s entries",
+  (kind) => {
+    for (const unpacked of [false, true]) {
+      const occurrence = createOccurrence(
+        { ...entry("member", kind), unpacked },
+        "member",
+        null,
+        { sourceFormat: "asar" },
+      );
+      if (unpacked) expect(occurrence.unpacked).toBe(true);
+      else expect(occurrence).not.toHaveProperty("unpacked");
+    }
+  },
+);
+
+it.each(["directory", "zip", "node-sea"] as const)(
+  "omits false storage declarations for %s readers",
+  (sourceFormat) => {
+    const occurrence = createOccurrence(
+      entry("main.js", "file"),
+      "main.js",
+      null,
+      {
+        sourceFormat,
+      },
+    );
+    expect(occurrence).not.toHaveProperty("unpacked");
+  },
+);
+
+it("preserves a positive storage declaration without reader format", () => {
+  const occurrence = createOccurrence(
+    { ...entry("main.js", "file"), unpacked: true },
+    "main.js",
+    null,
+  );
+  expect(occurrence.unpacked).toBe(true);
+});
 
 describe("occurrence parent ownership", () => {
   it("selects the nearest unique nested parent", () => {
@@ -103,8 +143,12 @@ describe("occurrence parent ownership", () => {
   });
 
   it("leaves a child unparented when duplicate directories make ownership ambiguous", () => {
-    const first = createOccurrence(entry("a", "directory"), "a", null, 0);
-    const second = createOccurrence(entry("a", "directory"), "a", null, 1);
+    const first = createOccurrence(entry("a", "directory"), "a", null, {
+      duplicateOrdinal: 0,
+    });
+    const second = createOccurrence(entry("a", "directory"), "a", null, {
+      duplicateOrdinal: 1,
+    });
     const file = createOccurrence(entry("a/file", "file"), "a/file", null);
     const occurrences = [first, second, file];
 
@@ -149,7 +193,7 @@ describe("source-map artifact relationships", () => {
           entry("app/main.js", "file"),
           "app/main.js",
           directory.occurrence_id,
-          index,
+          { duplicateOrdinal: index },
         );
         target.artifact_id = identity === "unread" ? null : contentId("2");
         return target;

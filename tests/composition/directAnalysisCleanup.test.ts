@@ -1,6 +1,15 @@
-import { readFile, readdir, stat } from "node:fs/promises";
+import {
+  mkdir,
+  open,
+  readFile,
+  readdir,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import { createPackageWithOptions } from "@electron/asar";
+import { createArtifactBinarySession } from "../../src/composition/binary.js";
 import {
   runDirectAnalysis,
   runManagedProviderExecution,
@@ -19,7 +28,9 @@ import {
   projectAnalysisError,
   projectAnalysisErrorWithoutCapturedOutput,
 } from "../../src/domain/analysisErrorProjection.js";
-import { parseEvidence } from "../../src/domain/evidence.js";
+import { parseEvidence, type Evidence } from "../../src/domain/evidence.js";
+import { jsonObjectSchema } from "../../src/domain/jsonValue.js";
+import { artifactInspectionResultSchema } from "../../src/domain/artifactInspection.js";
 import { ProviderCleanupError } from "../../src/domain/providerCleanupError.js";
 import { ghidraFunctionDossier } from "../../src/domain/ghidraValues.fixture.js";
 import {
@@ -36,6 +47,8 @@ import {
   createBinarySessionTargets,
   createTestBinarySession,
 } from "../fixtures/binarySession.js";
+import { createTestTempDirectory } from "../fixtures/temporaryDirectory.js";
+import { AnalysisCleanupLease } from "../../src/artifacts/AnalysisCleanupLease.js";
 
 const cleanupError = new ProviderCleanupError(
   "fixture",
@@ -99,6 +112,94 @@ const factories = (
   };
   return { dependencies, session };
 };
+
+it.each([false, true])(
+  "retains actual artifact sources and caller path after final-close cancellation (cleanup fails: %s)",
+  async (closeFails) => {
+    const root = await createTestTempDirectory("rea-artifact-final-close-");
+    const source = join(root, "source");
+    const archive = join(root, "fixture.asar");
+    await mkdir(source);
+    await writeFile(join(source, "main.js"), "console.log('retained');\n");
+    await createPackageWithOptions(source, archive, {});
+    const session = await createArtifactBinarySession({});
+    const nativeClose = session.close.bind(session);
+    const controller = new AbortController();
+    const reason = {
+      request: "cancel during actual artifact session final close",
+    };
+    let completed: Evidence | undefined;
+    const close = vi
+      .spyOn(session, "close")
+      .mockImplementationOnce(async () => {
+        completed = session
+          .exportEvidenceBundle()
+          .records.find(
+            ({ operation, caller_input_path }) =>
+              operation === "inspect_artifact" && caller_input_path === archive,
+          );
+        controller.abort(reason);
+        // A controlled refusal retains the actual static session for finally
+        // cleanup; successful cleanup runs its native owner here.
+        return closeFails ? err(cleanupError) : nativeClose();
+      });
+    const unexpectedSession = () => {
+      throw new Error("Artifact one-shot must select its static session");
+    };
+    const dependencies: DirectAnalysisDependencies = {
+      readConfiguration: () => parseConfig({}),
+      createArtifactBinarySession: () => session,
+      createBinarySession: unexpectedSession,
+      createNativeDispatchBinarySession: unexpectedSession,
+      createNativeBinarySession: unexpectedSession,
+      createManagedBinarySession: unexpectedSession,
+    };
+    try {
+      const result = analysisCliErrorEnvelopeSchema.parse(
+        await runProviderAnalysis(
+          dependencies,
+          archive,
+          "inspect_artifact",
+          {},
+          undefined,
+          controller.signal,
+        ),
+      );
+      expect(result.code).toBe(closeFails ? "cleanup_incomplete" : "cancelled");
+      expect(result.category).toBe("cancelled");
+      expect(completed).toBeDefined();
+      const details = jsonObjectSchema.parse(result.details);
+      const partial = parseEvidence(details.partial_observation);
+      expect(partial).toEqual(completed);
+      expect(partial.operation).toBe("inspect_artifact");
+      expect(partial.caller_input_path).toBe(archive);
+      expect(partial.subject?.local_path).toBe(archive);
+      const inspection = artifactInspectionResultSchema.parse(
+        partial.normalized_result,
+      );
+      expect(inspection.subject.root_format).toBe("asar");
+      expect(partial.evidence_links).toEqual(inspection.evidence_links);
+      expect(partial.evidence_links).toEqual(
+        inspection.substeps.map(({ evidence }) => evidence.evidence_id),
+      );
+      expect(inspection.substeps[0]?.evidence.normalized_result).toMatchObject({
+        occurrences: expect.arrayContaining([
+          expect.objectContaining({ logical_path: "main.js" }),
+        ]),
+      });
+      if (closeFails)
+        expect(details.cleanup_error).toEqual(
+          projectAnalysisError(cleanupError),
+        );
+      else expect(result.details).not.toHaveProperty("cleanup_error");
+      expect((await readdir(root)).sort()).toEqual(["fixture.asar", "source"]);
+    } finally {
+      close.mockRestore();
+      const closed = await nativeClose();
+      if (!closed.ok) throw closed.error;
+    }
+  },
+);
 
 describe("one-shot finalization cancellation", () => {
   it.each(["read_bytes", "analyze_function"] as const)(
@@ -633,4 +734,145 @@ describe("managed one-shot cleanup outcomes", () => {
       code: "cleanup_incomplete",
     });
   });
+});
+
+describe("managed one-shot cleanup retry ownership", () => {
+  it.each(["success", "timeout", "independent primary"] as const)(
+    "follows exact cleanup completion after a %s outcome",
+    async (mode) => {
+      const [path] = await createBinarySessionTargets();
+      const resource = join(dirname(path), "retained-descriptor");
+      const handle = await open(resource, "w+");
+      const cleanup = new ProviderCleanupError("fixture", [resource], {
+        reason: "controlled first close refusal",
+      });
+      let attempts = 0;
+      const lease = new AnalysisCleanupLease(async () => {
+        if (++attempts === 1) throw new Error("first close refused");
+        await handle.close();
+      }, [resource]);
+      lease.bindCleanupError(cleanup);
+      const primaryResource = join(dirname(path), "primary-descriptor");
+      const primaryHandle =
+        mode === "independent primary"
+          ? await open(primaryResource, "w+")
+          : undefined;
+      const primary =
+        mode === "success"
+          ? undefined
+          : new AnalysisTimeoutError("inspect_managed_members", 100, {
+              capturedOutput: {
+                stdout: "retained timeout observation",
+                stderr: "",
+                truncated: false,
+              },
+              ...(primaryHandle === undefined
+                ? {}
+                : {
+                    cleanup: {
+                      reason: "independent primary cleanup",
+                      resources: [primaryResource],
+                    },
+                  }),
+            });
+      const primaryLease =
+        primaryHandle === undefined
+          ? undefined
+          : new AnalysisCleanupLease(
+              () => primaryHandle.close(),
+              [primaryResource],
+            );
+      if (primary !== undefined) primaryLease?.bindCleanupError(primary);
+      const session = createTestBinarySession(() => ({
+        execute: async (operation) =>
+          operation === "health"
+            ? observed(null)
+            : primary === undefined
+              ? observed({ retained: true })
+              : err(primary),
+        close: async () => {
+          try {
+            await lease.release();
+            return ok(null);
+          } catch {
+            return err(cleanup);
+          }
+        },
+      }));
+      try {
+        const result = await runManagedProviderExecution(
+          { createManagedBinarySession: () => session },
+          path,
+          "inspect_managed_members",
+        );
+        if (result.ok) throw new Error("Expected retained cleanup failure");
+        expect(projectAnalysisError(result.error).code).toBe(
+          "cleanup_incomplete",
+        );
+        expect(handle.fd).toBeGreaterThanOrEqual(0);
+        expect(await session.close()).toMatchObject({ ok: true });
+        expect(handle.fd).toBe(-1);
+        expect(cleanup.cleanupIncomplete).toBe(false);
+        if (primaryLease !== undefined) {
+          expect(result.error.cleanupIncomplete).toBe(true);
+          expect(result.error.cleanupResources).toEqual([primaryResource]);
+          expect(primaryHandle?.fd).toBeGreaterThanOrEqual(0);
+          await primaryLease.release();
+        }
+        expect(result.error.cleanupIncomplete).toBe(false);
+        const projected = projectAnalysisError(result.error);
+        if (primary === undefined)
+          expect(projected).toMatchObject({
+            details: {
+              diagnostics: {
+                partial_observation: { result: { retained: true } },
+              },
+            },
+          });
+        else
+          expect(projected).toMatchObject({
+            code: "provider_timeout",
+            details: {
+              captured_output: { stdout: "retained timeout observation" },
+            },
+          });
+      } finally {
+        await session.close();
+        await lease.release();
+        await primaryLease?.release();
+        await handle.close();
+        await primaryHandle?.close();
+      }
+    },
+  );
+
+  it.each([false, true])(
+    "keeps rejected cleanup without a live completion owner unknown (primary failure: %s)",
+    async (primaryFailure) => {
+      const [path] = await createBinarySessionTargets();
+      const unowned = new AnalysisInputError("close_binary");
+      const { dependencies } = factories({
+        ...(primaryFailure
+          ? {
+              executionError: new AnalysisTimeoutError(
+                "inspect_managed_members",
+                100,
+              ),
+            }
+          : {}),
+        cleanupError: unowned,
+      });
+      const result = await runManagedProviderExecution(
+        dependencies,
+        path,
+        "inspect_managed_members",
+      );
+      if (result.ok) throw new Error("Expected cleanup rejection");
+      expect(unowned.cleanupIncomplete).toBe(false);
+      expect(result.error.cleanupIncomplete).toBe(true);
+      expect(projectAnalysisError(result.error).code).toBe(
+        "cleanup_incomplete",
+      );
+    },
+  );
 });

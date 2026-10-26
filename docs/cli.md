@@ -73,9 +73,14 @@ arbitrary nested graph array.
 A top-level array emits its elements in source order. An object must have one
 clear `rows`, `items`, `records`, or `occurrences` array, directly or under
 `page`. Evidence uses the same boundaries inside `normalized_result`.
-An arbitrary report or a scalar selection is refused with an actionable error;
-use `--format json` for a complete document. If several collections exist,
-select one with `--filter-output`, for example `normalized_result.rows`.
+Any other selection is refused before a record is written, including an
+arbitrary report, a scalar, a nested array elsewhere, and a columnar object such
+as the `inspect-sqlite-database --table` `normalized_result.rows`
+(`{columns, values}`). The refusal is the caller error `invalid_request`
+(`invalid_input`) and names the selection and its observed shape; the analysis
+itself succeeded, so use `--format json` for the complete document. If several
+collections exist, select one with `--filter-output`, for example
+`normalized_result.rows` for an analysis view.
 
 Object collections finish with a control record:
 
@@ -235,6 +240,16 @@ rea extract-artifact game.pck --json
 Formats 2, 3 and 4 retain header, directory and integrity facts. Compact delivery
 keeps complete Evidence in the requested bundle. See [Godot PCK](godot-pck.md)
 for embedded packs, batch queries and unknown encrypted coverage.
+
+Inspect a Node.js SEA carrier without running it:
+
+```sh
+rea inspect-artifact ./application --json
+rea extract-artifact ./application --json
+```
+
+See [Node.js SEA](node-sea.md) for supported layouts, script and asset paths,
+fuse observations, and the real-fixture verification lane.
 
 Inspect local model declarations without loading weights:
 
@@ -428,7 +443,13 @@ The selected provider remains bound to the session until an explicit switch
 or close. Provider failures are returned with their original reason. For an
 `ambiguous` selection error, choose from `details.candidate_ids`; for
 `provider_unavailable`, follow `message`, `remediation.action`, and the original
-reasons in `details.rejections`. For Hopper, Ghidra, IDA, JADX, and Kuna, run
+reasons in `details.rejections`. Each rejection names its `origin`: `availability`
+entries describe local readiness failures, including missing configuration or an
+invalid existing registration; they do not establish target support. `target`
+entries record a refused kind, format, architecture, or role. An availability-only
+message describes the recorded rejections without claiming that every provider
+is unconfigured or that target support is known.
+For Hopper, Ghidra, IDA, JADX, and Kuna, run
 `rea doctor --provider ID --json` to diagnose the selected engine. Other adapters,
 such as `pwntools-elf`, report their configuration requirements directly and are
 not accepted by `doctor --provider`. See
@@ -455,7 +476,14 @@ an exact result when the target bytes, operation, parameters, provider and
 settings match. Mutations and cursor-dependent calls are excluded from the
 cache. Snapshot files are local and use owner-only permissions.
 
-Importing an Evidence bundle refreshes retained subject display names and paths.
+One-shot binary CLI Evidence reports the exact path argument in `caller_input_path`,
+including relative spelling and symlink aliases. Its subject identifies the
+inspected artifact; `caller_input_path` does not change the Evidence ID or
+snapshot query. A replay reports the current invocation's path while leaving
+the saved Evidence unchanged. Provider inspections continue to include the
+established `parameters.input_path` field.
+
+Importing an Evidence bundle refreshes retained request and subject display metadata.
 It preserves cached analysis results, including observations for other targets.
 Snapshot bindings that use a replaced record retain its updated display path.
 
@@ -716,8 +744,18 @@ rea mcp --http --port 8765
 ```
 
 `--host` and `--port` default to `MCP_HOST` and `MCP_PORT` from the environment,
-then to `127.0.0.1` and an ephemeral port. The bound URL is written to stderr as
-one JSON log line (`"msg":"MCP transport listening"`) whatever `REA_LOG_LEVEL`
+then to `127.0.0.1` and an ephemeral port. A bind outside loopback requires
+`MCP_ALLOWED_HOSTS` or `--allowed-hosts`, a comma-separated list of client host
+names or IP addresses without URLs or ports. For example:
+
+```sh
+rea mcp --http --host 0.0.0.0 --allowed-hosts 127.0.0.1,rea.lan
+```
+
+Requests with a different `Host` or browser `Origin` receive `403`; a missing
+`Origin` is accepted. The announced client URL uses the bound hostname when
+admitted, otherwise the first declared hostname, with the actual bound port.
+It is written to stderr as one JSON log line (`"msg":"MCP transport listening"`) whatever `REA_LOG_LEVEL`
 is set to; nothing is written to stdout. `rea mcp --http --help` lists the accepted options. The listener serves
 one client at a time: a session ends with the client's `DELETE`, and a client
 that connects while another session is open takes it over, so a client that
@@ -755,9 +793,18 @@ rea environment-serve manifest.json --evidence capture.json --port 8765
 ```
 
 `--host` and `--port` resolve like `rea mcp --http`: flags, then `MCP_HOST` and
-`MCP_PORT`, then `127.0.0.1` and an ephemeral port. `ENVIRONMENT_NAME` renames
+`MCP_PORT`, then `127.0.0.1` and an ephemeral port. A non-loopback bind requires
+`MCP_ALLOWED_HOSTS` with the same hostname rules and Host/Origin gates as above.
+`environment-serve` uses this environment setting; `--allowed-hosts` belongs to
+`rea mcp --http`. For example:
+
+```sh
+MCP_ALLOWED_HOSTS=127.0.0.1,rea.lan rea environment-serve manifest.json --evidence capture.json --host 0.0.0.0
+```
+
+`ENVIRONMENT_NAME` renames
 the served environment; set but blank, it is refused as `configuration_invalid`
-like a blank `MCP_HOST`. The bound URL is written to stderr as one JSON log line
+like a blank `MCP_HOST`. The admitted client URL is written to stderr as one JSON log line
 (`"msg":"MCP transport listening"`). See
 [agent environments](agent-environments.md) for what the state and replay
 return and do not establish.
@@ -907,8 +954,10 @@ redirected, which keeps large results smaller for agents and scripts; pipe
 through `jq .` for indented files. Output selection and formatting do not change
 operation status.
 
-`--format md` escapes backslashes and pipes in table headers and cells, and
-renders cell line breaks as `<br>`. These are presentation changes; retained
+`--format md` escapes backslashes, pipes, and inline Markdown syntax in table
+headers and cells so source text is displayed literally, and renders cell line
+breaks as `<br>`. Underscores between letters or digits, as in `source_index`,
+cannot form emphasis and stay unescaped. These are presentation changes; retained
 Evidence and JSON output keep the original values. Nested objects and arrays
 use JSON inside their owning Markdown cells, retaining the field names and
 values instead of replacing them with an object label. Table widths are measured

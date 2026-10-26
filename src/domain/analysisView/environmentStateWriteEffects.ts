@@ -1,6 +1,8 @@
+import type { StateRecordChronology } from "./StateRecordChronology.js";
 import { jsonTextCodeUnits } from "../jsonSerialization.js";
 import type { JsonValue } from "../jsonValue.js";
 import {
+  ownMember,
   isObject,
   locateItem,
   at,
@@ -39,6 +41,7 @@ import {
   type UpdateCall,
   conflictsWithPlan,
   refinedBody,
+  reconciledUpdateRule,
 } from "./environmentStateWriteCalls.js";
 import {
   laterObservation,
@@ -49,11 +52,18 @@ import {
 import { plannedBody, restampedFields } from "./environmentStateWriteStamps.js";
 import { readClock } from "./environmentStateWriteValues.js";
 import {
+  fittedClockFormat,
+  matchesClockFormat,
+  noteFixedWidths,
+} from "./environmentStateWriteClockFormats.js";
+import {
   actionItemPath,
   observationNeeds,
 } from "./environmentStateWriteAddress.js";
 import {
+  keptOrders,
   pathValuesOf,
+  siblingTrimmedClocks,
   type FieldRule,
   type InsertRule,
   type StateWritePlan,
@@ -84,7 +94,18 @@ export interface WriteDraft {
   readonly steady: Set<string>;
   /** Unsent clocks a call left as they were in its own second, which it cannot show it stamps. */
   readonly unstamped: Set<string>;
+  /** Members a call stored as sent with strings out of code-point order, which no plan may store sorted. */
+  readonly kept: Set<string>;
+  /** A value a held entity or an accepted call showed each clock field at a fixed width in, which keeps it untrimmed. */
+  readonly fixedWidth: Map<string, JsonValue>;
 }
+
+/** The value a draft fits a clock field against: one showing it at a fixed width, else the exemplar's. */
+export const clockEvidence = (
+  draft: WriteDraft,
+  field: string,
+): JsonValue | undefined =>
+  draft.fixedWidth.get(field) ?? ownMember(draft.observed, field);
 
 /** A write observation plus the fields its selected read view actually covers, if any. */
 type UpdateObservation = Observed & {
@@ -113,7 +134,7 @@ export interface WriteSimulationInput {
   readonly records: readonly StateRecordFacts[];
   /** POST tools whose calls read state rather than change it. */
   readonly readOnly: ReadonlySet<string>;
-  readonly timed: boolean;
+  readonly chronology: StateRecordChronology;
   readonly views: ReadonlyMap<string, StateView>;
   readonly types: readonly StateType[];
   readonly entities: readonly StateEntity[];
@@ -127,7 +148,7 @@ export interface EffectContext {
   readonly state: SimulatedState;
   readonly io: WriteIo;
   readonly records: readonly StateRecordFacts[];
-  readonly timed: boolean;
+  readonly chronology: StateRecordChronology;
   /** Whether a record may change state: a write the capture does not show reading only. */
   readonly isWrite: (record: StateRecordFacts) => boolean;
   readonly viewOf: (ordinal: number) => StateView | undefined;
@@ -245,15 +266,26 @@ export const callOf = (
   body,
 });
 
+/** The fields of each entity of a type with an id, as the replayed state holds them. */
+export const referencedIn =
+  (context: EffectContext) =>
+  (type: string, id: string): JsonObject[] =>
+    context.state
+      .ofType(type)
+      .flatMap((entity) => (entity.id === id ? [entity.fields] : []));
+
 export const startOf = (
   context: EffectContext,
   step: WriteStep,
-): number | undefined => (context.timed ? step.record.start : undefined);
+): number | undefined =>
+  context.chronology.timeline === "recorded-start-time"
+    ? step.record.timing.start?.ms
+    : undefined;
 
 export const searchFrom = (context: EffectContext, step: WriteStep) => ({
   records: context.records,
   from: step.index,
-  ...(context.timed ? { after: step.record.end } : {}),
+  chronology: context.chronology,
   viewOf: context.viewOf,
   withBody: context.io.withBody,
   queryOf: context.io.queryOf,
@@ -358,8 +390,17 @@ const refineUpdate = (
   retainFixed(context, body.fixed.slice(plan.body!.fixed.length));
   plan.body = body;
   const ruled = new Set(plan.rules.map((rule) => rule.field));
+  const later = new Map(
+    evidence.explained.rules.map((rule) => [rule.field, rule]),
+  );
   plan.rules = [
-    ...plan.rules,
+    // A later call may be the first to show an echoed array sorted.
+    ...plan.rules.map((rule) => {
+      const shown = later.get(rule.field);
+      return shown === undefined
+        ? rule
+        : (reconciledUpdateRule(rule, shown, draft.kept) ?? rule);
+    }),
     ...evidence.explained.rules.filter((rule) => !ruled.has(rule.field)),
   ];
 };
@@ -435,6 +476,8 @@ const buildUpdate = (
     rules: evidence.explained.rules,
   });
   draft.observed = evidence.after.object;
+  for (const entity of context.state.ofType(draft.plan.target!))
+    noteFixedWidths(draft.fixedWidth, entity.fields);
 };
 
 /**
@@ -509,19 +552,29 @@ export const updateEntity = (
   }
   const unknown = context.unknown(type, collection, id);
   const call = { ...callOf(step, body), body };
-  const explained = explainUpdate({
-    before: entity.fields,
-    after: after.object,
-    call,
-    method: step.tool.method,
-    idField,
-    id,
-    startMs: startOf(context, step),
-    ...(after.readFields === undefined ? {} : { readFields: after.readFields }),
-    others: otherFields(context.state.ofType(type), { collection, id }),
-    shown: shownBefore(context.viewOf, entity, after.ordinal),
-    action: needs.action,
-  });
+  const { explained, rules } = fitUpdateClocks(
+    draft,
+    after.object,
+    explainUpdate({
+      before: entity.fields,
+      after: after.object,
+      call,
+      method: step.tool.method,
+      idField,
+      id,
+      startMs: startOf(context, step),
+      ...(after.readFields === undefined
+        ? {}
+        : { readFields: after.readFields }),
+      others: otherFields(context.state.ofType(type), { collection, id }),
+      shown: shownBefore(context.viewOf, entity, after.ordinal),
+      named: (named) => context.state.named(named),
+      action: needs.action,
+      references: draft.plan.rules.filter((rule) => rule.rule === "reference"),
+    }),
+  );
+  for (const member of keptOrders(call.body, after.object))
+    draft.kept.add(member);
   if (explained.unexplained.length > 0 && !unknown) {
     refuse(draft, step, "unexplained-change");
     return recorded();
@@ -529,11 +582,19 @@ export const updateEntity = (
   // Each call must agree with the plan; one on an unknown entity cannot be checked, so it adds nothing to the plan.
   if (
     built(draft) &&
-    (unknown || contradictsPlan(draft, entity.fields, after.object, explained))
+    (unknown ||
+      contradictsPlan(
+        { ...draft, plan: { ...draft.plan, rules } },
+        entity.fields,
+        after.object,
+        explained,
+      ))
   ) {
     if (!unknown) refuse(draft, step, "unexplained-change");
     return recorded();
   }
+  draft.plan.rules = rules;
+  noteFixedWidths(draft.fixedWidth, after.object);
   buildUpdate(context, draft, step, { after, explained, idField });
   // Serving reads the plan's observation, so the gate does too; generated values are this call's.
   const written = updatedFields(
@@ -543,9 +604,10 @@ export const updateEntity = (
     (rule) =>
       recordedGeneratedValue(
         rule,
-        entity.fields[rule.field],
-        after.object[rule.field],
+        ownMember(entity.fields, rule.field),
+        ownMember(after.object, rule.field),
       ),
+    referencedIn(context),
   );
   const kept = keptFields(entity.fields, after.object);
   const disagrees =
@@ -586,6 +648,57 @@ export const updateEntity = (
   };
 };
 
+/** A later update's clocks in the plan's format, and the plan's rules widened to the trimmed spelling the call showed when one covers both, its siblings with it wherever the call's values fit; the plan adopts them only once the call is checked. */
+const fitUpdateClocks = (
+  draft: WriteDraft,
+  after: JsonObject,
+  explained: ReturnType<typeof explainUpdate>,
+): {
+  readonly explained: ReturnType<typeof explainUpdate>;
+  readonly rules: FieldRule[];
+} => {
+  if (!built(draft)) return { explained, rules: draft.plan.rules };
+  const rules = draft.plan.rules.map((rule) => {
+    const later = explained.rules.find((other) => other.field === rule.field);
+    if (
+      rule.rule !== "clock" ||
+      later?.rule !== "clock" ||
+      JSON.stringify(later.format) === JSON.stringify(rule.format)
+    )
+      return rule;
+    const format = fittedClockFormat(
+      rule.format,
+      ownMember(after, rule.field),
+      clockEvidence(draft, rule.field),
+    );
+    return format === undefined ? rule : { ...rule, format };
+  });
+  const fitted = siblingTrimmedClocks(
+    rules,
+    draft.observed,
+    after,
+    Object.fromEntries(draft.fixedWidth),
+  );
+  const planned = new Map(fitted.map((rule) => [rule.field, rule]));
+  return {
+    explained: {
+      ...explained,
+      rules: explained.rules.map((rule) => {
+        const held = planned.get(rule.field);
+        return rule.rule === "clock" &&
+          held?.rule === "clock" &&
+          matchesClockFormat(
+            held.format,
+            readClock(ownMember(after, rule.field)),
+          )
+          ? { ...rule, format: held.format }
+          : rule;
+      }),
+    },
+    rules: fitted,
+  };
+};
+
 /** Serving regenerates a learned clock on every update, so recorded calls must advance it. */
 const contradictsGeneratedClock = (
   before: JsonObject,
@@ -598,10 +711,14 @@ const contradictsGeneratedClock = (
     if (
       rule.rule !== "clock" ||
       !Object.hasOwn(after, rule.field) ||
-      explained.unstamped.includes(rule.field)
+      explained.unstamped.includes(rule.field) ||
+      explained.rules.some(
+        (candidate) =>
+          candidate.field === rule.field && candidate.rule === "held-clock",
+      )
     )
       return false;
-    const previous = readClock(before[rule.field]);
+    const previous = readClock(ownMember(before, rule.field));
     if (previous === undefined) return false;
     const next = readClock(after[rule.field]);
     return (
@@ -623,4 +740,4 @@ const contradictsPlan = (
 ): boolean =>
   contradictsEarlierCalls(draft, explained.rules) ||
   contradictsGeneratedClock(before, after, draft.plan.rules, explained) ||
-  conflictsWithPlan(draft.plan, explained);
+  conflictsWithPlan(draft.plan, explained, draft.kept);

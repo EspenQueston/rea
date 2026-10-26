@@ -78,6 +78,8 @@ const providerUiNetworkEvidence = providerEffects(evidence, {
 
 /** Explicit effect audit for every public tool. */
 const TOOL_EFFECT_AUDIT: Readonly<Record<string, EffectAudit>> = {
+  inspect_analysis_settings: effects(),
+  update_analysis_settings: effects({ mutatesSession: true }),
   list_cutter_sessions: effects({ accessesNetwork: true }),
   cutter_command: effects({
     mutatesTarget: true,
@@ -842,6 +844,8 @@ export const annotationsFromEffects = (
  * client probes (version output and stderr excerpts) can.
  */
 export const TARGET_CONTENT_FREE_TOOLS: ReadonlySet<string> = new Set([
+  "inspect_analysis_settings",
+  "update_analysis_settings",
   "export_evidence_bundle",
   "record_unknown",
 ]);

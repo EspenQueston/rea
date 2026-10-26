@@ -19,7 +19,7 @@ it("classifies a confirmed overlapping PE as an unsupported layout", () => {
   }
 });
 
-it("keeps a DOS-valid but unsigned Windows-header candidate unresolved", () => {
+it("reports complete DOS MZ images as outside the PE reader", () => {
   const bytes = Buffer.alloc(128);
   bytes.write("MZ", 0, "ascii");
   bytes.writeUInt16LE(128, 2);
@@ -29,7 +29,7 @@ it("keeps a DOS-valid but unsigned Windows-header candidate unresolved", () => {
   bytes.writeUInt16LE(28, 24);
   bytes.write("ABCD", 60, "ascii");
   expect(() => readPeImage(bytes)).toThrow(
-    "MZ Windows new-header candidate is unresolved",
+    "DOS MZ images are outside the supported ELF, PE and thin Mach-O formats",
   );
 });
 
@@ -65,6 +65,27 @@ it.each([32, 64] as const)(
       expect(container.executable_mappings).toEqual([]);
       expect(readGoBinaryImage(fixture.bytes).build_info).toEqual(expected);
     }
+  },
+);
+
+it.each([32, 64] as const)(
+  "retains PE%d declared image base and alignments in native image facts",
+  (bits) => {
+    const { bytes } = createGoBinaryFixture({ format: "pe", bits });
+    const optional = bytes.readUInt32LE(0x3c) + 24;
+    const imageBase = bits === 64 ? 0xfedcba9876540000n : 0x87650000n;
+    if (bits === 64) bytes.writeBigUInt64LE(imageBase, optional + 24);
+    else bytes.writeUInt32LE(Number(imageBase), optional + 28);
+    // These remain declarations; alignment policy belongs to image consumers.
+    bytes.writeUInt32LE(0, optional + 32);
+    bytes.writeUInt32LE(0xffffffff, optional + 36);
+    const container = readPeImage(bytes);
+    expect(container.image_base).toBe(imageBase);
+    expect(container.pe_header_mapping.address).toBe(imageBase);
+    expect(container.mappings[0]?.address).toBe(imageBase + 0x400n);
+    expect(container.pe_section_alignment).toBe(0);
+    expect(container.pe_file_alignment).toBe(0xffffffff);
+    expect(container.sections[0]?.file_alignment).toBe(0xffffffff);
   },
 );
 

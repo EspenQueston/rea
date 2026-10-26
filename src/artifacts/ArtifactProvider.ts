@@ -1,4 +1,5 @@
-import { resolveAsarHeaderAdmission } from "./AsarHeader.js";
+import type { AnalysisSettingsReader } from "../domain/analysisSettings.js";
+import { runtimeAsarHeaderAdmission } from "../config/runtimeAnalysisSettings.js";
 import { artifactTargetRefusal } from "../domain/apple/artifactTargetApplicability.js";
 import { bindArtifactFileCleanup } from "./ArtifactFileOperation.js";
 import type { AnalysisError } from "../domain/analysisErrorBase.js";
@@ -26,7 +27,10 @@ import {
   artifactExtractionExecutionSchema,
   type ArtifactAnalysisOperation,
 } from "../contracts/artifactToolContracts.js";
-import type { BinaryTarget } from "../domain/binaryTargetTypes.js";
+import {
+  artifactTargetSelectedPath,
+  type BinaryTarget,
+} from "../domain/binaryTargetTypes.js";
 import {
   AnalysisCapabilityUnavailableError,
   AnalysisInputError,
@@ -41,7 +45,10 @@ import { artifactCapabilities } from "./ArtifactProviderMetadata.js";
 import { ARTIFACT_GRAPH_PROVIDER } from "../domain/investigationProviders.js";
 import { createEvidence } from "../domain/evidence.js";
 import { freezeJsonSnapshot } from "../domain/immutableJson.js";
-import { createArtifactInspection } from "../domain/artifactInspection.js";
+import {
+  artifactInspectionSources,
+  createArtifactInspection,
+} from "../domain/artifactInspection.js";
 import { ProviderCleanupError } from "../domain/providerCleanupError.js";
 import type { ResolvedAppBundleResourceRoot } from "../application/AppBundleExecutable.js";
 import type { BundleResourceRoot } from "../domain/apple/bundleResourceRoot.js";
@@ -56,6 +63,7 @@ export class ArtifactProvider implements AnalysisProvider {
   constructor(
     environment: Readonly<NodeJS.ProcessEnv>,
     platform: NodeJS.Platform = process.platform,
+    private readonly settings?: AnalysisSettingsReader,
   ) {
     this.environment = snapshotEnvironment(environment, platform);
     this.#capabilities = artifactCapabilities(platform);
@@ -71,7 +79,12 @@ export class ArtifactProvider implements AnalysisProvider {
   }
 
   createClient(target: BinaryTarget): AnalysisClient {
-    return new ArtifactClient(target, this.environment, this.#platform);
+    return new ArtifactClient(
+      target,
+      this.environment,
+      this.#platform,
+      this.settings,
+    );
   }
 
   createBundleResourceClient(
@@ -199,6 +212,7 @@ class ArtifactClient implements AnalysisClient {
     private readonly target: BinaryTarget,
     private readonly environment: Readonly<NodeJS.ProcessEnv>,
     private readonly platform: NodeJS.Platform,
+    private readonly settings?: AnalysisSettingsReader,
   ) {}
 
   async execute(
@@ -296,9 +310,14 @@ class ArtifactClient implements AnalysisClient {
         const result = await extractArtifact(
           {
             inputPath: this.target.sourcePath ?? this.target.path,
+            selectedPath: this.target.asarSelectedPath,
             inputFormat: this.target.format,
             outputRoot: parsed.output_root,
             environment: this.environment,
+            asarHeaderAdmission: runtimeAsarHeaderAdmission(
+              this.environment,
+              this.settings,
+            ),
             integrityPolicy: parsed.integrity_policy,
             resourceScope: this.#resourceScope,
           },
@@ -309,7 +328,7 @@ class ArtifactClient implements AnalysisClient {
             rawResult: null,
             limitations: result.limitations,
             subject: subjectFor(
-              this.target.sourcePath ?? this.target.path,
+              artifactTargetSelectedPath(this.target),
               result.manifest,
             ),
             // Each extracted file's path is already in artifacts.
@@ -324,7 +343,7 @@ class ArtifactClient implements AnalysisClient {
           rawResult: null,
           limitations: result.limitations,
           subject: subjectFor(
-            this.target.sourcePath ?? this.target.path,
+            artifactTargetSelectedPath(this.target),
             result.manifest,
           ),
           // Each occurrence's logical path is already in the result.
@@ -446,7 +465,7 @@ class ArtifactClient implements AnalysisClient {
       await this.inventory(inventoryParameters, options),
     );
     const subject = subjectFor(
-      this.target.sourcePath ?? this.target.path,
+      artifactTargetSelectedPath(this.target),
       inventory.manifest,
     );
     const inventoryEvidence = createEvidence(subject, ARTIFACT_GRAPH_PROVIDER, {
@@ -472,6 +491,7 @@ class ArtifactClient implements AnalysisClient {
       createAnalysisExecution(result, ARTIFACT_GRAPH_PROVIDER, {
         rawResult: null,
         limitations: result.limitations,
+        sourceEvidence: artifactInspectionSources(result),
         subject,
         locations: [],
       }),
@@ -485,9 +505,13 @@ class ArtifactClient implements AnalysisClient {
     options?: ExecutionOptions,
   ) {
     return inventoryArtifact(this.target.sourcePath ?? this.target.path, {
+      selectedPath: this.target.asarSelectedPath,
       resourceScope: this.#resourceScope,
       environment: this.environment,
-      asarHeaderAdmission: resolveAsarHeaderAdmission(this.environment),
+      asarHeaderAdmission: runtimeAsarHeaderAdmission(
+        this.environment,
+        this.settings,
+      ),
       ...(options?.signal === undefined ? {} : { signal: options.signal }),
       integrity: { mode: parsed.integrity_policy },
     });

@@ -9,9 +9,10 @@ import {
   writtenBulkResponse,
 } from "../../domain/analysisView/environmentStateWriteApply.js";
 import type { FieldRule } from "../../domain/analysisView/environmentStateWriteRules.js";
-import type {
-  JsonObject,
-  StateEntity,
+import {
+  ownMember,
+  type JsonObject,
+  type StateEntity,
 } from "../../domain/analysisView/environmentStateRules.js";
 import type { AnalysisError } from "../../domain/analysisErrorBase.js";
 import type { JsonValue } from "../../domain/jsonValue.js";
@@ -32,6 +33,7 @@ import {
   observedEntity,
   pathValues,
   unloadable,
+  heldEntity,
   updateTarget,
   writeAnswer,
   type WriteRequest,
@@ -56,7 +58,8 @@ const namedTargets = (
   const { address } = plan;
   const type = plan.target ?? "";
   const name = environmentToolArguments(tool, true).body;
-  const body = name === undefined ? undefined : (args[name] as JsonValue);
+  const body =
+    name === undefined ? undefined : (ownMember(args, name) as JsonValue);
   if (body !== undefined && !isLoadableValue(body))
     return err(unloadable(tool, "The body"));
   const named =
@@ -131,6 +134,7 @@ const writtenTargets = (
       { before: entity.fields, observed },
       call,
       values.forTarget(updateTarget(serving, entity, observed)),
+      heldEntity(serving),
     );
     if (!fields.ok) return err(refused(tool, fields.error));
     const field = unloadableMember(fields.value);

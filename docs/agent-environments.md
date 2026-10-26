@@ -1,5 +1,12 @@
 # Agent environments from recorded captures
 
+For a first environment, start with the
+[quickstart](agent-environments-quickstart.md): record an app or use a saved
+session, build and run the environment, and add tasks and reward checks.
+The [implementation index](specs/agent-environments/README.md) links
+the contributing PRs and their verification records. This page is the detailed
+command and behavior reference.
+
 Use `rea environment-build` to turn one recorded capture into an agent
 environment bundle in one offline step: a folder `agent-env run` builds and
 runs, whose MCP server answers from what the capture observed. See
@@ -79,8 +86,9 @@ name it `.har`.
   manifest's, unless the capture's origin is a loopback name or an IP literal:
   the capture file then names it (`grafana.har` and `grafana.capture.json`
   become `grafana`) and a `name-from-file` warning says so. A file name that
-  yields no portable label (kebab-case, at most 64 characters, not a Windows
-  device name) is refused; pass `--name`.
+  yields no portable label (kebab-case, at most 63 characters for a DNS service
+  label, not a Windows device name or a label interpreted as an IP address) is
+  refused; pass `--name`.
 - `--package-tarball` works as for the export, and `--capture-timeout-ms`
   as for `inspect-web-network-capture`.
 - `--dry-run` runs every stage and prints the report with `status: "planned"`
@@ -175,6 +183,7 @@ what to record next; hints never change what is served:
 | `side-effect`         | The write changed something besides its own entity, which the environment does not model.                                                                                                                                                        |
 | `unconfirmed`         | No later read showed the effect. Read the entity and its list after the write.                                                                                                                                                                   |
 | `incomplete-entities` | The write is confirmed, but the views that show its entity cannot render it in full. Read the written entity through every view that lists it.                                                                                                   |
+| `unknown-clock`       | The learned rules generate timestamps, but the capture establishes no global served clock start. Record usable start times and completed durations for every request.                                                                            |
 
 The bundle ships `evidence.json`, the whole capture Evidence, response bodies
 included. Inspection excludes the values of the standard authentication headers
@@ -683,7 +692,12 @@ A view that names a field in `sorted_arrays` lists that string array sorted, as
 a read-back showed the application does, while the state keeps it in the order
 it was written, so a write's own answer echoes it. If a later counted read
 contradicts that ordering, the view stays recorded and its earlier reads no
-longer confirm served writes. Members a view names in
+longer confirm served writes. A view that names a field in `nested_fields`
+always showed that field's objects with the same keys, in any order, and fewer
+than an entity stores, such
+as a list showing a parent without the parent's own nested type; a stored
+object it never recorded, such as a created entity's parent, is rendered with
+those keys. Members a view names in
 `per_response_members`, such as a request id each response mints, keep the
 value its recording carried. A list's `counters` and `query.totals` are
 top-level members or members one level down in a paging object
@@ -721,7 +735,7 @@ every MCP session and `data/get` then see:
 | Effect                    | Call                                                                                                                                                                                                                                                                                                                 |
 | ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `create`                  | Adds an entity to the collection the path names, built from the observed entity with each ruled field taken from the call or generated, at the plan's `insert` position. A plan tied to its exemplar's collection writes only there.                                                                                 |
-| `update`                  | Sets the sent members on the entity the path names, constants for members accepted only with their recorded value, and the clock, nested clock, increment, slug, stamp, derived, unique and renewed changes the plan models.                                                                                         |
+| `update`                  | Sets the sent members on the entity the path names, constants for members accepted only with their recorded value, and the clock, nested clock, increment, slug, stamp, derived, composed, reference, unique and renewed changes the plan models.                                                                    |
 | `update` (action)         | A `POST`, `PUT` or `PATCH` to an item path plus an action segment (`/{type}/{id}/archive`) sets, on the entity before the segment, each scalar the recorded calls showed the action set (`set`), with any sent members; it is served only when a recorded call found those fields already set, so a toggle never is. |
 | `delete`                  | Removes the entity the path names.                                                                                                                                                                                                                                                                                   |
 | bulk `update` or `delete` | A `DELETE`, `PUT` or `PATCH` at a collection, or a `POST` to it plus `delete`, `remove` or `destroy`, applies its effect to every entity the body names, as recorded: an array of ids or of objects carrying the id field, at the root or as the body's one array member (`{"IDs": […], "Read": true}`).             |
@@ -755,7 +769,10 @@ any. A refused call leaves the state unchanged. Values a write generates are
 deterministic: the clock starts at `write_clock` and advances one second per
 served write, sequences take one past both the largest held value and the
 largest they generated, and UUIDs and tokens derive from the state Evidence
-id, tool, field and write count, skipping held values. `data/reset` and
+id, tool, field and write count, skipping held values. If `write_clock` is null,
+plans needing `clock`, `held-clock`, or `nested-clock` retain their learned rules
+but are withheld with `unknown-clock`; other confirmed plans can still be served.
+`data/reset` and
 `data/add` restart the clock, counter and sequences, so the same calls after a
 reset give the same state. Answers carry `state: {"source": "state", "view":
 "create" | "update" | "delete", …}` or `"document-write"`; a bulk answer adds
@@ -859,8 +876,9 @@ names a `document` view once, at its initial document's `path`. The `version`,
 and the `state_evidence_id` and `types` that `data/get` reports, must match
 the served state, so a `data/get` result loads back unchanged. A number without
 an exact native value, or whose serialized spelling would not be read as exact
-(an integer from 2^53 below 1e21, such as `1e20`, in any spelling), or a
-`__proto__` member is refused rather than altered.
+(an integer from 2^53 below 1e21, such as `1e20`, in any spelling), is refused
+rather than altered. Caller data preserves all own JSON members, including
+`__proto__`; unknown members of the state document's structure are refused.
 An invalid document is `-32602` naming the first problem by JSON pointer, as in
 `/rea_state/entities/3/collection` (also in `error.data.path`); a problem
 inside caller data (`fields`, `value`, `types`) is located at that member, so
@@ -923,6 +941,9 @@ Known limits of served writes:
   updates require `updated_at` to match the entity (a `held-clock`).
 - A slug derived from a title can repeat across served creates with the same
   title, where the application would make it unique.
+- A `composed` string copies sent text as sent: an application that escapes or
+  renders it (HTML entities, Markdown) differs for text that needs it, as
+  BookStack's `description_html` would for a description holding `&`.
 - A served create's sequence id is the state's next value, not the gaps an
   application's own sequence would leave.
 - Nested clocks are served in the spelling of the write's own response, which
@@ -966,7 +987,8 @@ serves replay. The complete tool catalog the bundle serves must also fit the
 server's advertised catalog budget before any files are written. Privately parsed JSON is sealed once so authentication
 and replay share immutable response trees rather than copying the capture repeatedly.
 `--name` replaces the manifest's portable kebab-case name as the env folder and env id
-(Windows device names such as `con` and `lpt1` are refused);
+(at most 63 characters for its DNS service label; Windows device names and
+labels interpreted as IP addresses are refused);
 `--package-tarball <path>` copies a packed `rea-agents` tarball into the env
 folder and makes the Dockerfile install it instead of the registry package and
 remove it in the same layer, which is how a checkout rather than a release is
@@ -984,7 +1006,12 @@ Windows inherits ACLs and REA does not establish owner-only access there. Choose
 an already private Windows destination when captured content needs it.
 
 The Dockerfile sets `MCP_HOST=0.0.0.0` and `MCP_PORT=18765`, the port the
-framework maps for an MCP server env; the framework's own deploy supplies
+framework maps for an MCP server env, and `MCP_ALLOWED_HOSTS` naming the loopback
+addresses and the environment name, because the container binds outside loopback
+and the server refuses to serve on such a bind without an operator-declared
+allowlist: the framework's published port is reached over loopback and its
+gateway proxies to the env container by the compose service name (the
+environment name). The framework's own deploy supplies
 `MCP_HOST`, `MCP_PORT` and `ENVIRONMENT_NAME`, so the served card carries the
 env's name. It installs Debian's `python3` because the framework's local
 sandbox probes a container's readiness with `python3` inside it, which the slim
@@ -1057,9 +1084,11 @@ Numeric arrays retain that containing field's clock context through nested
 arrays; an object's own fields establish their own context. Numeric values at
 the body root, in root arrays, or under measurement fields remain literal.
 
-Generated strings normalize only where this confirmed, served write's entity
-response rules identify generation. A `unique` rule or UUID identity rule must
-still compare two UUIDs; a `renewed` rule applies only at its recorded pointers,
+Generated values normalize only where this confirmed, served write's entity
+response rules identify generation. A UUID identity rule must still compare two
+UUIDs, and a `unique` rule two UUIDs or two generated integers (10 to 20
+digits) of one JSON kind and length; a `renewed` rule applies only at its
+recorded pointers,
 with `*` matching actual array items. Token/sequence strings retain the existing
 format check: equal length of at least eight, the same character classes, and
 a digit. Numeric sequences continue to compare literally unless an ID mapping
@@ -1071,6 +1100,12 @@ Admitted generated values must also preserve aliases and distinct identities
 within that response. UUID identity uses the generator's case-insensitive
 matching; token and sequence strings retain their literal identity. This
 correspondence ends with the answer and is not inferred across calls.
+A `composed` response field must spell the value its parts build from that
+response's own fields. Its parts then compare by their rendered text or their
+source fields' clock and ID rules. A coherent archive URL can therefore differ
+only in normalized clock digits without reporting a value difference; an
+incoherent URL still differs even when both sides repeat the same stale text.
+Normalized compositions count under `generated`; source fields are counted once.
 The report counts each kind of normalised
 value; the generation rules remain model-derived facts, rather than new
 observations of the application.

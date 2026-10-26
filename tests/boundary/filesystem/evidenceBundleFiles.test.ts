@@ -11,7 +11,11 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
 import { createTestTempDirectory } from "../../fixtures/temporaryDirectory.js";
-import { withArtifactResourceScope } from "../../fixtures/artifactInventory.js";
+import {
+  inventoryArtifact,
+  withArtifactResourceScope,
+} from "../../fixtures/artifactInventory.js";
+import { createArtifactInspection } from "../../../src/domain/artifactInspection.js";
 
 import {
   readEvidenceBundle,
@@ -27,7 +31,11 @@ import { ArtifactResourceScope } from "../../../src/artifacts/ArtifactResourceSc
 import { OwnedFileHandle } from "../../../src/filesystem/OwnedFileHandle.js";
 import { OwnedStagedOutput } from "../../../src/filesystem/OwnedStagedOutput.js";
 import { projectAnalysisError } from "../../../src/domain/analysisErrorProjection.js";
-import { createEvidence, parseEvidence } from "../../../src/domain/evidence.js";
+import {
+  createEvidence,
+  parseEvidence,
+  withEvidenceCallerInputPath,
+} from "../../../src/domain/evidence.js";
 import { writeTextParts } from "../../../src/application/JsonFiles.js";
 import { JSON_BYTE_ORDER_MARK_MESSAGE } from "../../../src/application/Utf8JsonInput.js";
 import { failFileReadAfterAbort } from "../../support/failFileReadAfterAbort.js";
@@ -37,8 +45,10 @@ import {
   createEvidenceBundle,
   parseEvidenceBundle,
   serializeEvidenceBundle,
+  DuplicateEvidenceRecordError,
 } from "../../../src/domain/evidenceBundle.js";
 import { analysisViewLayoutEvidence } from "../../fixtures/analysisView.js";
+import { publishCliAnalysisEvidence } from "../../../src/cli/analysisEvidenceDelivery.js";
 
 const bundle = (result = true) =>
   createEvidenceBundle([
@@ -48,6 +58,107 @@ const bundle = (result = true) =>
       { operation: "health", parameters: {}, result },
     ),
   ]);
+
+it("preserves direct duplicate rejection and CLI identity merging for repeated inspection sources", async () => {
+  const root = await createTestTempDirectory("rea-repeated-delivery-");
+  const input = join(root, "input.txt");
+  await writeFile(input, "artifact contents");
+  const inventory = await inventoryArtifact(input);
+  const source = createEvidence(
+    undefined,
+    { id: "fixture", name: "Fixture", version: "1" },
+    {
+      operation: "inventory_artifact",
+      parameters: {},
+      result: inventory,
+    },
+  );
+  const inspection = createArtifactInspection(source);
+  const complete = withEvidenceCallerInputPath(
+    createEvidence(undefined, source.provider, {
+      operation: "inspect_artifact",
+      parameters: {},
+      result: {
+        ...inspection,
+        substeps: [...inspection.substeps, ...inspection.substeps],
+      },
+    }),
+    "./selected",
+  );
+  await expect(
+    deliverAnalysisEvidence(complete, join(root, "direct.json")),
+  ).rejects.toBeInstanceOf(DuplicateEvidenceRecordError);
+  const path = join(root, "cli.json");
+  const delivered = await publishCliAnalysisEvidence(complete, {
+    providerId: "fixture",
+    operation: "inspect_artifact",
+    signal: new AbortController().signal,
+    detail: "complete",
+    evidenceOutput: path,
+    sourceEvidence: [withEvidenceCallerInputPath(complete, "./old"), source],
+  });
+  expect(delivered).toEqual(complete);
+  const saved = await readEvidenceBundle(path);
+  if (!saved.ok) throw saved.error;
+  expect(saved.value.records).toHaveLength(2);
+  expect(
+    saved.value.records.find(
+      (record) => record.evidence_id === complete.evidence_id,
+    )?.caller_input_path,
+  ).toBe("./selected");
+  await expect(stat(join(root, "direct.json"))).rejects.toMatchObject({
+    code: "ENOENT",
+  });
+});
+
+it("retains a malformed artifact parent and refuses publication through both delivery paths", async () => {
+  const root = await createTestTempDirectory("rea-malformed-delivery-");
+  const evidence = createEvidence(
+    undefined,
+    { id: "fixture", name: "Fixture", version: "1" },
+    { operation: "inspect_artifact", parameters: {}, result: {} },
+  );
+  const direct = await deliverAnalysisEvidence(
+    evidence,
+    join(root, "direct.json"),
+  );
+  if (direct.ok) throw new Error("Expected invalid artifact closure");
+  const projected = projectAnalysisError(direct.error);
+  const cli = await publishCliAnalysisEvidence(evidence, {
+    providerId: "fixture",
+    operation: "inspect_artifact",
+    signal: new AbortController().signal,
+    detail: "complete",
+    evidenceOutput: join(root, "cli.json"),
+  });
+  expect(cli).toEqual(projected);
+  expect(JSON.stringify(projected)).toContain(evidence.evidence_id);
+  expect(await readdir(root)).toEqual([]);
+});
+
+it.each([undefined, "../selected-link/./artifact"])(
+  "keeps same-invocation caller input on delivered summary and saved parent (%s)",
+  async (callerInputPath) => {
+    const root = await createTestTempDirectory("rea-delivery-input-path-");
+    const path = join(root, "bundle.json");
+    const original = analysisViewLayoutEvidence();
+    const parent =
+      callerInputPath === undefined
+        ? original
+        : withEvidenceCallerInputPath(original, callerInputPath);
+    const delivered = await deliverAnalysisEvidence(parent, path, "summary");
+    if (!delivered.ok) throw delivered.error;
+    expect(delivered.value.caller_input_path).toBe(callerInputPath);
+    expect(delivered.value.evidence_links).toContain(parent.evidence_id);
+    expect(original.caller_input_path).toBeUndefined();
+    const saved = await readEvidenceBundle(path);
+    if (!saved.ok) throw saved.error;
+    const savedParent = saved.value.records.find(
+      (record) => record.evidence_id === parent.evidence_id,
+    );
+    expect(savedParent?.caller_input_path).toBe(callerInputPath);
+  },
+);
 
 it.each([0, 9 * 1024 * 1024])(
   "preserves the format owner's BOM recovery with %i bytes of padding",
@@ -617,6 +728,31 @@ it("reuses authenticated file snapshots while isolating mutable public reads", a
   expect(await readFile(path, "utf8")).toBe(source);
   ledger.clear();
 });
+
+it.skipIf(process.platform === "win32")(
+  "rejects a regular-file parent traversal without writing to its lexical sibling",
+  async () => {
+    const directory = await createTestTempDirectory("rea-evidence-parent-");
+    const blocker = join(directory, "file");
+    await writeFile(blocker, "unchanged");
+    const selected = `${blocker}/../bundle.json`;
+    expect(await writeBundle(bundle(), selected, false)).toMatchObject({
+      ok: false,
+      error: { _tag: "EvidenceFileError", path: selected },
+    });
+    expect(await readdir(directory)).toEqual(["file"]);
+    expect(await readFile(blocker, "utf8")).toBe("unchanged");
+    const corrected = join(directory, "bundle.json");
+    expect(await writeBundle(bundle(), corrected, false)).toMatchObject({
+      ok: true,
+      value: { path: corrected },
+    });
+    expect(await readEvidenceBundle(corrected)).toEqual({
+      ok: true,
+      value: bundle(),
+    });
+  },
+);
 
 describe("evidence bundle filesystem adapter", () => {
   it.skipIf(process.platform === "win32").each(["/", "/."])(

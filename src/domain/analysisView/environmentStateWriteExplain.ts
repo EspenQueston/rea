@@ -1,6 +1,7 @@
 import type { JsonValue } from "../jsonValue.js";
 import { compareUnicodeCodePoints as compare } from "../unicodeCodePointOrder.js";
 import {
+  ownMember,
   isObject,
   locateItem,
   pointerTo,
@@ -9,21 +10,32 @@ import {
   type JsonObject,
   type StateEntity,
 } from "./environmentStateRules.js";
-import type {
-  FieldRule,
-  InsertRule,
-  WriteBody,
-  WriteCall,
-  WriteResponse,
+import {
+  siblingTrimmedClocks,
+  type FieldRule,
+  type InsertRule,
+  type WriteBody,
+  type WriteCall,
+  type WriteResponse,
 } from "./environmentStateWriteRules.js";
 import {
   containsDelimited,
+  containsNumber,
+  generatedIntegerDigits,
   integerOf,
   isUuid,
   readClock,
   sequenceNumber,
   slugOf,
+  sortedStrings,
+  type ClockFormat,
 } from "./environmentStateWriteValues.js";
+import { createdComposer } from "./environmentStateWriteComposed.js";
+import { referenceRule } from "./environmentStateWriteReferences.js";
+import {
+  fittedClockFormat,
+  showsFixedWidth,
+} from "./environmentStateWriteClockFormats.js";
 import {
   COPY_MIN_LENGTH,
   instantMembers,
@@ -114,7 +126,7 @@ export const nextInteger = (
 ): number | undefined => {
   let largest: number | undefined;
   for (const member of members) {
-    const value = sequenceNumber(member[field], exemplar);
+    const value = sequenceNumber(ownMember(member, field), exemplar);
     if (value !== undefined && (largest === undefined || value > largest))
       largest = value;
   }
@@ -142,6 +154,8 @@ const requestRule = (
   const { body, pathValues } = evidence.call;
   if (Object.hasOwn(body, field) && same(body[field], value))
     return { field, rule: "echo" };
+  if (Object.hasOwn(body, field) && same(sortedStrings(body[field]), value))
+    return { field, rule: "echo", sorted: true };
   if (typeof value === "string" && value.length >= COPY_MIN_LENGTH) {
     const from = index.copies.get(value);
     if (from !== undefined) return { field, rule: "copy", from };
@@ -157,6 +171,66 @@ const requestRule = (
     : { field, rule: "slug", from: member };
 };
 
+/** A clock's format, trimmed when the type's values of the field show its fraction trimmed and none shows a fixed width. */
+const learnedClockFormat = (
+  format: ClockFormat,
+  field: string,
+  value: JsonValue,
+  type: readonly JsonObject[],
+): ClockFormat => {
+  let learned = format;
+  for (const member of type) {
+    const fitted = fittedClockFormat(learned, ownMember(member, field), value);
+    if (fitted?.kind === "iso" && fitted.trimmed === true) learned = fitted;
+  }
+  return type.some((member) =>
+    showsFixedWidth(format, ownMember(member, field)),
+  )
+    ? format
+    : learned;
+};
+
+/** A created large integer's proof, as a time-based id's: no entity of its type holds it and each holds a distinct one of the same length and kind; linked when another field holds it too, as a number at any depth or delimited in a nested string, which seeding cannot keep. */
+export const createdInteger = (
+  field: string,
+  entity: JsonObject,
+  type: readonly JsonObject[],
+): "independent" | "linked" | undefined => {
+  const value = ownMember(entity, field);
+  const digits = generatedIntegerDigits(value);
+  if (
+    digits === undefined ||
+    readClock(value) !== undefined ||
+    type.length === 0
+  )
+    return undefined;
+  const held = new Set([digits]);
+  const distinct = type.every((member) => {
+    const other = generatedIntegerDigits(ownMember(member, field));
+    if (
+      other === undefined ||
+      typeof ownMember(member, field) !== typeof value ||
+      other.length !== digits.length ||
+      held.has(other)
+    )
+      return false;
+    held.add(other);
+    return true;
+  });
+  if (!distinct) return undefined;
+  return Object.entries(entity).some(
+    ([other, kept]) =>
+      other !== field &&
+      (kept === value ||
+        containsNumber(kept, digits) ||
+        (typeof kept === "object" &&
+          kept !== null &&
+          containsDelimited(kept, digits))),
+  )
+    ? "linked"
+    : "independent";
+};
+
 /** The rule a created field's generated value follows, if it follows one. */
 const generatedRule = (
   evidence: CreateEvidence,
@@ -166,7 +240,11 @@ const generatedRule = (
   if (field === evidence.idField) return identityRule(field, value);
   const clock = readClock(value);
   if (clock !== undefined && isClockNear(value, evidence.startMs))
-    return { field, rule: "clock", format: clock.format };
+    return {
+      field,
+      rule: "clock",
+      format: learnedClockFormat(clock.format, field, value, evidence.type),
+    };
   const integer = sequenceNumber(value);
   if (integer !== undefined) {
     if (nextInteger(evidence.collection, field, value) === integer)
@@ -175,14 +253,25 @@ const generatedRule = (
       return { field, rule: "sequence", scope: "type" };
   }
   if (
-    isUuid(value) &&
-    evidence.type.length > 0 &&
-    evidence.type.every((member) => member[field] !== value)
+    (isUuid(value) &&
+      evidence.type.length > 0 &&
+      evidence.type.every((member) => ownMember(member, field) !== value)) ||
+    createdInteger(field, evidence.entity, evidence.type) === "independent"
   )
     return { field, rule: "unique" };
   if (createdToken(field, evidence.entity, evidence.type) === "independent")
     return { field, rule: "unique" };
   return createdNestedClock(field, value, evidence);
+};
+
+/** Pinned members less those a reference reads: it rebuilds the object they name for any held entity. */
+const unreferenced = (
+  rules: readonly FieldRule[],
+  pinned: Set<string>,
+): Set<string> => {
+  for (const rule of rules)
+    if (rule.rule === "reference") pinned.delete(rule.member);
+  return pinned;
 };
 
 /** Body members the application stored as sent, and the others with what they were sent. */
@@ -208,20 +297,26 @@ export const explainCreate = (
   readonly body: WriteBody;
   readonly tied: boolean;
 } => {
-  const rules: FieldRule[] = [];
+  const ruled: FieldRule[] = [];
   const unexplained: string[] = [];
   const index = indexBody(evidence.call.body);
   for (const [field, value] of Object.entries(evidence.entity)) {
     const rule =
       requestRule(evidence, index, field, value) ??
-      generatedRule(evidence, field, value);
+      generatedRule(evidence, field, value) ??
+      (evidence.named === undefined
+        ? undefined
+        : referenceRule(field, value, evidence.call.body, evidence.named));
     if (rule === undefined) unexplained.push(field);
-    else rules.push(rule);
+    else ruled.push(rule);
   }
+  const rules = siblingTrimmedClocks(ruled, evidence.entity, ...evidence.type);
   // Generated values first, then copies: an echoed value may recur in unrelated text, a copied one is the call's own unless also echoed.
   const echoed = new Set(
     rules.flatMap((rule) =>
-      rule.rule === "echo" ? [scalarText(evidence.entity[rule.field])] : [],
+      rule.rule === "echo"
+        ? [scalarText(ownMember(evidence.entity, rule.field))]
+        : [],
     ),
   );
   const sources = [
@@ -229,12 +324,14 @@ export const explainCreate = (
     ...rules.filter(
       (rule) =>
         rule.rule === "copy" &&
-        !echoed.has(scalarText(evidence.entity[rule.field])),
+        !echoed.has(scalarText(ownMember(evidence.entity, rule.field))),
     ),
   ];
   const constants: string[] = [];
+  const composed = createdComposer(evidence.entity, rules, evidence.type);
   for (const field of unexplained) {
-    const template = templateRule(evidence.entity, field, sources);
+    const template =
+      templateRule(evidence.entity, field, sources) ?? composed(field);
     if (template === undefined) constants.push(field);
     else rules.push(template);
   }
@@ -243,6 +340,12 @@ export const explainCreate = (
   );
   const templates = rules.flatMap((rule) =>
     rule.rule === "template" ? [rule.field] : [],
+  );
+  // A composed string rebuilds the values it names, so only its literal text can tie it.
+  const literals = rules.flatMap((rule) =>
+    rule.rule === "composed"
+      ? rule.parts.flatMap((part) => ("text" in part ? [part.text] : []))
+      : [],
   );
   // A member whose value a template cannot rebuild, or that a constant derives from, is accepted only with its recorded value.
   const texts = [...constants, ...templates];
@@ -256,10 +359,9 @@ export const explainCreate = (
     ),
     ...instantMembers(evidence.call.body, evidence.entity, constants),
   ]);
-  const pinned = pinnedEchoes(
-    evidence.entity,
-    evidence.call.body,
-    evidence.type,
+  const pinned = unreferenced(
+    rules,
+    pinnedEchoes(evidence.entity, evidence.call.body, evidence.type),
   );
   const stored = storedMembers(
     rules.filter((rule) => !stranded.has(rule.field)),
@@ -277,9 +379,12 @@ export const explainCreate = (
       Object.keys(evidence.call.body),
     ),
     // A template rebuilds only its generated value, so other text it keeps ties it like a constant.
-    tied: [...constants, ...templates].some((field) =>
-      tokens.some((token) => containsDelimited(evidence.entity[field]!, token)),
-    ),
+    tied: [
+      ...[...constants, ...templates].map((field) =>
+        ownMember(evidence.entity, field)!,
+      ),
+      ...literals,
+    ].some((text) => tokens.some((token) => containsDelimited(text, token))),
   };
 };
 
@@ -290,11 +395,29 @@ const echoedSlugs = (
 ): Map<string, string> => {
   const slugs = new Map<string, string>();
   for (const member of echoed) {
-    const sent = body[member];
+    const sent = ownMember(body, member);
     if (typeof sent === "string" && !slugs.has(slugOf(sent)))
       slugs.set(slugOf(sent), member);
   }
   return slugs;
+};
+
+/** A reference an earlier call showed for a field this call left as it was, when the call names the entity the field repeats through its member. */
+const keptReference = (
+  evidence: UpdateEvidence,
+  field: string,
+): FieldRule | undefined => {
+  const known = evidence.references?.find((rule) => rule.field === field);
+  if (known === undefined || evidence.named === undefined) return undefined;
+  const shown = referenceRule(
+    field,
+    ownMember(evidence.after, field),
+    evidence.call.body,
+    evidence.named,
+  );
+  return shown?.member === known.member && shown.type === known.type
+    ? known
+    : undefined;
 };
 
 /** Explain an update: echoed members, fixed members whose stored value is constant, and the changes it made unsent. */
@@ -323,7 +446,12 @@ export const explainUpdate = (
     // The identity is the entity's key: the path's id repeated is the identity member; another value is one the application ignored, or used to re-key the entity, which no rule models.
     if (member === evidence.idField) {
       if (scalarText(sent) === evidence.id) identity = member;
-      else if (!same(evidence.after[member], evidence.before[member]))
+      else if (
+        !same(
+          ownMember(evidence.after, member),
+          ownMember(evidence.before, member),
+        )
+      )
         unexplained.push(member);
       continue;
     }
@@ -346,18 +474,27 @@ export const explainUpdate = (
     if (
       Object.hasOwn(body, field) ||
       (!Object.hasOwn(evidence.before, field) &&
-        !(evidence.shown ?? []).includes(field)) ||
-      same(evidence.before[field], evidence.after[field])
+        !(evidence.shown ?? []).includes(field))
     )
       continue;
+    if (
+      same(ownMember(evidence.before, field), ownMember(evidence.after, field))
+    ) {
+      const kept = keptReference(evidence, field);
+      if (kept !== undefined) rules.push(kept);
+      continue;
+    }
     const rule = changeRule(evidence, field, slugs);
     if (rule === undefined) unexplained.push(field);
     else rules.push(rule);
   }
   rules.push(...pairedStamps(evidence, rules));
+  // A member a reference reads names an entity, which any held one may be.
+  for (const rule of rules)
+    if (rule.rule === "reference") echoed.add(rule.member);
   // Serving renews one UUID alike in every field, so the call must have.
   unexplained.push(...unexplainedRenewals(rules, evidence));
-  const pinned = pinnedEchoes(evidence.after, body);
+  const pinned = unreferenced(rules, pinnedEchoes(evidence.after, body));
   const shaped = bodyOf(
     Object.fromEntries(
       Object.entries(body).filter(([member]) => member !== identity),
@@ -430,7 +567,10 @@ const orderedBy = (
 ): boolean =>
   members.every((member, index) => {
     if (index === 0) return true;
-    const order = compareValues(members[index - 1]![field], member[field]);
+    const order = compareValues(
+      ownMember(members[index - 1]!, field),
+      ownMember(member, field),
+    );
     return (
       order !== undefined && (direction === "ascending" ? order < 0 : order > 0)
     );
@@ -449,17 +589,23 @@ export const randomIdentities = (
   idField: string,
   clocks: readonly string[],
 ): boolean => {
-  const ids = members.map((member) => scalarText(member[idField]) ?? "");
+  const ids = members.map(
+    (member) => scalarText(ownMember(member, idField)) ?? "",
+  );
   if (ids.length > 0 && ids.every((id) => UUID_V4.test(id))) return true;
   if (members.length < 2 || clocks.length === 0) return false;
   const byId = members.toSorted(
-    (left, right) => compareValues(left[idField], right[idField]) ?? 0,
+    (left, right) =>
+      compareValues(ownMember(left, idField), ownMember(right, idField)) ?? 0,
   );
   return clocks.every((clock) =>
     byId.some(
       (member, index) =>
         index > 0 &&
-        (compareValues(byId[index - 1]![clock], member[clock]) ?? 1) > 0,
+        (compareValues(
+          ownMember(byId[index - 1]!, clock),
+          ownMember(member, clock),
+        ) ?? 1) > 0,
     ),
   );
 };
@@ -505,7 +651,10 @@ export const insertIndex = (
 ): number => {
   if (rule.rule !== "sorted") return rule.rule === "first" ? 0 : members.length;
   const index = members.findIndex((member) => {
-    const order = compareValues(fields[rule.field], member[rule.field]);
+    const order = compareValues(
+      ownMember(fields, rule.field),
+      ownMember(member, rule.field),
+    );
     return (
       order !== undefined &&
       (rule.direction === "ascending" ? order < 0 : order > 0)

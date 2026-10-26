@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { AnalysisError } from "../analysisErrorBase.js";
-import { jsonValueSchema } from "../jsonValue.js";
+import { jsonObjectSchema, jsonValueSchema } from "../jsonValue.js";
+import { jsonRecordSchema } from "../jsonRecord.js";
 import { ok, type Result } from "../result.js";
 import type {
   AnalysisViewParent,
@@ -9,6 +10,7 @@ import type {
 } from "./analysisView.js";
 import { EnvironmentStateAccumulator } from "./EnvironmentStateAccumulator.js";
 import { isClockZone } from "./environmentStateWriteValues.js";
+import { CLOCK_PATTERNS } from "./environmentStateWriteClockFormats.js";
 import {
   groupCaptureRecords,
   templateRulesSchema,
@@ -21,7 +23,6 @@ export const environmentStateViewRequestSchema = z.strictObject({
   ),
 });
 
-const jsonObjectFieldsSchema = z.record(z.string(), jsonValueSchema);
 const queryParameterSchema = z.discriminatedUnion("role", [
   z.strictObject({
     role: z.literal("filter"),
@@ -72,11 +73,9 @@ const queryParameterSchema = z.discriminatedUnion("role", [
   }),
 ]);
 const listQuerySchema = z.strictObject({
-  parameters: z
-    .record(z.string(), queryParameterSchema)
-    .describe(
-      "What each query parameter does. A call whose every parameter has a role is answered by evaluating them over the state.",
-    ),
+  parameters: jsonRecordSchema(queryParameterSchema).describe(
+    "What each query parameter does. A call whose every parameter has a role is answered by evaluating them over the state.",
+  ),
   record_ordinals: z
     .array(z.number().int().nonnegative())
     .describe("Checked lines the query reproduces, answered by evaluating it."),
@@ -97,6 +96,7 @@ const clockFormatSchema = z.discriminatedUnion("kind", [
     separator: z.enum(["T", " "]),
     fraction: z.number().int().nonnegative().max(9),
     zone: z.string().refine(isClockZone),
+    trimmed: z.literal(true).exactOptional(),
   }),
   z.strictObject({ kind: z.literal("epoch"), unit: z.enum(["s", "ms"]) }),
 ]);
@@ -120,11 +120,15 @@ const entityViewFields = {
   required_fields: z.array(z.string()),
   checked_record_ordinals: checkedSchema,
   per_response_members: perResponseSchema,
-  clock_formats: z
-    .record(z.string(), clockFormatSchema)
+  clock_formats: jsonRecordSchema(clockFormatSchema)
     .optional()
     .describe(
       "How the view spells clock fields it always spells otherwise than the entities' stored values; a stored value the view never recorded is spelled this way.",
+    ),
+  nested_fields: jsonRecordSchema(z.array(z.string()))
+    .optional()
+    .describe(
+      "The keys the view shows of object fields it always shows with fewer keys than an entity stores, such as a parent listed without its own nested type; a stored object the view never recorded shows those keys.",
     ),
   sorted_arrays: z
     .array(z.string())
@@ -251,11 +255,42 @@ const fieldRuleSchema = z.discriminatedUnion("rule", [
     rule: z.literal("held-clock"),
     format: clockFormatSchema,
   }),
-  z.strictObject({ ...ruled, rule: z.literal("echo") }),
+  z.strictObject({
+    ...ruled,
+    rule: z.literal("echo"),
+    sorted: z.literal(true).exactOptional(),
+  }),
   z.strictObject({ ...ruled, rule: z.literal("copy"), from: z.string() }),
   z.strictObject({ ...ruled, rule: z.literal("path"), from: z.string() }),
   z.strictObject({ ...ruled, rule: z.literal("slug"), from: z.string() }),
   z.strictObject({ ...ruled, rule: z.literal("template"), from: z.string() }),
+  z.strictObject({
+    ...ruled,
+    rule: z.literal("composed"),
+    parts: z
+      .array(
+        z.union([
+          z.strictObject({ text: z.string().min(1) }),
+          z.strictObject({
+            from: z.string(),
+            as: z.enum(["value", "slug"]),
+          }),
+          z.strictObject({
+            from: z.string(),
+            as: z.literal("clock"),
+            pattern: z.enum(CLOCK_PATTERNS),
+          }),
+        ]),
+      )
+      .min(1),
+  }),
+  z.strictObject({
+    ...ruled,
+    rule: z.literal("reference"),
+    member: z.string(),
+    type: z.string(),
+    fields: z.array(z.string()).min(1),
+  }),
   z.strictObject({ ...ruled, rule: z.literal("increment") }),
   z.strictObject({
     ...ruled,
@@ -305,13 +340,27 @@ const writePlanSchema = z.strictObject({
       "side-effect",
       "unconfirmed",
       "incomplete-entities",
+      "unknown-clock",
     ])
     .nullable(),
   exemplar_ordinal: ordinalSchema
     .nullable()
     .describe("The first successful recorded call the plan was built from."),
   observation: z
-    .strictObject({ ordinal: ordinalSchema, pointer: z.string() })
+    .strictObject({
+      ordinal: ordinalSchema,
+      pointer: z.string(),
+      read: z
+        .strictObject({
+          ordinal: ordinalSchema,
+          pointer: z.string(),
+          shape: z.enum(["item", "list"]),
+        })
+        .exactOptional()
+        .describe(
+          "A create's later read of the entity: an item read lends fields the response lacks and its clock spellings, a list read only adds fields the response lacks.",
+        ),
+    })
     .nullable()
     .describe(
       "The record whose response showed the written entity or document, and a JSON pointer to it.",
@@ -338,10 +387,13 @@ const writePlanSchema = z.strictObject({
         }),
       ),
       envelope: z.string().optional(),
+      defaults: z
+        .array(z.strictObject({ member: z.string(), value: jsonValueSchema }))
+        .optional(),
     })
     .nullable()
     .describe(
-      "Body members the application stored as sent (accepted), members accepted only with their recorded value (fixed), members every call sends (required), the JSON type a later call stored an accepted member as when the observation does not show it (kinds), and the member a call wraps its object in as a one-element array (envelope).",
+      "Body members the application stored as sent (accepted), members accepted only with their recorded value (fixed), members every call sends (required), the JSON type a later call stored an accepted member as when the observation does not show it (kinds), the member a call wraps its object in as a one-element array (envelope), and the value a create stores for an accepted member a call leaves out, as a call that left it out showed (defaults).",
     ),
   rules: z
     .array(fieldRuleSchema)
@@ -419,9 +471,9 @@ export const environmentStateFields = {
         type: z.string(),
         collection: z.string(),
         id: z.string(),
-        fields: jsonObjectFieldsSchema,
+        fields: jsonObjectSchema,
         view_fields: z.array(
-          z.strictObject({ tool: z.string(), fields: jsonObjectFieldsSchema }),
+          z.strictObject({ tool: z.string(), fields: jsonObjectSchema }),
         ),
         record_ordinals: z.array(z.number().int().nonnegative()),
       }),

@@ -171,11 +171,17 @@ describe.skipIf(process.platform !== "darwin")(
             separators: "a\u0085b\u2028c\u2029d",
             payload: { $plist_type: "data", base64: "AAEC" },
           },
-          provenance: [{ tool: "file" }],
+          provenance: [
+            { tool: "file" },
+            {
+              tool: "plutil",
+              command: ["/usr/bin/plutil", "-lint", "--", "$PLIST"],
+            },
+          ],
           limitations: [],
         });
-        expect(await readFile(binaryPath)).toEqual(binaryBytes);
-        expect(await readFile(xmlPath)).toEqual(xmlBytes);
+        expect(Buffer.compare(await readFile(binaryPath), binaryBytes)).toBe(0);
+        expect(Buffer.compare(await readFile(xmlPath), xmlBytes)).toBe(0);
       },
       60_000,
     );

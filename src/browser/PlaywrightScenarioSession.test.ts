@@ -1,20 +1,23 @@
-import { AnalysisCleanupLeaseGroup } from "../artifacts/AnalysisCleanupLease.js";
+import {
+  AnalysisCleanupLeaseGroup,
+  AnalysisCleanupLease,
+} from "../artifacts/AnalysisCleanupLease.js";
 import { projectAnalysisError } from "../domain/analysisErrorProjection.js";
 import { ProviderCleanupError } from "../domain/providerCleanupError.js";
 import { PlaywrightBrowserScenarioProvider } from "./PlaywrightBrowserScenarioProvider.js";
-import { AnalysisCleanupLease } from "../artifacts/AnalysisCleanupLease.js";
 import { EventEmitter } from "node:events";
 
-import { beforeEach, expect, it, vi } from "vitest";
+import { beforeEach, expect, it, vi, type Mock } from "vitest";
+import type { PlaywrightScenarioStorage } from "./PlaywrightScenarioStorage.js";
 
 const mocks = vi.hoisted(() => ({
   openBrowser: vi.fn(),
   storage: undefined as
     | {
-        initialize: ReturnType<typeof vi.fn>;
-        settle: ReturnType<typeof vi.fn>;
-        limitations: ReturnType<typeof vi.fn>;
-        close: ReturnType<typeof vi.fn>;
+        initialize: Mock<PlaywrightScenarioStorage["initialize"]>;
+        settle: Mock<PlaywrightScenarioStorage["settle"]>;
+        limitations: Mock<PlaywrightScenarioStorage["limitations"]>;
+        close: Mock<PlaywrightScenarioStorage["close"]>;
       }
     | undefined,
   finishEvents: vi.fn(),
@@ -216,12 +219,16 @@ const fixture = () => {
     profilePath: "/tmp/profile",
   });
   mocks.storage = {
-    initialize: vi.fn(async () => undefined),
-    settle: vi.fn(async () => undefined),
-    limitations: vi.fn(() => []),
-    close: vi.fn(async (stopLoading = false) => ({
-      loadingStopped: stopLoading,
-    })),
+    initialize: vi.fn<PlaywrightScenarioStorage["initialize"]>(
+      async () => undefined,
+    ),
+    settle: vi.fn<PlaywrightScenarioStorage["settle"]>(async () => undefined),
+    limitations: vi.fn<PlaywrightScenarioStorage["limitations"]>(() => []),
+    close: vi.fn<PlaywrightScenarioStorage["close"]>(
+      async (stopLoading = false) => ({
+        loadingStopped: stopLoading,
+      }),
+    ),
   };
   return { cleanup, page, storage: mocks.storage };
 };
@@ -1328,9 +1335,7 @@ it("preserves both cleanup failures and retries retained owners", async () => {
   const { cleanup, storage } = fixture();
   const detachFailure = new Error("CDP detach rejected");
   const transportFailure = new Error("Playwright transport close failed");
-  storage.close
-    .mockRejectedValueOnce(detachFailure)
-    .mockResolvedValueOnce(undefined);
+  storage.close.mockRejectedValueOnce(detachFailure);
   cleanup.close
     .mockRejectedValueOnce(transportFailure)
     .mockImplementationOnce(async (finishEvents?: () => Promise<void>) => {
@@ -1637,3 +1642,66 @@ it.each(["absent", "undefined", "inherited", "empty"] as const)(
     }
   },
 );
+
+it("keeps declared secrets out of final cleanup and retry failure diagnostics", async () => {
+  const { page, cleanup } = fixture();
+  Object.assign(page, { waitForTimeout: vi.fn(async () => undefined) });
+  const input = browserScenarioSchema.parse({
+    ...connectedScenario("allow"),
+    secrets: [
+      {
+        secret_id: "credential",
+        environment_variable: "REA_SCENARIO_TEST_SECRET",
+      },
+    ],
+    capture: { after_each_step: ["url"], at_end: [], events: [] },
+  });
+  const secret = "declared-cleanup-private-value";
+  vi.spyOn(cleanup, "cleanupResources", "get").mockImplementation(() =>
+    cleanup.browserClosed ? [] : [`browser_transport:${secret}`],
+  );
+  const originalClose = cleanup.close.getMockImplementation()!;
+  let blocked = true;
+  cleanup.close.mockImplementation(async (...args) => {
+    if (blocked) throw new Error(`Close failed after ${secret}`);
+    return originalClose(...args);
+  });
+  const provider = new PlaywrightBrowserScenarioProvider((scenario, options) =>
+    PlaywrightScenarioSession.open(
+      scenario,
+      { REA_SCENARIO_TEST_SECRET: secret },
+      options,
+    ),
+  );
+  try {
+    const result = await provider.captureScenario(input, {});
+    if (result.ok) throw new Error("Expected final cleanup failure");
+    expect(result.error.cleanupIncomplete).toBe(true);
+    expect(result.error.partialObservation).toMatchObject({
+      kind: "browser-scenario-observation",
+      capture: {
+        browser: { cleanup: "incomplete" },
+        steps: [{ action: "goto_start" }, { action: "wait_for_timeout" }],
+      },
+    });
+    expect(JSON.stringify(projectAnalysisError(result.error))).not.toContain(
+      secret,
+    );
+    let retried: unknown;
+    try {
+      await provider.close();
+    } catch (error) {
+      retried = error;
+    }
+    if (!(retried instanceof ProviderCleanupError))
+      throw new Error("Expected retained cleanup failure");
+    expect(JSON.stringify(projectAnalysisError(retried))).not.toContain(secret);
+    blocked = false;
+    await provider.close();
+    expect(cleanup.browserClosed).toBe(true);
+    expect(result.error.cleanupIncomplete).toBe(false);
+  } finally {
+    blocked = false;
+    await provider.close();
+  }
+});

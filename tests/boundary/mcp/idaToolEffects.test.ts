@@ -94,7 +94,7 @@ it("advertises attached IDA UI and network effects in SDK and session discovery"
 
     const response = await client.callTool({
       name: "binary_session",
-      arguments: {},
+      arguments: { detail: "complete" },
     });
     expect(response.isError).not.toBe(true);
     const status = (
