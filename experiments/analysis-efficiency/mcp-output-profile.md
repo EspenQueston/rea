@@ -31,18 +31,18 @@ All 5,367 export names/addresses were corroborated. Both profiles produced the
 same authenticated parent Evidence ID and complete-record digest. GNU `nm`
 corroborates export coordinates, not behavioral equivalence.
 
-| Measurement | Full output | Compact output |
-| --- | ---: | ---: |
-| Discovered tools | 229 | 229 |
-| Serialized catalog result bytes | 3,639,545 | 554,792 |
-| Catalog cl100k token estimate | 932,629 | 116,962 |
-| Complete task wire estimate, one discovery | 939,165 | 123,501 |
-| Executed wire estimate, including second discovery | 1,871,825 | 240,494 |
-| Discovery after connection, ms | 292 | 1,886 |
-| Repeated discovery, ms | 333 | 49 |
-| Whole harness elapsed, s | 9.86 | 6.18 |
-| Whole harness CPU, s | 11.96 | 7.66 |
-| Sampled process-family peak RSS, GiB | 1.04 | 0.62 |
+| Measurement                                        | Full output | Compact output |
+| -------------------------------------------------- | ----------: | -------------: |
+| Discovered tools                                   |         229 |            229 |
+| Serialized catalog result bytes                    |   3,639,545 |        554,792 |
+| Catalog cl100k token estimate                      |     932,629 |        116,962 |
+| Complete task wire estimate, one discovery         |     939,165 |        123,501 |
+| Executed wire estimate, including second discovery |   1,871,825 |        240,494 |
+| Discovery after connection, ms                     |         292 |          1,886 |
+| Repeated discovery, ms                             |         333 |             49 |
+| Whole harness elapsed, s                           |        9.86 |           6.18 |
+| Whole harness CPU, s                               |       11.96 |           7.66 |
+| Sampled process-family peak RSS, GiB               |        1.04 |           0.62 |
 
 The SDK's real 1,048,576-byte receive cap rejects the full catalog before any
 analysis call. The compact run succeeds under that cap; the successful full
@@ -104,6 +104,20 @@ retained with successful cleanup. The driver was corrected to use the canonical
 Initial focused checks ran concurrent files under two CPU slots. Two full
 catalog compilation assertions exceeded their 30-second test timeouts; 46 other
 MCP cases and 14 source cases passed. The representative assertion passed alone
-in 22 seconds. The complete schema-validity file then passed with one worker,
-including all compilation, malformed-reference and namespace-isolation cases;
-neither validators nor test deadlines were relaxed.
+in 22 seconds, and the complete file passed with one worker, but another run
+after the main rebase exceeded the deadlines again. CPU contention alone did
+not fully explain the variability.
+
+A bounded probe over the five largest output schemas isolated AJV generated-code
+optimization: compile-only checks took 4.75 seconds with optimization and 2.22
+seconds without it. The schema-validity fixture now disables that code-generation
+optimization because it never executes these validators. It still validates the
+declared dialect, compiles every schema, isolates each reference namespace, and
+checks malformed/unresolved references. Actual SDK validators retain their normal
+options. Test deadlines and schema/reference assertions remain unchanged.
+
+After rebasing onto main `7d36d172a`, both complete real workflows passed again
+at integration runtime `f735451d9`, retaining the same export parent Evidence
+and complete-record digest across profiles. The 1 MiB compact cap still passes.
+The 20 schema/profile cases also pass with the default two workers after the
+compile-only optimization change; check:fast and repository formatting pass.

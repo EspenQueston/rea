@@ -28,6 +28,10 @@ export function advertisedSchemaErrors(
     strict: false,
     validateFormats: false,
     addUsedSchema: false,
+    // This check compiles schemas to detect invalid references but never runs
+    // their validators. Generated-code optimization adds substantial work here
+    // without checking another contract; actual SDK validators keep defaults.
+    code: { optimize: false },
   });
   return tools.flatMap((tool) =>
     ["inputSchema", "outputSchema"].flatMap((kind) => {
