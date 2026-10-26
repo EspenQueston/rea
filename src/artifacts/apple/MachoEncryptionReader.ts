@@ -5,6 +5,8 @@ import type {
   MachoSliceEncryption,
 } from "../../domain/apple/machoEncryption.js";
 import { validateFatSliceIdentity } from "../../domain/apple/machoContainer.js";
+import { readMachoSectionHeader } from "../../domain/apple/machoSectionHeader.js";
+import { readMachoSegmentHeader } from "../../domain/apple/machoSegmentHeader.js";
 import {
   frameLoadCommands,
   readMachoContainer,
@@ -375,36 +377,42 @@ const decodeSegment = ({
   index,
 }: MachoLoadCommand): SegmentFacts | string => {
   const wide = command === LC_SEGMENT_64;
-  const commandSize = wide ? 72 : 56;
-  const sectionSize = wide ? 80 : 68;
-  if (body.byteLength < commandSize)
+  const parsed = readMachoSegmentHeader(body, wide, true);
+  if (!parsed.ok)
     return `load command ${index} is too short for a segment command`;
-  const view = viewOf(body);
-  const address = (at: number): bigint =>
-    wide ? view.getBigUint64(at, true) : BigInt(view.getUint32(at, true));
-  const fileOffset = Number(address(wide ? 40 : 32));
-  const fileSize = Number(address(wide ? 48 : 36));
+  const segment = parsed.value;
+  const fileOffset = Number(segment.fileOffset);
+  const fileSize = Number(segment.fileSize);
   if (!Number.isSafeInteger(fileOffset + fileSize))
     return `load command ${index} segment file range exceeds the safe range`;
-  const sectionCount = view.getUint32(wide ? 64 : 48, true);
-  if (sectionCount > (body.byteLength - commandSize) / sectionSize)
+  const sectionSize = wide ? 80 : 68;
+  if (
+    segment.sectionCount >
+    (body.byteLength - segment.headerSize) / sectionSize
+  )
     return `load command ${index} section records exceed cmdsize`;
-  const sections = Array.from({ length: sectionCount }, (_, section) => {
-    const at = commandSize + section * sectionSize;
-    return {
-      name: fixedName(body, at),
-      offset: view.getUint32(at + (wide ? 48 : 40), true),
-      size: Number(address(at + (wide ? 40 : 36))),
-      zerofill: ZEROFILL_SECTION_TYPES.has(
-        view.getUint32(at + (wide ? 64 : 56), true) & 0xff,
-      ),
-    };
-  });
+  const sections: SegmentFacts["sections"][number][] = [];
+  for (let section = 0; section < segment.sectionCount; section += 1) {
+    const at = segment.headerSize + section * sectionSize;
+    const header = readMachoSectionHeader(
+      body.subarray(at, at + sectionSize),
+      wide,
+      true,
+    );
+    if (!header.ok)
+      return `load command ${index} section records exceed cmdsize`;
+    sections.push({
+      name: fixedName(header.value.nameBytes),
+      offset: header.value.offset,
+      size: Number(header.value.size),
+      zerofill: ZEROFILL_SECTION_TYPES.has(header.value.flags & 0xff),
+    });
+  }
   return {
     index,
-    name: fixedName(body, 8),
-    vmAddress: address(24),
-    vmSize: address(wide ? 32 : 28),
+    name: fixedName(segment.nameBytes),
+    vmAddress: segment.address,
+    vmSize: segment.memorySize,
     fileOffset,
     fileSize,
     sections,
@@ -412,8 +420,7 @@ const decodeSegment = ({
 };
 
 /** A 16-byte NUL-padded loader.h name, decoded byte for byte. */
-const fixedName = (body: Uint8Array, at: number): string => {
-  const bytes = body.subarray(at, at + 16);
+const fixedName = (bytes: Uint8Array): string => {
   const end = bytes.indexOf(0);
   // Node's latin1 maps every byte to one code point; WHATWG "latin1" is
   // windows-1252 and would rewrite 0x80-0x9f.

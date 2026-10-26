@@ -286,6 +286,7 @@ import type {
   WebSourceMapFetchPartialObservation,
 } from "./webBundleAnalysis.js";
 import type { WebExecutionObservation } from "./webExecution.js";
+import type { WebSourceMapReport } from "./webSourceLocation.js";
 import type { WebEventListenersObservation } from "./webEventListeners.js";
 
 import type { NativeLoadImagePartialObservation } from "./native/nativeLoadImage.js";
@@ -316,6 +317,7 @@ export type AnalysisPartialObservation =
   | WebBundleAnalysis
   | WebBundleAcquisitionPartialObservation
   | WebSourceMapFetchPartialObservation
+  | WebSourceMapReport
   | WebExecutionObservation
   | WebEventListenersObservation
   | JavaScriptRuntimeObservation
