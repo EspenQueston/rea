@@ -136,5 +136,11 @@
     "name": "Română",
     "readme": "docs/readme/README_ro.md",
     "dir": "ltr"
+  },
+  {
+    "code": "hi-Latn",
+    "name": "Hinglish",
+    "readme": "docs/readme/README_hi-Latn.md",
+    "dir": "ltr"
   }
 ]
