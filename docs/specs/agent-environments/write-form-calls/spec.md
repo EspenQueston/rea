@@ -31,7 +31,8 @@ natural-language tasks ask for, or withheld them:
 - **Sorted collections.** An update that writes the field its type's creates are sorted by moves its entity to where
   the new value sorts, in replay and serving (a bulk update moving each entity in turn), and its plan carries that
   `insert`. When a read listing the whole collection fails after an update and the type's creates are not sorted by a
-  field the update writes, replay tries the collection sorted by such a field, unless a create was placed by a sort
+  field the update writes, replay tries the collection sorted by such a field when the entities no exercised write
+  changed already follow it, as serving moves only written entities, and unless a create was placed by a sort
   that excludes it or a whole-collection read in collection order (not sorted by its query) that placed a create did
   not follow it; on a match, the type's creates and updates take that order.
 - **Unloaded answers.** A create's later item read is taken as its observation when it differs from the answer only in
