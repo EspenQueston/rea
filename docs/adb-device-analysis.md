@@ -31,6 +31,7 @@ selected path the host refuses to execute, such as a directory or a file
 without execute permission (`EACCES`) or one the host does not permit
 (`EPERM`), and any other spawn error report `capability_unavailable` naming
 that path. Exhausted host capacity (`EAGAIN`, `EMFILE`, `ENFILE` or `ENOMEM`)
+is a `runtime_unavailable` provider rejection, not a configuration one. It
 says the host could not start adb and asks for a retry after freeing
 processes or descriptors, without blaming `REA_ADB_PATH`. When adb never
 started, the refusal diagnostics record the spawn error as `filesystem_error`

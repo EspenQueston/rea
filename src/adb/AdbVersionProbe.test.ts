@@ -3,7 +3,11 @@ import { expect, it, vi } from "vitest";
 import { projectAnalysisError } from "../domain/analysisErrorProjection.js";
 import { AnalysisTimeoutError } from "../domain/analysisErrorCore.js";
 import { execFileOutput } from "../process/ExecFileOutput.js";
-import { inspectAdbClient } from "./AdbConfiguration.js";
+import {
+  AdbConfigurationFailure,
+  adbConfigurationAvailability,
+  inspectAdbClient,
+} from "./AdbConfiguration.js";
 
 vi.mock("../process/ExecFileOutput.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../process/ExecFileOutput.js")>()),
@@ -151,6 +155,7 @@ it("does not blame the selected path for exhausted host spawn capacity", async (
     (cause: unknown) => cause,
   );
   expect(failure).toMatchObject({
+    code: "host_capacity",
     message:
       "The host could not start the selected adb binary (EMFILE): /host/adb",
     diagnostics: {
@@ -164,4 +169,9 @@ it("does not blame the selected path for exhausted host spawn capacity", async (
     expect.stringContaining("REA_ADB_PATH does not need to change"),
   );
   expect(failure).not.toHaveProperty("diagnostics.exit_code");
+  if (!(failure instanceof AdbConfigurationFailure)) throw failure;
+  expect(adbConfigurationAvailability(failure)).toMatchObject({
+    status: "unavailable",
+    code: "runtime_unavailable",
+  });
 });

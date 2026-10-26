@@ -54,6 +54,7 @@ export type AdbConfigurationFailureCode =
   | "not_absolute"
   | "binary_missing"
   | "binary_not_executable"
+  | "host_capacity"
   | "version_unresolved";
 
 export class AdbConfigurationFailure extends Error {
@@ -192,7 +193,7 @@ export const inspectAdbClient = async (
       // path is not the cause.
       if (spawnCapacityExhausted(failure))
         throw new AdbConfigurationFailure(
-          "binary_not_executable",
+          "host_capacity",
           `The host could not start the selected adb binary (${code}): ${selection.binary}`,
           {
             ...facts,
@@ -245,7 +246,9 @@ const rejectionCodeOf = (
     ? "executable_missing"
     : code === "not_absolute" || code === "binary_not_executable"
       ? "not_configured"
-      : "version_unresolved";
+      : code === "host_capacity"
+        ? "runtime_unavailable"
+        : "version_unresolved";
 
 export const adbConfigurationAvailability = (
   cause: AdbConfigurationFailure,
