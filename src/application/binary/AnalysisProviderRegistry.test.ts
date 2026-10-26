@@ -434,7 +434,7 @@ describe("analysis provider registry: selection failures", () => {
 });
 
 describe("analysis provider registry: rejection origins", () => {
-  it("says no configured provider refused the target when every rejection is availability", async () => {
+  it("distinguishes recorded readiness failures from an unobserved target refusal", async () => {
     const registry = new AnalysisProviderRegistry([
       candidate("alpha", { available: false, unconfigured: true }).provider,
       candidate("gamma", { available: false, unconfigured: true }).provider,
@@ -446,8 +446,48 @@ describe("analysis provider registry: rejection origins", () => {
       registry.unboundOperationError("binary_overview", selection.value),
     );
     expect(projected.message).toContain(
-      "No analysis provider is configured on this host; no configured provider refused the target's format.",
+      "Provider selection failed local readiness checks. No target-support refusal was reported.",
     );
+  });
+
+  it("reports a configured provider's readiness failure without hiding a ready alternative", async () => {
+    const invalid = candidate("alpha", { available: false });
+    const ready = candidate("beta");
+    const registry = new AnalysisProviderRegistry([
+      {
+        ...invalid.provider,
+        inspectAvailability: () => ({
+          status: "unavailable",
+          code: "open_options_invalid",
+          reason: "Configured registration is invalid",
+          diagnostics: { registration_path: "/configured/alpha.json" },
+        }),
+      },
+      ready.provider,
+    ]);
+    const selected = await registry.select(DATABASE_TARGET, "alpha");
+    if (selected.ok)
+      throw new Error("Expected the selected provider to refuse");
+    const projected = projectAnalysisError(selected.error);
+    expect(projected.message).toContain("local readiness");
+    expect(projected.message).not.toContain(
+      "No analysis provider is configured",
+    );
+    expect(projected.details).toMatchObject({
+      requested_provider_id: "alpha",
+      candidate_ids: ["alpha", "beta"],
+      rejections: [
+        {
+          provider_id: "alpha",
+          origin: "availability",
+          code: "open_options_invalid",
+          reason: "Configured registration is invalid",
+          diagnostics: { registration_path: "/configured/alpha.json" },
+        },
+      ],
+    });
+    expect((await registry.select(DATABASE_TARGET, "beta")).ok).toBe(true);
+    expect(invalid.created).toEqual([]);
   });
 
   it("names whether a rejection came from provider availability or target support", async () => {
@@ -499,9 +539,13 @@ describe("analysis provider registry: rejection origins", () => {
     const mixedSelection = await mixed.select(ARTIFACT_TARGET);
     expect(mixedSelection.ok).toBe(true);
     if (mixedSelection.ok) {
-      const { details } = projectAnalysisError(
+      const projected = projectAnalysisError(
         mixed.unboundOperationError("binary_overview", mixedSelection.value),
       );
+      expect(projected.message).toContain(
+        "The selected analysis provider is unavailable",
+      );
+      const { details } = projected;
       const rejections = details?.rejections as unknown as readonly {
         origin: string;
         code: string;

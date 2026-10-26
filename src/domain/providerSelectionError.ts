@@ -102,7 +102,7 @@ const providerSelectionUserMessage = (
       return `The requested analysis provider is unknown. Choose one of: ${options.candidateIds.join(", ") || "no configured providers"}.`;
     case "provider_unavailable":
       return providerAvailabilityOnly(options.rejections)
-        ? "No analysis provider is configured on this host; no configured provider refused the target's format. Review the local provider diagnostics or run `rea doctor`, then retry."
+        ? "Provider selection failed local readiness checks. No target-support refusal was reported. Review the local provider diagnostics or run `rea doctor`, then retry."
         : "The selected analysis provider is unavailable. Review the reported local diagnostics or run `rea doctor`, then retry.";
     case "target_unsupported":
       return "The selected analysis provider does not support this target. Choose another provider or open a supported extracted binary.";

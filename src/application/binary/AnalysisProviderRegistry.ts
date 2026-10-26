@@ -915,7 +915,8 @@ const selectedRejection = (
   origin,
   code: rejection.code,
   reason: rejection.reason,
-  diagnostics: structuredClone(rejection.diagnostics),
+  // ProviderSelectionError owns the single defensive diagnostic copy.
+  diagnostics: rejection.diagnostics,
 });
 
 const cloneAvailability = (
