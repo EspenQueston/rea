@@ -27,6 +27,7 @@ import {
   occurrenceIdForLocation,
 } from "../../../src/domain/artifactIdentity.js";
 import { artifactInspectionResultSchema } from "../../../src/domain/artifactInspection.js";
+import { parseArtifactInventoryEvidence } from "../../../src/domain/artifactInventoryEvidence.js";
 import {
   ok as resultOk,
   err as resultErr,
@@ -1264,6 +1265,9 @@ it("attributes ASAR integrity contradictions to their actual inputs and withhold
   const root = await createTestTempDirectory("rea-asar-attribution-");
   const source = join(root, "source");
   await mkdir(source);
+  await writeFile(join(source, "keep.txt"), "unchanged sibling\n");
+  const absentArchive = join(root, "absent.asar");
+  await createPackageWithOptions(source, absentArchive, {});
   const original = "console.log('ok');\n";
   const changed = "console.log('no');\n";
   await writeFile(join(source, "main.js"), original);
@@ -1286,7 +1290,12 @@ it("attributes ASAR integrity contradictions to their actual inputs and withhold
     await server.connect(st);
     await client.connect(ct);
     const observations = [];
-    for (const path of [originalArchive, staleArchive, currentArchive]) {
+    for (const path of [
+      originalArchive,
+      staleArchive,
+      currentArchive,
+      absentArchive,
+    ]) {
       expect(
         (await client.callTool({ name: "open_binary", arguments: { path } }))
           .isError,
@@ -1304,13 +1313,14 @@ it("attributes ASAR integrity contradictions to their actual inputs and withhold
       PROCESS_COMPARISON_EVIDENCE,
     ])
       expect(session.recordEvidence(record).ok).toBe(true);
-    const [originalEvidence, stale, current] = observations;
+    const [originalEvidence, stale, current, absent] = observations;
     if (
       originalEvidence === undefined ||
       stale === undefined ||
-      current === undefined
+      current === undefined ||
+      absent === undefined
     )
-      throw new Error("Expected three artifact observations");
+      throw new Error("Expected four artifact observations");
     const leftCapture = correlationCapture("before");
     const rightCapture = correlationCapture("after");
     const comparedRuntime = await client.callTool({
@@ -1323,11 +1333,15 @@ it("attributes ASAR integrity contradictions to their actual inputs and withhold
     expect(
       session.listUnknowns({ domain: "static-runtime-correlation" }),
     ).toEqual([]);
-    for (const [left, right, mismatches] of [
-      [stale, current, [stale.evidence_id]],
-      [current, stale, [stale.evidence_id]],
-      [stale, stale, [stale.evidence_id]],
-      [originalEvidence, current, []],
+    for (const [left, right, mismatches, presence] of [
+      [stale, current, [stale.evidence_id], "changed"],
+      [current, stale, [stale.evidence_id], "changed"],
+      [stale, stale, [stale.evidence_id], "changed"],
+      [originalEvidence, current, [], "changed"],
+      [absent, stale, [stale.evidence_id], "added"],
+      [stale, absent, [stale.evidence_id], "removed"],
+      [absent, current, [], "added"],
+      [current, absent, [], "removed"],
     ] as const) {
       const comparison = await assertIntegrityComparison(
         client,
@@ -1335,15 +1349,19 @@ it("attributes ASAR integrity contradictions to their actual inputs and withhold
         left,
         right,
         mismatches,
+        presence,
       );
       // Reuse the same ASAR observations for changed-runtime refusal and its
       // ordinary-content cochange control, without repeating every input pair.
-      if ((left === stale && right === current) || mismatches.length === 0)
+      if (
+        (left === stale && right === current) ||
+        (left === originalEvidence && right === current)
+      )
         await assertIntegrityCorrelation(
           client,
           session,
           comparison,
-          mismatches.length > 0,
+          mismatches.length > 0 ? "contradiction" : presence,
           runtime,
           "cochanged",
         );
@@ -1389,6 +1407,7 @@ const assertIntegrityComparison = async (
   left: ReturnType<typeof toolEvidence>,
   right: ReturnType<typeof toolEvidence>,
   mismatches: readonly string[],
+  presence: "added" | "removed" | "changed",
 ) => {
   const compared = await client.callTool({
     name: "compare_artifacts",
@@ -1398,12 +1417,31 @@ const assertIntegrityComparison = async (
   const comparison = toolEvidence(compared.structuredContent);
   expect(comparison.normalized_result).toMatchObject({
     status: mismatches.length === 0 ? "changed" : "contradiction",
+    summary: { contradiction: mismatches.length === 0 ? 0 : 1 },
     integrity_mismatch_evidence_ids: mismatches,
   });
   const unknown = session
     .listUnknowns({ domain: "artifact-comparison" })
     .find((item) => item.question.includes(comparison.evidence_id));
   expect(unknown).toBeDefined();
+  const [leftMember, rightMember] = [left, right].map((record) =>
+    parseArtifactInventoryEvidence(record).inventory.occurrences.find(
+      ({ logical_path }) => logical_path === "main.js",
+    ),
+  );
+  expect(comparison.normalized_result).toMatchObject({
+    changes: expect.arrayContaining([
+      expect.objectContaining({
+        logical_path: "main.js",
+        classification: mismatches.length > 0 ? "contradiction" : presence,
+        ...(mismatches.length > 0 ? { dimensions: ["integrity"] } : {}),
+        left_occurrence_id: leftMember?.occurrence_id ?? null,
+        left_artifact_id: leftMember?.artifact_id ?? null,
+        right_occurrence_id: rightMember?.occurrence_id ?? null,
+        right_artifact_id: rightMember?.artifact_id ?? null,
+      }),
+    ]),
+  });
   if (mismatches.length > 0) {
     expect(unknown?.contradicting_evidence_ids).toEqual(mismatches);
     expect(unknown?.supporting_evidence_ids).toEqual(
@@ -1416,7 +1454,7 @@ const assertIntegrityComparison = async (
     client,
     session,
     comparison,
-    mismatches.length > 0,
+    mismatches.length > 0 ? "contradiction" : presence,
     PROCESS_COMPARISON_EVIDENCE,
     "static_only",
   );
@@ -1427,10 +1465,11 @@ const assertIntegrityCorrelation = async (
   client: Client,
   session: ReturnType<typeof createTestBinarySession>,
   comparison: Evidence,
-  integrityMismatch: boolean,
+  staticStatus: "added" | "removed" | "changed" | "contradiction",
   runtime: Evidence,
   expectedPattern: "static_only" | "cochanged",
 ) => {
+  const integrityMismatch = staticStatus === "contradiction";
   const unknownsBefore = session.listUnknowns({
     domain: "static-runtime-correlation",
   });
@@ -1491,7 +1530,7 @@ const assertIntegrityCorrelation = async (
             items: [
               {
                 static: {
-                  status: "changed",
+                  status: staticStatus,
                   conclusion_kind: "derived_relationship",
                 },
                 observed_pattern: expectedPattern,
