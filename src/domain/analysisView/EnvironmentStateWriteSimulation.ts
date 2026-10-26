@@ -711,8 +711,10 @@ export class EnvironmentStateWriteSimulation {
     });
     for (const name of shown.confirmed) {
       this.#drafts.get(name)!.confirmed.push(record.ordinal);
-      if (showsPlacement(view, outcome, this.#inserted, name))
+      if (showsPlacement(view, outcome, this.#inserted, name)) {
         this.#placed.add(name);
+        if (view.shape === "list") this.#narrowInserts(view, record, name);
+      }
     }
     return shown.unseen;
   }
@@ -821,17 +823,12 @@ export class EnvironmentStateWriteSimulation {
       for (const key of failed.keys) this.#taint.fail(key);
   }
 
-  /**
-   * The successful check with the collection sorted by a field an update the read exercised writes, when the read
-   * lists the whole collection in that order and no create of the type was placed by a sort that excludes it; the
-   * type's creates then insert by it, and its updates move their entity by it. A sort the creates chose by a field the
-   * update did not write does not stop this, since both may have fit every earlier read.
-   */
-  #retrySort(
+  /** What `use` makes of a read's items when the read lists the whole collection the state holds, the only read that shows the order it is kept in. */
+  #wholeListing<T>(
     view: Extract<StateView, { shape: "list" }>,
     record: StateRecordFacts,
-    exercised: ReadonlySet<string>,
-  ): CheckOutcome | undefined {
+    use: (items: readonly JsonObject[]) => T,
+  ): T | undefined {
     const line = this.#line(view, record);
     const idField = this.#types.get(view.type)?.id_field;
     if (line === undefined || idField === undefined) return undefined;
@@ -840,6 +837,53 @@ export class EnvironmentStateWriteSimulation {
         .members(view.type, line.collection)
         .map((entity) => entity.id),
     );
+    return this.#input.io.withBody(record.ordinal, (body) => {
+      const items =
+        body === undefined ? undefined : listItems(body, view.pointer);
+      if (
+        items === undefined ||
+        items.length < 2 ||
+        items.length !== held.size ||
+        !items.every((item) =>
+          held.has(scalarText(ownMember(item, idField)) ?? ""),
+        )
+      )
+        return undefined;
+      return use(items);
+    });
+  }
+
+  /** A whole-collection read that placed a create leaves it only the sorted inserts whose order the read follows. */
+  #narrowInserts(
+    view: Extract<StateView, { shape: "list" }>,
+    record: StateRecordFacts,
+    name: string,
+  ): void {
+    const draft = this.#drafts.get(name)!;
+    const kept = this.#wholeListing(view, record, (items) =>
+      draft.candidates.filter(
+        (candidate) =>
+          candidate.rule !== "sorted" ||
+          same(candidate, draft.plan.insert) ||
+          orderedBy(items, candidate.field, candidate.direction),
+      ),
+    );
+    if (kept !== undefined) draft.candidates = kept;
+  }
+
+  /**
+   * The successful check with the collection sorted by a field an update the read exercised writes, when the read
+   * lists the whole collection in that order and no create of the type was placed by a sort that excludes it; the
+   * type's creates then insert by it, and its updates move their entity by it. A sort the creates chose by a field the
+   * update did not write does not stop this when every whole-collection read that placed them followed this order too.
+   */
+  #retrySort(
+    view: Extract<StateView, { shape: "list" }>,
+    record: StateRecordFacts,
+    exercised: ReadonlySet<string>,
+  ): CheckOutcome | undefined {
+    const line = this.#line(view, record);
+    if (line === undefined) return undefined;
     const written = new Set(
       [...exercised].flatMap((name) => {
         const { plan } = this.#drafts.get(name)!;
@@ -858,27 +902,16 @@ export class EnvironmentStateWriteSimulation {
         draft.plan.target === view.type &&
         draft.observed !== undefined,
     );
-    const rules = this.#input.io.withBody(record.ordinal, (body) => {
-      const items =
-        body === undefined ? undefined : listItems(body, view.pointer);
-      // Only a read of the whole collection shows the order it is kept in.
-      if (
-        items === undefined ||
-        items.length < 2 ||
-        items.length !== held.size ||
-        !items.every((item) =>
-          held.has(scalarText(ownMember(item, idField)) ?? ""),
-        )
-      )
-        return [];
-      return [...written].flatMap((field) =>
-        (["ascending", "descending"] as const).flatMap((direction) =>
-          orderedBy(items, field, direction)
-            ? [{ rule: "sorted", field, direction } as const]
-            : [],
+    const rules =
+      this.#wholeListing(view, record, (items) =>
+        [...written].flatMap((field) =>
+          (["ascending", "descending"] as const).flatMap((direction) =>
+            orderedBy(items, field, direction)
+              ? [{ rule: "sorted", field, direction } as const]
+              : [],
+          ),
         ),
-      );
-    });
+      ) ?? [];
     for (const rule of rules.filter(
       (candidate) => current === undefined || !same(candidate, current),
     )) {

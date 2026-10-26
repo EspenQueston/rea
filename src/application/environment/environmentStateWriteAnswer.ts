@@ -334,7 +334,11 @@ export const writeAnswer = (
   serving: StateServing,
   request: WriteRequest,
   rendered:
-    | { readonly fields: JsonObject | undefined; readonly id: string }
+    | {
+        readonly fields: JsonObject | undefined;
+        readonly id: string;
+        readonly sent?: readonly string[];
+      }
     | ((
         recorded: JsonValue | undefined,
       ) => Result<JsonValue | undefined, string>),
@@ -520,7 +524,7 @@ const answerCreate = (
   const answer = writeAnswer(
     serving,
     request,
-    { fields: fields.value, id },
+    { fields: fields.value, id, sent: Object.keys(call.body ?? {}) },
     state,
   );
   if (!answer.ok) return answer;
@@ -592,7 +596,11 @@ const answerUpdate = (
   const answer = writeAnswer(
     serving,
     request,
-    { fields: written.value, id: entity.id },
+    {
+      fields: written.value,
+      id: entity.id,
+      sent: Object.keys(call.body ?? {}),
+    },
     {
       source: "state",
       view: "update",

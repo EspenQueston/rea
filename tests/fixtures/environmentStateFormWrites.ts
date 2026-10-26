@@ -321,3 +321,48 @@ export const ID_OR_TITLE_ROWS: readonly TimedCaptureRow[] = (() => {
     ["GET", "/api/folders", [renamed, alpha, bravo, charlie]],
   ];
 })();
+
+/**
+ * Two seeded folders and two creates kept in creation order, which a list read after both shows (`Charlie` after
+ * `Zulu`), then a rename whose read happens to follow title order.
+ */
+export const CREATION_ORDER_ROWS: readonly TimedCaptureRow[] = (() => {
+  const [alpha, bravo] = [folder(1, "Alpha"), folder(2, "Bravo")];
+  const [zulu, charlie] = [folder(3, "Zulu"), folder(4, "Charlie")];
+  const renamed = folder(3, "Aardvark", 2);
+  return [
+    ["GET", "/api/folders", [alpha, bravo]],
+    ["GET", "/api/folders/1", alpha],
+    ["POST", "/api/folders", zulu, 200, { title: "Zulu" }],
+    ["GET", "/api/folders/3", zulu],
+    ["GET", "/api/folders", [alpha, bravo, zulu]],
+    ["POST", "/api/folders", charlie, 200, { title: "Charlie" }],
+    ["GET", "/api/folders/4", charlie],
+    ["GET", "/api/folders", [alpha, bravo, zulu, charlie]],
+    ["PUT", "/api/folders/3", renamed, 200, { title: "Aardvark", version: 1 }],
+    ["GET", "/api/folders/3", renamed],
+    ["GET", "/api/folders", [renamed, alpha, bravo, charlie]],
+  ];
+})();
+
+/** Two label creates that send and echo empty tags, one `null` and one `[]`, as an application storing what it is sent does. */
+export const ECHOED_EMPTY_ROWS: readonly TimedCaptureRow[] = (() => {
+  const tagged = (entity: Entity, tags: JsonValue): Entity => ({
+    ...entity,
+    tags,
+  });
+  const [kitchen, tools] = [tagged(KITCHEN, null), tagged(TOOLS, null)];
+  const garden = tagged(label(3, "Garden"), null);
+  const attic = tagged(label(4, "Attic"), []);
+  return [
+    ["GET", "/api/labels", [kitchen, tools]],
+    ["GET", "/api/labels/1", kitchen],
+    ["GET", "/api/labels/2", tools],
+    ["POST", "/api/labels", garden, 201, formBody(garden)],
+    ["GET", "/api/labels/3", garden],
+    ["GET", "/api/labels", [garden, kitchen, tools]],
+    ["POST", "/api/labels", attic, 201, formBody(attic)],
+    ["GET", "/api/labels/4", attic],
+    ["GET", "/api/labels", [attic, garden, kitchen, tools]],
+  ];
+})();

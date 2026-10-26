@@ -757,10 +757,12 @@ no longer confirms the create; one that disagrees or omits an answer field its
 item view renders still checks it. Clock agreement uses the coarser recorded
 precision, including microseconds. A list read
 only adds fields the answer lacks and still checks it. Serving answers a create
-in its answer's shape and clock precision, with empty lists and maps spelled
-(`null`, `[]` or `{}`) as its answer spelled them, and stores the fields of both with
-the item read-back's clock precision. Updates answer empty lists and maps as
-their answers spelled them too. A `reference` is an object holding fields of the
+in its answer's shape and clock precision, with empty lists and maps the call
+did not send spelled (`null`, `[]` or `{}`) as its answer spelled them, and
+stores the fields of both with the item read-back's clock precision. Updates
+answer empty lists and maps they did not send as their answers spelled them
+too; a member a call sent is answered as sent. A `reference` is an object
+holding fields of the
 entity a sent member names, as the state holds it (a parent beside `parentId`):
 the member is accepted with any value, serving looks the entity up and refuses a
 call naming one the environment does not hold or holds in more than one
@@ -853,7 +855,8 @@ to where the new value sorts (its own `insert`); a bulk update moves each entity
 it writes in turn, as replay applies them. When a read listing the whole
 collection fails after an update and the type's creates are not sorted by a field
 that update writes, the view tries the collection sorted by such a field, unless
-a create was placed by a sort that excludes it; on a match, the type's creates
+a create was placed by a sort that excludes it or a read listing the whole
+collection that placed a create did not follow it; on a match, the type's creates
 and updates take that order, as Grafana keeps folders by title though no earlier
 read could tell that from creation order, or from id order where both ascend.
 

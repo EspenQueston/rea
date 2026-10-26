@@ -5,6 +5,7 @@ import {
   type TimedCaptureRow,
 } from "../../../tests/fixtures/analysisView.js";
 import {
+  CREATION_ORDER_ROWS,
   DERIVED_TEXT_ROWS,
   formLabelRows,
   ID_OR_TITLE_ROWS,
@@ -138,6 +139,16 @@ describe("collections kept sorted", () => {
     });
     expect(planOf(ID_OR_TITLE_ROWS, "post_folders")).toMatchObject({
       insert: byTitle,
+    });
+  });
+
+  it("learns no sort from a rename that an earlier read of the creates' order rules out", () => {
+    const byTitle = { rule: "sorted", field: "title", direction: "ascending" };
+    expect(planOf(CREATION_ORDER_ROWS, "post_folders").insert).not.toEqual(
+      byTitle,
+    );
+    expect(planOf(CREATION_ORDER_ROWS, "put_folders_by_id")).toMatchObject({
+      served: false,
     });
   });
 
