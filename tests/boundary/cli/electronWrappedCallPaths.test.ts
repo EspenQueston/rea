@@ -900,6 +900,8 @@ const descriptorCases: readonly (readonly [
   ["patch-after-sender", `{value:${descriptorSender}}`, true, false, false],
   ["negative-prototype", `{__proto__:-1,value:${descriptorSender}}`, true],
   ["bigint-prototype", `{__proto__:-1n,value:${descriptorSender}}`, true],
+  ["successive-noops", `{enumerable:true}`, true],
+  ["literal-noop", `{enumerable:true}`, true],
   ["replaced-namespace", `{value:${descriptorNoop}}`, false],
   ["namespaced-noop", `{value:${descriptorNoop}}`, true],
   ["patch-after", `{value:${descriptorNoop}}`, false],
@@ -1029,8 +1031,8 @@ cliTest.for(["CLI", "stdio MCP"] as const)(
           2(module) { module.exports = require("electron"); },
           5(module, exports, load) {
             const electron = load(2);
-            ${name === "replaced-namespace" ? "globalThis={Object:{}};globalThis.Object.defineProperty=()=>{};" : name === "namespaced-noop" ? "globalThis.Object.defineProperty=()=>{};" : name === "patched-intrinsic" ? "Object.defineProperty=()=>{};" : name === "mutating-intrinsic" ? "Object.defineProperty=(target,key)=>{target[key]=" + descriptorNoop + ";};" : ""}
-            exports.sender = ${["accessor-noop", "replaced-namespace", "namespaced-noop", "patched-intrinsic", "patch-after", "outer-patch-after", "mutating-intrinsic"].includes(name) ? descriptorSender : descriptorNoop};
+            ${name === "successive-noops" ? "Object.defineProperty=()=>{};Object.defineProperty=()=>{};" : name === "literal-noop" ? "Object.defineProperty=(_target,_key)=>0;" : name === "replaced-namespace" ? "globalThis={Object:{}};globalThis.Object.defineProperty=()=>{};" : name === "namespaced-noop" ? "globalThis.Object.defineProperty=()=>{};" : name === "patched-intrinsic" ? "Object.defineProperty=()=>{};" : name === "mutating-intrinsic" ? "Object.defineProperty=(target,key)=>{target[key]=" + descriptorNoop + ";};" : ""}
+            exports.sender = ${["accessor-noop", "successive-noops", "literal-noop", "replaced-namespace", "namespaced-noop", "patched-intrinsic", "patch-after", "outer-patch-after", "mutating-intrinsic"].includes(name) ? descriptorSender : descriptorNoop};
             Object.defineProperty(exports, "sender", ${descriptor});
             ${name.startsWith("patch-after") ? "Object.defineProperty=()=>{};" : ""}
             function send(channel, ...args) { electron.ipcRenderer.send(channel, ...args); }

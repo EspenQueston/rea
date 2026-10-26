@@ -909,7 +909,11 @@ export const createGlobalReferenceReader = (
           state.parentsByNode,
         ) &&
         (replacement === undefined ||
-          semanticEffectTiming(write, replacement, state) === "before")
+          semanticDefiniteEffectPrecedesReference(
+            replacement,
+            write,
+            state.parentsByNode,
+          ))
       )
         replacement = write;
     }
@@ -919,7 +923,13 @@ export const createGlobalReferenceReader = (
       active.some(
         (effect) =>
           effect.node !== confirmed &&
-          semanticEffectTiming(confirmed, effect.node, state) !== "before",
+          semanticEffectTiming(confirmed, effect.node, state) !== "before" &&
+          (effect.node === undefined ||
+            !semanticDefiniteEffectPrecedesReference(
+              effect.node,
+              confirmed,
+              state.parentsByNode,
+            )),
       )
     )
       return { status: "unknown" };

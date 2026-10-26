@@ -800,6 +800,24 @@ it.each([
     "Object.defineProperty=()=>{};",
   ],
   [
+    "literal-return no-op replacement",
+    `{enumerable:true}`,
+    "external",
+    "Object.defineProperty=(_target,_key)=>0;",
+  ],
+  [
+    "successive no-op replacements",
+    `{enumerable:true}`,
+    "external",
+    "Object.defineProperty=()=>{};Object.defineProperty=()=>{};",
+  ],
+  [
+    "literal stub with effectful parameter binding",
+    `{enumerable:true}`,
+    "unknown",
+    "Object.defineProperty=(target=mutate())=>0;",
+  ],
+  [
     "mixed getter and spread value",
     `{get:()=>0,...{value:require("electron")}}`,
     "unknown",

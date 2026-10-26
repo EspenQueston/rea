@@ -282,6 +282,11 @@ it.each([
     ["unknown"],
   ],
   [
+    "competing unconditional replacements before a read",
+    "function run(){Object.defineProperty=()=>{};Object.defineProperty=()=>{};inspect(Object.defineProperty);}",
+    ["replacement"],
+  ],
+  [
     "a repeated activation with a later write",
     "function run(){inspect(Object.defineProperty);Object.defineProperty=()=>{};}run();run();",
     ["unknown"],

@@ -1,6 +1,7 @@
 import * as t from "@babel/types";
 import {
   staticObjectPropertyReader,
+  readExactJavaScriptLiteral,
   isObjectPrototypeSetter,
   objectDataPropertyValue,
   semanticStaticPropertyKey,
@@ -160,8 +161,9 @@ export class JavaScriptSymbolicBindings {
               const unchanged =
                 (t.isFunctionExpression(replacement) ||
                   t.isArrowFunctionExpression(replacement)) &&
-                t.isBlockStatement(replacement.body) &&
-                replacement.body.body.length === 0 &&
+                (t.isBlockStatement(replacement.body)
+                  ? replacement.body.body.length === 0
+                  : readExactJavaScriptLiteral(replacement.body).found) &&
                 runtimeFunctionParameters(replacement).every(
                   (parameter) =>
                     t.isIdentifier(parameter) ||
