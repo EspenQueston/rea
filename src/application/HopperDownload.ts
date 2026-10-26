@@ -1,3 +1,10 @@
+/** Download result; HTTP failures may carry their observed status for diagnostics. */
+export interface HopperDownload {
+  readonly ok: boolean;
+  readonly bytes: Uint8Array;
+  readonly httpStatus?: number;
+}
+
 /** Maximum admitted vendor response bytes, shared by Hopper setup adapters. */
 export const HOPPER_DOWNLOAD_BYTES = 100_000_000;
 
@@ -41,7 +48,7 @@ export const downloadHopperPackage = async (
     /** Overall bound; a stall bound applies only when it is shorter. */
     readonly timeoutMs?: number;
   } = {},
-): Promise<{ readonly ok: boolean; readonly bytes: Uint8Array }> => {
+): Promise<HopperDownload> => {
   const timeoutMs = options.timeoutMs ?? HOPPER_DOWNLOAD_TIMEOUT_MS;
   if (
     !Number.isSafeInteger(timeoutMs) ||
@@ -82,10 +89,15 @@ export const downloadHopperPackage = async (
     );
     const refused = { ok: false, bytes: new Uint8Array() };
     if (response === undefined) return refused;
-    if (
-      !response.ok ||
-      Number(response.headers.get("content-length")) > maxBytes
-    ) {
+    if (!response.ok) {
+      await response.body?.cancel();
+      return Number.isInteger(response.status) &&
+        response.status >= 300 &&
+        response.status <= 599
+        ? { ...refused, httpStatus: response.status }
+        : refused;
+    }
+    if (Number(response.headers.get("content-length")) > maxBytes) {
       await response.body?.cancel();
       return refused;
     }

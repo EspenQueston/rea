@@ -86,7 +86,7 @@ these checks do not lock out another writer modifying the same file in place,
 or exclude pathname changes between the final check and publication.
 Setup also retains valid environment overrides in REA's existing server entry,
 such as `REA_MCP_INPUT_SCHEMA_PROFILE`, `REA_MCP_OUTPUT_SCHEMA_PROFILE`, and
-`REA_MCP_MAX_RESPONSE_BYTES`.
+`REA_MCP_MAX_RESPONSE_BYTES`, and `REA_MCP_TOOL_FAMILIES`.
 Detected provider settings replace only matching environment keys.
 Setup manages REA's launcher, selected provider settings, and recommended timeout
 defaults. Codex approval policies, tool selections, and other caller-owned server
@@ -341,7 +341,7 @@ remove it with `claude mcp remove --scope local rea` from the same directory.
 To move it to a newer release, first back up the project entry in
 `~/.claude.json` and record its environment and other metadata. In particular,
 preserve caller-selected overrides such as `REA_MCP_INPUT_SCHEMA_PROFILE` and
-`REA_MCP_MAX_RESPONSE_BYTES`. Run `claude mcp remove --scope local rea` from the
+`REA_MCP_MAX_RESPONSE_BYTES`, and `REA_MCP_TOOL_FAMILIES`. Run `claude mcp remove --scope local rea` from the
 same directory, then recreate it with the platform-appropriate command above
 and the new version. Reapply every recorded environment value with Claude
 Code's `mcp add --env NAME=value` options and restore any other retained entry
@@ -411,6 +411,13 @@ The public error code varies by caller: `capability_unavailable`,
 `provider_unavailable` or `execution_failure`. Some provider adapters report
 only a generic startup error. Check this prerequisite before following
 provider-specific recovery advice.
+
+`binary_session` still returns status on such a host. Providers whose
+readiness check reaches the owned-child launch, such as Ghidra's Java probe,
+JADX and Apktool, report themselves unavailable with a reason naming the
+missing `ps`. A provider that fails an earlier configuration check, such as
+JADX without `REA_JADX_MCP_JAR`, keeps that reason. The other providers keep
+their own status. `open_binary` keeps the refusal described above.
 
 ## Diagnose, update, and remove
 
@@ -494,6 +501,10 @@ on Windows, security software's protection history before attributing the cause.
 Do not rename `index.cjs` to `index.mjs` or disable protection to make startup pass.
 
 ### Update the owning installation
+
+Read-only metadata and version checks time out after 10 seconds. This does not
+interrupt a package installation already in progress. If a probe cannot be
+stopped, the updater reports a cleanup failure.
 
 `rea update` installs the exact resolved
 release into the npm prefix or Bun global directory that owns the running
@@ -648,6 +659,10 @@ Linux distribution with a recognized apt, dnf, or pacman package family, where
 an existing Hopper launcher is selected through `HOPPER_LAUNCHER_PATH`. Ghidra
 and IDA have their own provider-specific host requirements; Windows Ghidra uses
 the [experimental P0 boundary](windows-ghidra-p0.md).
+
+If the Linux package download receives an HTTP failure, setup includes the
+observed HTTP status in its `download_failed` diagnostic. The status does not
+establish the underlying cause or guarantee that retrying will succeed.
 
 Hopper metadata and package downloads require HTTPS throughout the redirect
 chain; a redirect to HTTP is refused before that destination is requested.
