@@ -9,6 +9,7 @@ import type { BrowserScenarioSecrets } from "./BrowserScenarioSecrets.js";
 import {
   awaitSavedResponse,
   performScenarioRequest,
+  SavedFill,
   withSavedPlaceholders,
   type SavedResponseWait,
 } from "./PlaywrightScenarioRequest.js";
@@ -79,7 +80,7 @@ export const performPlaywrightScenarioAction = async (
           ...action.destination,
           url: withSavedPlaceholders(
             action.destination.url,
-            secrets,
+            new SavedFill(action.step_id, secrets),
             SAVED_URL_PLACEHOLDER,
           ),
         }),

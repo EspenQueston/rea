@@ -1054,3 +1054,36 @@ describe("generated integers another field repeats", () => {
     });
   });
 });
+
+describe("slugs the held entities' spellings refuse", () => {
+  const SALT = { id: 1, name: "Salt & Pepper", slug: "salt-and-pepper" };
+  const FISH = { id: 3, name: "Fish & Chips", slug: "fish-chips" };
+
+  it.each([
+    ["spell & both ways", [SALT, FISH], "Harbour Notes", "harbour-notes"],
+    ["spell & otherwise than the create", [SALT], "Tide & Wind", "tide-wind"],
+  ])(
+    "accepts a created tag's name only as recorded when held tags %s",
+    (_case, held, name, slug) => {
+      const tag = { id: 2, name, slug };
+      const rows: TimedCaptureRow[] = [
+        ["GET", "/api/tags", held],
+        ...held.map((entity): TimedCaptureRow => [
+          "GET",
+          `/api/tags/${String(entity.id)}`,
+          entity,
+        ]),
+        ["POST", "/api/tags", tag, 201, { name }],
+        ["GET", "/api/tags/2", tag],
+        ["GET", "/api/tags", [...held, tag]],
+      ];
+      const plan = planOf(rows, "post_tags");
+      expect(plan.rules).not.toContainEqual(
+        expect.objectContaining({ field: "slug", rule: "slug" }),
+      );
+      // The slug kept as recorded fits only the recorded name.
+      expect(plan.body.accepted).not.toContain("name");
+      expect(plan.body.fixed).toContainEqual({ member: "name", sent: name });
+    },
+  );
+});

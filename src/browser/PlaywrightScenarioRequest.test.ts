@@ -1692,3 +1692,79 @@ describe("saved responses that are not UTF-8", () => {
     expect(() => secrets.savedValue("item")).toThrow("No earlier step");
   });
 });
+
+describe("saved secrets in URLs", () => {
+  it("redacts a saved secret as a URL's query spells it once parsed", () => {
+    const secrets = resolved(scenario([requestStep({})]));
+    secrets.save("create.token", "token", "ab'cd~ef", true);
+    // The parser escapes the `'` encodeURIComponent keeps, and nothing else.
+    const sent = new URL(
+      `${ORIGIN}/api/items?token=${encodeURIComponent("ab'cd~ef")}`,
+    ).href;
+    expect(sent).toContain("ab%27cd~ef");
+    expect(secrets.redact(sent)).toBe(
+      `${ORIGIN}/api/items?token=[REDACTED:page:create.token]`,
+    );
+  });
+});
+
+describe("saved value fill limits", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const SAVING = requestStep({
+    step_id: "load",
+    method: "GET",
+    path: "/api/big",
+    save: [{ name: "big", json_pointer: "/value" }],
+  });
+  const sendAfterSaving = async (
+    value: string,
+    send: Record<string, unknown>,
+  ) => {
+    const calls = stubFetch(200, [JSON.stringify({ value }), "{}"]);
+    const parsed = scenario([
+      SAVING,
+      requestStep({ step_id: "send", ...send }),
+    ]);
+    const secrets = resolved(parsed);
+    const page = fakePage({});
+    await perform(page, parsed.actions[0]!, secrets);
+    return { calls, run: () => perform(page, parsed.actions[1]!, secrets) };
+  };
+
+  it("fails a step whose JSON body repeats a saved value past the limit, before sending", async () => {
+    const { calls, run } = await sendAfterSaving("x".repeat(1_500_000), {
+      json: { a: "{saved:big}", b: "copy {saved:big}", c: ["{saved:big}"] },
+    });
+    await expect(run()).rejects.toThrow(
+      "Step send: its saved values would fill more than 4000000 characters",
+    );
+    expect(calls).toHaveLength(1);
+  });
+
+  it("counts a path's saved value as percent-encoded", async () => {
+    // Each of these characters takes nine once percent-encoded.
+    const wide = "語".repeat(500_000);
+    const inBody = await sendAfterSaving(wide, {
+      json: { note: "{saved:big}" },
+    });
+    await inBody.run();
+    expect(inBody.calls).toHaveLength(2);
+    const inPath = await sendAfterSaving(wide, {
+      path: "/api/notes/{saved:big}",
+    });
+    await expect(inPath.run()).rejects.toThrow("would fill more than");
+    expect(inPath.calls).toHaveLength(1);
+  });
+
+  it("counts a step's header and body fills together", async () => {
+    const { calls, run } = await sendAfterSaving("x".repeat(1_500_000), {
+      headers: [{ name: "X-Big", value: { source: "saved", name: "big" } }],
+      json: { a: "{saved:big}", b: "{saved:big}" },
+    });
+    await expect(run()).rejects.toThrow("would fill more than");
+    expect(calls).toHaveLength(1);
+  });
+});

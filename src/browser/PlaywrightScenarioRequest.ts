@@ -9,7 +9,10 @@ import {
   type BrowserScenarioSaveEntry,
   type BrowserScenarioSaveResponse,
 } from "../domain/browserScenarioValues.js";
-import type { BrowserScenarioSecrets } from "./BrowserScenarioSecrets.js";
+import {
+  uriComponentLength,
+  type BrowserScenarioSecrets,
+} from "./BrowserScenarioSecrets.js";
 
 type RequestAction = Extract<BrowserScenarioAction, { action: "request" }>;
 
@@ -72,6 +75,7 @@ interface PageValueStep {
   readonly url: URL;
   readonly stepId: string;
   readonly secrets: BrowserScenarioSecrets;
+  readonly fill: SavedFill;
 }
 
 /** Read a value from the page, a cookie or a local storage entry, and redact it from later records under a label. */
@@ -145,7 +149,9 @@ const credentialPart = (
 ): Promise<string> | string =>
   part.source === "cookie" || part.source === "local_storage"
     ? readPageValue(step, part, label)
-    : step.secrets.value(part);
+    : part.source === "saved"
+      ? step.fill.text(part.name)
+      : step.secrets.value(part);
 
 /** Resolve one header value; values read from the page, and credentials built from them, are redacted from later records. */
 const headerValue = async (
@@ -155,11 +161,8 @@ const headerValue = async (
   const { stepId, secrets } = step;
   const { value } = header;
   const label = `${stepId}.${header.name}`;
-  if (
-    value.source === "literal" ||
-    value.source === "secret" ||
-    value.source === "saved"
-  )
+  if (value.source === "saved") return step.fill.text(value.name);
+  if (value.source === "literal" || value.source === "secret")
     return secrets.value(value);
   if (value.source === "basic_credentials") {
     const [username, password] = value.parts;
@@ -216,6 +219,44 @@ const MAX_SAVED_RESPONSE_CHARACTERS = 4_000_000;
 
 /** The most UTF-8 bytes text within that limit can take: three per UTF-16 code unit. */
 const MAX_SAVED_RESPONSE_BYTES = 3 * MAX_SAVED_RESPONSE_CHARACTERS;
+
+/** The most characters saved values fill into what one step sends: as much as one saved response can carry. */
+const MAX_FILLED_SAVED_CHARACTERS = 4_000_000;
+
+/** One step's saved-value fills, each counted before it is built, so a value referenced many times fails the step instead of multiplying. */
+export class SavedFill {
+  #filled = 0;
+
+  constructor(
+    private readonly stepId: string,
+    private readonly secrets: BrowserScenarioSecrets,
+  ) {}
+
+  /** A saved value with the JSON type it was saved with, counted as its text. */
+  value(name: string): string | number {
+    const value = this.secrets.savedValue(name);
+    this.#count(String(value).length);
+    return value;
+  }
+
+  /** A saved value as text, counted as `spelled` measures what is sent. */
+  text(
+    name: string,
+    spelled: (text: string) => number = (text) => text.length,
+  ): string {
+    const text = String(this.secrets.savedValue(name));
+    this.#count(spelled(text));
+    return text;
+  }
+
+  #count(units: number): void {
+    this.#filled += units;
+    if (this.#filled > MAX_FILLED_SAVED_CHARACTERS)
+      throw new ScenarioRequestError(
+        `Step ${this.stepId}: its saved values would fill more than ${String(MAX_FILLED_SAVED_CHARACTERS)} characters into what it sends.`,
+      );
+  }
+}
 
 const MALFORMED_RESPONSE = (stepId: string): string =>
   `Step ${stepId}: the response is not valid UTF-8, so no value can be saved from it.`;
@@ -367,7 +408,8 @@ export const performScenarioRequest = async (input: {
     throw new ScenarioRequestError(
       `Request step ${action.step_id} runs from a page on the start origin ${startOrigin}; navigate back to it with a goto step first.`,
     );
-  const url = new URL(withSavedPlaceholders(action.path, secrets), startOrigin);
+  const fill = new SavedFill(action.step_id, secrets);
+  const url = new URL(withSavedPlaceholders(action.path, fill), startOrigin);
   if (url.origin !== startOrigin)
     throw new ScenarioRequestError(
       `Request step ${action.step_id} must stay on the start origin ${startOrigin}.`,
@@ -376,7 +418,7 @@ export const performScenarioRequest = async (input: {
     url,
     action.query.map(({ name, value }) => [name, secrets.value(value)]),
   );
-  const step = { page, url, stepId: action.step_id, secrets };
+  const step = { page, url, stepId: action.step_id, secrets, fill };
   const headers: [string, string][] = [];
   for (const header of action.headers) {
     const value = `${header.prefix ?? ""}${await headerValue(step, header)}`;
@@ -398,7 +440,7 @@ export const performScenarioRequest = async (input: {
       `Request step ${action.step_id} ran out of time before its request was sent.`,
     );
   const json =
-    action.json === undefined ? undefined : withSavedJson(action.json, secrets);
+    action.json === undefined ? undefined : withSavedJson(action.json, fill);
   const request = {
     url: target,
     origin: startOrigin,
@@ -470,12 +512,12 @@ const DOT_SEGMENT = /^(?:\.|%2e){1,2}$/iu;
 /** A path or URL with its `placeholder`s filled, each value percent-encoded; a request path's are spelled as written. A filled path segment a URL path would drop as a dot segment fails the step. */
 export const withSavedPlaceholders = (
   text: string,
-  secrets: BrowserScenarioSecrets,
+  saved: SavedFill,
   placeholder: RegExp = SAVED_PLACEHOLDER,
 ): string => {
   const fill = (part: string): string =>
     part.replace(placeholder, (_placeholder, name: string) =>
-      encodeURIComponent(String(secrets.savedValue(name))),
+      encodeURIComponent(saved.text(name, uriComponentLength)),
     );
   const pathEnd = text.search(/[?#]/u);
   const path = pathEnd < 0 ? text : text.slice(0, pathEnd);
@@ -661,25 +703,21 @@ export const awaitSavedResponse = (
  * The step's JSON body with its `{saved:name}` placeholders filled: a string that is only a placeholder becomes the
  * saved value, keeping its JSON type, and a placeholder inside a longer string is filled as text.
  */
-const withSavedJson = (
-  value: unknown,
-  secrets: BrowserScenarioSecrets,
-): unknown => {
+const withSavedJson = (value: unknown, fill: SavedFill): unknown => {
   if (typeof value === "string") {
     const [whole] = [...value.matchAll(SAVED_PLACEHOLDER)];
-    if (whole !== undefined && whole[0] === value)
-      return secrets.savedValue(whole[1]!);
+    if (whole !== undefined && whole[0] === value) return fill.value(whole[1]!);
     return value.replace(SAVED_PLACEHOLDER, (_placeholder, name: string) =>
-      String(secrets.savedValue(name)),
+      fill.text(name),
     );
   }
   if (Array.isArray(value))
-    return value.map((item) => withSavedJson(item, secrets));
+    return value.map((item) => withSavedJson(item, fill));
   if (value !== null && typeof value === "object")
     return Object.fromEntries(
       Object.entries(value).map(([key, item]) => [
         key,
-        withSavedJson(item, secrets),
+        withSavedJson(item, fill),
       ]),
     );
   return value;

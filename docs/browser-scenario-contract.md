@@ -524,6 +524,10 @@ id the application assigns:
 - A scenario keeps at most 4,000,000 characters of saved values at once,
   counting the redaction spellings of values saved as secret, and a save past
   that fails its step before the value is kept.
+- Saved values fill at most 4,000,000 characters into what one step sends,
+  counted before each is built: a reference in a path or `goto` URL counts the
+  value percent-encoded, and one in a header or JSON body counts its text. A
+  step past that fails before it sends anything.
 - A value saved with `secret: true` is redacted however short, as a declared
   secret is, as `[REDACTED:page:<step_id>.<name>]`, from records made after it
   is saved. The

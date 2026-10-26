@@ -792,7 +792,8 @@ or part). When a create slugs no `&`, the entities the type holds show which,
 and no `slug` rule is learned when they spell it both ways; a create whose slug
 spells `&` otherwise than they do, or alongside one whose
 slug neither spelling gives, has no `slug` rule; such a held slug also keeps a
-later create from widening the spelling. An update learns the spelling the same way: a later update whose slug spells
+later create from widening the spelling. A create left without a `slug` rule keeps the recorded slug, so it accepts the
+member the slug was made from only as recorded. An update learns the spelling the same way: a later update whose slug spells
 `&` as the word refines a rule an earlier update learned from a name without
 `&`, unless an accepted call or a held entity dropped it, and every earlier
 update must still replay. An update whose slug spells no `&` takes the spelling the

@@ -358,13 +358,15 @@ export const explainCreate = (
   const ruled: FieldRule[] = [];
   const unexplained: string[] = [];
   const index = indexBody(evidence.call.body);
+  // The member each slug the held entities' `&` spellings refused was slugged from.
+  const refusedSlugs = new Map<string, string>();
   for (const [field, value] of Object.entries(evidence.entity)) {
+    const requested = requestRule(evidence, index, field, value);
+    const held = heldSlugRule(requested, evidence.call.body, evidence.type);
+    if (requested?.rule === "slug" && held === undefined)
+      refusedSlugs.set(field, requested.from);
     const rule =
-      heldSlugRule(
-        requestRule(evidence, index, field, value),
-        evidence.call.body,
-        evidence.type,
-      ) ??
+      held ??
       generatedRule(evidence, field, value) ??
       (evidence.named === undefined
         ? undefined
@@ -436,6 +438,11 @@ export const explainCreate = (
       evidence.named ?? (() => []),
     ),
     ...instantMembers(evidence.call.body, evidence.entity, constants),
+    // A refused slug kept as recorded is right only for the name it was slugged from.
+    ...constants.flatMap((field) => {
+      const from = refusedSlugs.get(field);
+      return from === undefined ? [] : [from];
+    }),
   ]);
   const pinned = unreferenced(
     rules,

@@ -22,11 +22,15 @@ export const MIN_REDACTED_PAGE_VALUE_LENGTH = 8;
 /** The most saved-value text a scenario keeps at once, with the redaction spellings of values saved as secret: as much as one saved response can carry. */
 export const MAX_RETAINED_SAVED_CHARACTERS = 4_000_000;
 
-const encodedSecretValues = (secret: string): ReadonlySet<string> =>
-  new Set([
-    encodeURIComponent(secret),
+const encodedSecretValues = (secret: string): ReadonlySet<string> => {
+  const component = encodeURIComponent(secret);
+  return new Set([
+    component,
+    // A URL's query, as fetch and the browser parse it, also escapes the `'` the component kept.
+    component.replace(/'/gu, "%27"),
     new URLSearchParams([["value", secret]]).toString().slice("value=".length),
   ]);
+};
 
 type SecretSpellings = "url" | "text";
 interface SecretPattern {
@@ -93,18 +97,28 @@ const spellingUnits = (secret: string): number =>
 const URI_KEPT = /[\w.!~*'()-]/u;
 const FORM_KEPT = /[\w .*-]/u;
 
+/** The length percent-encoding `value` gives, keeping the characters `kept` matches, counted without building it. */
+const encodedLength = (value: string, kept: RegExp): number => {
+  let units = 0;
+  for (const character of value) {
+    const point = character.codePointAt(0) ?? 0;
+    units += kept.test(character)
+      ? 1
+      : 3 * (point < 0x80 ? 1 : point < 0x800 ? 2 : point < 0x10000 ? 3 : 4);
+  }
+  return units;
+};
+
+/** The length encodeURIComponent gives `value`, counted without building it. */
+export const uriComponentLength = (value: string): number =>
+  encodedLength(value, URI_KEPT);
+
 /** A lower bound on {@link spellingUnits}, counted without building a spelling: the secret, and its longer percent-encoded spelling when that is longer than it. */
 const leastSpellingUnits = (secret: string): number => {
-  let uri = 0;
-  let form = 0;
-  for (const character of secret) {
-    const point = character.codePointAt(0) ?? 0;
-    const escaped =
-      3 * (point < 0x80 ? 1 : point < 0x800 ? 2 : point < 0x10000 ? 3 : 4);
-    uri += URI_KEPT.test(character) ? 1 : escaped;
-    form += FORM_KEPT.test(character) ? 1 : escaped;
-  }
-  const encoded = Math.max(uri, form);
+  const encoded = Math.max(
+    uriComponentLength(secret),
+    encodedLength(secret, FORM_KEPT),
+  );
   return secret.length + (encoded > secret.length ? encoded : 0);
 };
 

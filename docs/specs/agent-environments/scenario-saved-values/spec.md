@@ -47,6 +47,9 @@ values.
 - A scenario keeps at most 4,000,000 characters of saved values at once, counting
   the redaction spellings of values saved as secret; a save past that fails its
   step before the value is kept.
+- Saved values fill at most 4,000,000 characters into what one step sends,
+  counted before each is built (percent-encoded in a path or `goto` URL, as text
+  in a header or JSON body); a step past that fails before it sends anything.
 - A value saved with `secret: true` is redacted from records made after it is
   saved. The environment build warns about saved values named like credentials
   that are not marked secret (`credential-named-saved-values`).
