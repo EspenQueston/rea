@@ -1,3 +1,7 @@
+import {
+  selectCdpFrameIdentity,
+  cdpFrameEventFacts,
+} from "./CdpFrameIdentity.js";
 import type { WebPageInspection } from "../domain/browserObservationSchemas.js";
 import { sanitizeBrowserUrl } from "../domain/browserObservation.js";
 import {
@@ -11,6 +15,7 @@ import { WEB_RUNTIME_LIMITS } from "../domain/webRuntime.js";
 import { safeResponseMetadata } from "./CdpSafeMetadata.js";
 import {
   allowedSanitizedUrl,
+  executionContextKey,
   isHttpUrl,
   numberValue,
   admitRecords,
@@ -27,11 +32,9 @@ import {
 import {
   consolePrimitive,
   exclusionReasonForUrl,
-  executionContextKey,
   initiatorLocation,
   integerOrNull,
   isJsonMediaType,
-  cdpFrameIdentity,
   topCallFrame,
 } from "./CdpCaptureEventHelpers.js";
 import type { CdpCaptureEventsState } from "./CdpCaptureEventState.js";
@@ -46,15 +49,9 @@ export const handleExecutionContextCreated = (
   params: UnknownRecord,
 ): void => {
   const context = recordValue(params.context);
-  const identifier = numberValue(context?.id);
+  const key = executionContextKey(context?.id);
   const frameId = cdpStringValue(recordValue(context?.auxData)?.frameId);
-  if (
-    identifier === undefined ||
-    !Number.isSafeInteger(identifier) ||
-    frameId === undefined
-  )
-    return;
-  const key = String(identifier);
+  if (key === null || frameId === undefined) return;
   // New contexts may reuse an id. Scripts already parsed keep the frame stored on them.
   state.executionContextFrames.set(key, frameId);
 };
@@ -731,10 +728,11 @@ export const handleFrameNavigated = (
   params: unknown,
 ): void => {
   if (state.mainFrameId === undefined) return;
-  const identity = cdpFrameIdentity(
-    { method: "Page.frameNavigated", params },
-    state.mainFrameId,
-  );
+  const frameFacts = cdpFrameEventFacts({
+    method: "Page.frameNavigated",
+    params,
+  });
+  const identity = selectCdpFrameIdentity(frameFacts, state.mainFrameId);
   if (identity.identityIssue !== null || identity.parentIssue !== null) {
     state.completeness.exclude("frames", "invalid_protocol_value");
     if (
@@ -758,9 +756,8 @@ export const handleFrameNavigated = (
     state.unknownRootIdentity = true;
     return;
   }
-  const frame = recordValue(recordValue(params)?.frame);
-  const rawUrl = cdpStringValue(frame?.url);
-  const loaderId = cdpStringValue(frame?.loaderId);
+  const rawUrl = cdpStringValue(frameFacts.source?.url);
+  const loaderId = frameFacts.loaderId;
   // `frameNavigated` re-fires for a document already reported (same URL and
   // loader). Treating that as a navigation aborted a valid capture with
   // `target_changed`, which is a false claim that the target moved.

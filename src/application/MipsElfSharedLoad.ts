@@ -1,3 +1,6 @@
+import { readElfRelocationEntry } from "../domain/elfRelocation.js";
+import { readElfDynamicEntry } from "../domain/elfDynamicEntry.js";
+import { readElfProgramHeader } from "../domain/elfProgramHeader.js";
 import type { MipsElfMetadata } from "../domain/binaryTargetTypes.js";
 import { err, ok, type Result } from "../domain/result.js";
 
@@ -27,8 +30,6 @@ export const readMipsElfSharedLoad = async (
   checkCancelled: () => void,
   sections: readonly MipsElfRelocationSection[],
 ): Promise<Result<SharedLoadFacts, string>> => {
-  const u32 = (bytes: Buffer, offset: number): number =>
-    little ? bytes.readUInt32LE(offset) : bytes.readUInt32BE(offset);
   const loads: {
     index: number;
     offset: number;
@@ -39,12 +40,19 @@ export const readMipsElfSharedLoad = async (
   let dynamic: { offset: number; address: number; size: number } | undefined;
   for (let position = 0; position < programHeaders.length; position += 32) {
     checkCancelled();
-    const type = u32(programHeaders, position);
-    const offset = u32(programHeaders, position + 4);
-    const size = u32(programHeaders, position + 16);
+    const parsedProgram = readElfProgramHeader(
+      programHeaders.subarray(position, position + 32),
+      32,
+      little,
+    );
+    if (!parsedProgram.ok) return err(parsedProgram.error.message);
+    const program = parsedProgram.value;
+    const { type } = program;
+    const offset = Number(program.offset);
+    const size = Number(program.fileSize);
     if (type === 1) {
-      const address = u32(programHeaders, position + 8);
-      const memorySize = u32(programHeaders, position + 20);
+      const address = Number(program.virtualAddress);
+      const memorySize = Number(program.memorySize);
       if (
         offset > fileSize - size ||
         size > memorySize ||
@@ -55,7 +63,7 @@ export const readMipsElfSharedLoad = async (
     }
     if (type === 2) {
       if (dynamic !== undefined) return err("duplicate MIPS PT_DYNAMIC tables");
-      dynamic = { offset, address: u32(programHeaders, position + 8), size };
+      dynamic = { offset, address: Number(program.virtualAddress), size };
     }
   }
   if (dynamic === undefined)
@@ -78,7 +86,9 @@ export const readMipsElfSharedLoad = async (
     if (!trailer.ok) return err(trailer.error);
     const tag = trailer.value.subarray(4).toString("latin1");
     if (tag.replace(/^[\u0000-\u0020]+|[\u0000-\u0020]+$/gu, "") === "PRE")
-      prelinkBase = u32(trailer.value, 0);
+      prelinkBase = little
+        ? trailer.value.readUInt32LE(0)
+        : trailer.value.readUInt32BE(0);
   }
   const ranges = loads
     .filter((load) => load.memorySize > 0)
@@ -136,14 +146,20 @@ export const readMipsElfSharedLoad = async (
     if (!chunk.ok) return chunk;
     for (let position = 0; position < chunk.value.length; position += 8) {
       checkCancelled();
-      const tag = u32(chunk.value, position);
+      const parsedEntry = readElfDynamicEntry(
+        chunk.value.subarray(position, position + 8),
+        32,
+        little,
+      );
+      if (!parsedEntry.ok) return err(parsedEntry.error.message);
+      const tag = Number(BigInt.asUintN(32, parsedEntry.value.tag));
       if (tag === 0) {
         terminated = true;
         break;
       }
       if (!relevant.has(tag)) continue;
       if (tags.has(tag)) return err(`duplicate MIPS dynamic tag ${tag}`);
-      tags.set(tag, u32(chunk.value, position + 4));
+      tags.set(tag, Number(parsedEntry.value.value));
     }
   }
   if (!terminated) return err("MIPS dynamic table has no DT_NULL terminator");
@@ -223,15 +239,21 @@ export const readMipsElfSharedLoad = async (
     if (!chunk.ok) return chunk;
     for (let position = 0; position < chunk.value.length; position += 8) {
       checkCancelled();
-      const info = u32(chunk.value, position + 4);
-      const type = info & 0xff;
-      const relocationAddress = u32(chunk.value, position);
+      const parsedEntry = readElfRelocationEntry(
+        chunk.value.subarray(position, position + 8),
+        32,
+        little,
+        "rel",
+      );
+      if (!parsedEntry.ok) return err(parsedEntry.error.message);
+      const { type, symbolIndex, offset: rawAddress } = parsedEntry.value;
+      const relocationAddress = Number(rawAddress);
       if (type === 3 && mapped(relocationAddress, 4, false) === undefined)
         return err(
           "MIPS REL32 destination has no unique complete PT_LOAD memory range",
         );
       types.add(type);
-      if (type === 3 && info >>> 8 !== 0) symbolRelativeCount += 1;
+      if (type === 3 && symbolIndex !== 0) symbolRelativeCount += 1;
     }
   }
   return ok({

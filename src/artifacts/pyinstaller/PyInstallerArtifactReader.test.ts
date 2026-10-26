@@ -970,7 +970,7 @@ it("inventories and extracts a Windows member name under its canonical path", as
   ).toBe(0);
 });
 
-it("preserves distinct POSIX backslash and slash member paths", async () => {
+it("preserves distinct POSIX backslash and slash paths in CArchive files and PYZ data", async () => {
   const backslashName = String.raw`a\b.txt`;
   const slashName = "a/b.txt";
   const backslashPayload = Buffer.from("literal-backslash");
@@ -994,6 +994,18 @@ it("preserves distinct POSIX backslash and slash member paths", async () => {
           payload: slashPayload,
           compress: false,
         },
+        {
+          name: "PYZ.pyz",
+          typeCode: "z",
+          payload: pyzArchive({
+            magic: PYTHON_39_MAGIC,
+            modules: [
+              { name: backslashName, typeCode: 2, body: backslashPayload },
+              { name: slashName, typeCode: 2, body: slashPayload },
+            ],
+          }),
+          compress: false,
+        },
       ],
     }),
   );
@@ -1008,6 +1020,19 @@ it("preserves distinct POSIX backslash and slash member paths", async () => {
     source_name: backslashName,
   });
   expect(slashEntry?.format_metadata).toMatchObject({ source_name: slashName });
+  for (const name of [backslashName, slashName])
+    expect(
+      snapshot.occurrences.find(
+        (occurrence) => occurrence.logical_path === `PYZ.pyz/${name}`,
+      ),
+    ).toMatchObject({
+      source_path: name,
+      format_metadata: {
+        source_name: name,
+        type_code: 2,
+        bytecode_header: "not-bytecode",
+      },
+    });
   expect(snapshot.coverage.status).toBe("complete");
   if (process.platform === "win32") return;
 
@@ -1033,6 +1058,13 @@ it("preserves distinct POSIX backslash and slash member paths", async () => {
   expect(
     Buffer.compare(await readFile(join(output, "a", "b.txt")), slashPayload),
   ).toBe(0);
+  for (const [name, body] of [
+    [backslashName, backslashPayload],
+    [slashName, slashPayload],
+  ] as const)
+    expect((await readFile(join(output, "PYZ.pyz", name))).equals(body)).toBe(
+      true,
+    );
 });
 
 it("reads a PE signature beyond the carrier prefix before projecting paths", async () => {
@@ -1529,5 +1561,69 @@ it.each([1, 2])(
       close.mockRestore();
       await reader.close().catch(() => undefined);
     }
+  },
+);
+
+it.each([
+  { prefix: "63000d0a", typeCode: "m" },
+  { prefix: "e3000d0a", typeCode: "M" },
+  { prefix: "e30d0d0a", typeCode: "m" },
+])(
+  "preserves CRLF-framed module $prefix instead of deriving a header from its TYPE_CODE byte",
+  async ({ prefix, typeCode }) => {
+    const original = Buffer.concat([
+      Buffer.from(prefix, "hex"),
+      Buffer.alloc(12),
+      Buffer.from("original code"),
+    ]);
+    const path = await writeArchive(
+      "framed-code",
+      cArchiveExecutable({
+        layout: "2.1",
+        pythonVersion: 309,
+        members: [
+          { name: "framed", typeCode, payload: original, compress: true },
+          {
+            name: "PYZ.pyz",
+            typeCode: "z",
+            payload: pyzArchive({ magic: PYTHON_39_MAGIC, modules: [] }),
+            compress: false,
+          },
+        ],
+      }),
+    );
+    const reader = new PyInstallerArtifactReader(path);
+    try {
+      const entries = [];
+      for await (const entry of reader.entries()) entries.push(entry);
+      const framed = entries.find((entry) => entry.path === "framed");
+      if (framed === undefined) throw new Error("Missing framed module");
+      expect(framed.formatMetadata).toMatchObject({
+        bytecode_header: "unknown",
+        bytecode_magic: null,
+      });
+      expect((await buffer(await reader.open(framed))).equals(original)).toBe(
+        true,
+      );
+    } finally {
+      await reader.close();
+    }
+    const inventory = await scanCanonicalArtifactInventory(path);
+    const occurrence = inventory.occurrences.find(
+      (entry) => entry.logical_path === "framed",
+    );
+    expect(
+      inventory.nodes.find(
+        (node) => node.artifact_id === occurrence?.artifact_id,
+      ),
+    ).toMatchObject({
+      sha256: sha256(original),
+      size: original.length,
+    });
+    expect(
+      inventory.edges.find(
+        (edge) => edge.occurrence_id === occurrence?.occurrence_id,
+      )?.relation,
+    ).toBe("contains");
   },
 );
