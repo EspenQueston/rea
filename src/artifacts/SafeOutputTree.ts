@@ -152,7 +152,10 @@ export class SafeOutputTree {
   static async checkDestination(
     outputRoot: string,
     options: { readonly resourceScope?: ArtifactResourceScope } = {},
-  ): Promise<{ readonly caseSensitivity: DestinationCaseSensitivity }> {
+  ): Promise<{
+    readonly caseSensitivity: DestinationCaseSensitivity;
+    readonly canonicalOutput: string;
+  }> {
     const { canonicalOutput } = await this.#resolveDestination(outputRoot);
     const existing = await lstat(canonicalOutput).catch((cause: unknown) => {
       if (cause instanceof Error && "code" in cause && cause.code === "ENOENT")
@@ -192,6 +195,7 @@ export class SafeOutputTree {
         parent,
         options.resourceScope,
       ),
+      canonicalOutput,
     };
   }
 

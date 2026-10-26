@@ -212,6 +212,9 @@ it("rejects ASCII case collisions in case-insensitive registries while leaving n
   registry.add("ß.txt", "file");
   expect(() => registry.add("SS.txt", "file")).not.toThrow();
 
+  registry.add("straße.txt", "file");
+  expect(() => registry.add("strasse.txt", "file")).not.toThrow();
+
   const unresolved = destinationCaseCollisions([
     "σ.txt",
     "ς.txt",
@@ -219,6 +222,8 @@ it("rejects ASCII case collisions in case-insensitive registries while leaving n
     "𐐨.txt",
     "ß.txt",
     "SS.txt",
+    "straße.txt",
+    "strasse.txt",
   ]);
   expect(unresolved.get("ς.txt")?.[0]).toMatchObject({
     prefix: "ς.txt",
@@ -228,5 +233,12 @@ it("rejects ASCII case collisions in case-insensitive registries while leaving n
     prefix: "𐐨.txt",
     other: "𐐀.txt",
   });
-  expect(unresolved.get("ß.txt")).toBeUndefined();
+  expect(unresolved.get("ß.txt")?.[0]).toMatchObject({
+    prefix: "ß.txt",
+    other: "SS.txt",
+  });
+  expect(unresolved.get("straße.txt")?.[0]).toMatchObject({
+    prefix: "straße.txt",
+    other: "strasse.txt",
+  });
 });

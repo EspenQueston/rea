@@ -329,12 +329,14 @@ const materializeSelection = async ({
     const platform = input.platform ?? process.platform;
     let destinationCaseSensitivity: DestinationCaseSensitivity =
       "case-sensitive";
+    let resolvedOutputRoot = absoluteCallerPath(input.outputRoot);
     if (dryRun) {
       const destination = await SafeOutputTree.checkDestination(
         input.outputRoot,
         { resourceScope: input.resourceScope },
       );
       destinationCaseSensitivity = destination.caseSensitivity;
+      resolvedOutputRoot = destination.canonicalOutput ?? resolvedOutputRoot;
     } else {
       try {
         output = await SafeOutputTree.create(input.outputRoot, platform);
@@ -357,7 +359,7 @@ const materializeSelection = async ({
         zipSource !== undefined || reader.prepareContainer !== undefined;
       unresolvedPlan = await planSelectedEntries({
         reader,
-        outputRoot: input.outputRoot,
+        outputRoot: resolvedOutputRoot,
         platform,
         caseSensitivity: destinationCaseSensitivity,
         verifyContent: !containerVerified,
@@ -437,22 +439,34 @@ interface UnresolvedDryRunPlan {
 }
 
 const MAX_PORTABLE_NAME_BYTES = 255;
-const MAX_PORTABLE_PATH_BYTES = 4095;
+const MAX_PORTABLE_POSIX_PATH_BYTES = 1023;
+const MAX_PORTABLE_WIN32_PATH_LENGTH = 259;
 
 const overLimitDestinationReason = (
-  outputRoot: string,
+  resolvedOutputRoot: string,
   destinationPath: string,
+  platform: NodeJS.Platform,
 ): string | undefined => {
   const segments = destinationPath.split("/");
   for (const segment of segments) {
     const byteLength = Buffer.byteLength(segment, "utf8");
-    if (byteLength > MAX_PORTABLE_NAME_BYTES)
+    if (
+      byteLength > MAX_PORTABLE_NAME_BYTES ||
+      segment.length > MAX_PORTABLE_NAME_BYTES
+    )
       return `Destination filesystem component length limit (such as 255-byte NAME_MAX) is not observed without creating files; segment of ${String(byteLength)} UTF-8 bytes in ${destinationPath} remains unresolved during dry-run.`;
   }
-  const fullDestination = join(absoluteCallerPath(outputRoot), ...segments);
+  const fullDestination = join(resolvedOutputRoot, ...segments);
+  if (
+    platform === "win32" &&
+    (fullDestination.length > MAX_PORTABLE_WIN32_PATH_LENGTH ||
+      Buffer.byteLength(fullDestination, "utf8") >
+        MAX_PORTABLE_WIN32_PATH_LENGTH)
+  )
+    return `Destination filesystem path length limit (such as 260-character Windows MAX_PATH) is not observed without creating files; destination path of ${String(fullDestination.length)} UTF-16 code units for ${destinationPath} remains unresolved during dry-run.`;
   const fullBytes = Buffer.byteLength(fullDestination, "utf8");
-  if (fullBytes > MAX_PORTABLE_PATH_BYTES)
-    return `Destination filesystem path length limit (such as 4095-byte PATH_MAX) is not observed without creating files; destination path of ${String(fullBytes)} UTF-8 bytes for ${destinationPath} remains unresolved during dry-run.`;
+  if (fullBytes > MAX_PORTABLE_POSIX_PATH_BYTES)
+    return `Destination filesystem path length limit (such as 1024-byte Darwin/portable PATH_MAX) is not observed without creating files; destination path of ${String(fullBytes)} UTF-8 bytes for ${destinationPath} remains unresolved during dry-run.`;
   return undefined;
 };
 
@@ -582,6 +596,7 @@ const planSelectedEntries = async ({
     const overLimitReason = overLimitDestinationReason(
       outputRoot,
       destinationPath,
+      platform,
     );
     if (overLimitReason !== undefined) {
       unresolvedByOccurrenceId.set(

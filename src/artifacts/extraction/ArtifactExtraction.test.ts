@@ -664,8 +664,8 @@ it("refuses case-folding file and parent directory collisions in dry-run mode wh
   const checkDestinationSpy = vi
     .spyOn(SafeOutputTree, "checkDestination")
     .mockImplementation(async (outputRoot: string) => {
-      await realCheckDestination(outputRoot);
-      return { caseSensitivity: "case-insensitive" };
+      const checked = await realCheckDestination(outputRoot);
+      return { ...checked, caseSensitivity: "case-insensitive" };
     });
   try {
     const fileOut = join(directory, "file-case-out");
@@ -702,6 +702,8 @@ it("refuses case-folding file and parent directory collisions in dry-run mode wh
     await nonAsciiWriter.add("ς.txt", new TextReader("final"));
     await nonAsciiWriter.add("𐐀.txt", new TextReader("deseret-upper"));
     await nonAsciiWriter.add("𐐨.txt", new TextReader("deseret-lower"));
+    await nonAsciiWriter.add("straße.txt", new TextReader("sharp-s"));
+    await nonAsciiWriter.add("strasse.txt", new TextReader("double-s"));
     await writeFile(nonAsciiZip, Buffer.from(await nonAsciiWriter.close()));
     const nonAsciiOut = join(directory, "non-ascii-case-out");
     const nonAsciiPlan = await extractArtifact({
@@ -712,7 +714,7 @@ it("refuses case-folding file and parent directory collisions in dry-run mode wh
     expect(nonAsciiPlan.artifacts).toEqual([]);
     expect(nonAsciiPlan.plan?.totals).toMatchObject({
       planned_files: 0,
-      unresolved_entries: 4,
+      unresolved_entries: 6,
       observed_bytes_estimate: 0,
     });
     expect(
@@ -721,6 +723,8 @@ it("refuses case-folding file and parent directory collisions in dry-run mode wh
         status,
       })),
     ).toEqual([
+      { logical_path: "strasse.txt", status: "unresolved" },
+      { logical_path: "straße.txt", status: "unresolved" },
       { logical_path: "ς.txt", status: "unresolved" },
       { logical_path: "σ.txt", status: "unresolved" },
       { logical_path: "𐐀.txt", status: "unresolved" },
@@ -997,14 +1001,19 @@ it("rejects directory source content modified between inventory and dry-run plan
   }
 });
 
-it("classifies over-limit destination path segments as unresolved in dry-run plans", async () => {
+it("classifies over-limit destination path segments and resolved symlink paths as unresolved in dry-run plans", async () => {
   const directory = await createTestTempDirectory(
     "rea-extraction-dry-run-over-limit-segment-",
   );
   const archive = join(directory, "over-limit.zip");
   const overLimitName = `${"a".repeat(256)}.txt`;
+  const overLimitNestedPath = Array.from(
+    { length: 5 },
+    (_, index) => `${String(index)}-${"b".repeat(210)}`,
+  ).join("/");
   const writer = new ZipWriter(new Uint8ArrayWriter());
   await writer.add(overLimitName, new TextReader("payload"));
+  await writer.add(overLimitNestedPath, new TextReader("nested"));
   await writer.add("short.txt", new TextReader("ok"));
   await writeFile(archive, Buffer.from(await writer.close()));
   const resourceScope = new ArtifactResourceScope();
@@ -1024,7 +1033,7 @@ it("classifies over-limit destination path segments as unresolved in dry-run pla
     expect(planned.plan?.totals).toMatchObject({
       planned_files: 1,
       unsupported_entries: 0,
-      unresolved_entries: 1,
+      unresolved_entries: 2,
       observed_bytes_estimate: 2,
       declared_bytes_estimate: 2,
     });
@@ -1034,6 +1043,7 @@ it("classifies over-limit destination path segments as unresolved in dry-run pla
         status,
       })),
     ).toEqual([
+      { logical_path: overLimitNestedPath, status: "unresolved" },
       { logical_path: overLimitName, status: "unresolved" },
       { logical_path: "short.txt", status: "planned" },
     ]);
@@ -1041,6 +1051,38 @@ it("classifies over-limit destination path segments as unresolved in dry-run pla
       "Destination filesystem component and path length limits (such as 255-byte NAME_MAX) cannot be verified without creating files; over-limit paths remain unresolved in the dry-run plan.",
     );
     await expect(stat(outputRoot)).rejects.toMatchObject({ code: "ENOENT" });
+
+    if (process.platform !== "win32") {
+      const longParent = join(
+        directory,
+        ...Array.from(
+          { length: 4 },
+          (_, index) => `real-${String(index)}-${"d".repeat(180)}`,
+        ),
+      );
+      await mkdir(longParent, { recursive: true });
+      const shortSymlinkParent = join(directory, "s");
+      await symlink(longParent, shortSymlinkParent);
+      const symlinkArchive = join(directory, "symlink-length.zip");
+      const borderlineEntry = `${"e".repeat(200)}/${"f".repeat(150)}.txt`;
+      const symlinkWriter = new ZipWriter(new Uint8ArrayWriter());
+      await symlinkWriter.add(borderlineEntry, new TextReader("deep"));
+      await writeFile(symlinkArchive, Buffer.from(await symlinkWriter.close()));
+      const symlinkOutputRoot = join(shortSymlinkParent, "out");
+      const symlinkPlan = await extractArtifact({
+        ...zipInput(symlinkArchive, symlinkOutputRoot, resourceScope),
+        dryRun: true,
+      });
+      expect(symlinkPlan.plan?.entries).toEqual([
+        expect.objectContaining({
+          logical_path: borderlineEntry,
+          status: "unresolved",
+        }),
+      ]);
+      await expect(stat(symlinkOutputRoot)).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+    }
   } finally {
     await resourceScope.close();
   }

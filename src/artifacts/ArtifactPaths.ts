@@ -77,9 +77,7 @@ export const normalizeArtifactPath = (input: string): string => {
  * distinct unless destination case-folding rules are enabled.
  */
 export type DestinationCaseSensitivity =
-  | "case-sensitive"
-  | "case-insensitive"
-  | "unknown";
+  "case-sensitive" | "case-insensitive" | "unknown";
 
 export class ArtifactPathRegistry {
   readonly #root: PathTrieNode = {
@@ -177,24 +175,19 @@ const asciiCaseFold = (part: string): string =>
     String.fromCharCode(char.charCodeAt(0) + 0x20),
   );
 
-const foldUnicodeCodePoint = (char: string): string => {
-  const upper = char.toUpperCase();
-  const singleUpper = [...upper].length === 1 ? upper : char;
-  const lower = singleUpper.toLowerCase();
-  return [...lower].length === 1 ? lower : singleUpper;
-};
-
 /**
- * Fold a path segment using 1-to-1 simple Unicode case mapping without
- * 1-to-many expansion. Used after an OS `EEXIST` failure to name the colliding
- * directory entry, and in dry-run planning to detect non-ASCII or unknown-mount
- * case folds whose destination table behavior is not observed without disk I/O.
+ * Fold a path segment across 1-to-1 and multi-code-point Unicode case
+ * mappings. Used after an OS `EEXIST` failure to name the colliding directory
+ * entry, and in dry-run planning to detect non-ASCII or unknown-mount case
+ * folds whose destination table behavior is not observed without disk I/O.
  */
-const unicodeCaseFold = (part: string): string => {
-  let folded = "";
-  for (const char of part) folded += foldUnicodeCodePoint(char);
-  return folded;
-};
+const unicodeCaseFold = (part: string): string =>
+  part
+    .toUpperCase()
+    .toLowerCase()
+    .toUpperCase()
+    .toLowerCase()
+    .replace(/i\u0307/gu, "i");
 
 /**
  * Record English (en-US) Unicode case collisions on each affected occurrence.
