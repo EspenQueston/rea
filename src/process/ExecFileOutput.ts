@@ -257,9 +257,9 @@ export const execFileBytes = (
       );
     } catch (error) {
       // Node throws spawn errors other than EACCES, EAGAIN, EMFILE, ENFILE and
-      // ENOENT (for example ENOTDIR or EPERM) synchronously. No process
-      // started, so admit the same empty capture an asynchronous spawn
-      // failure carries; argument validation errors stay unadmitted.
+      // ENOENT (for example ENOTDIR, EPERM or ENOMEM) synchronously. No
+      // process started, so admit the same empty capture an asynchronous
+      // spawn failure carries; argument validation errors stay unadmitted.
       if (
         error instanceof Error &&
         admitSpawnFailure(error, command, arguments_)

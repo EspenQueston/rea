@@ -36,8 +36,9 @@ says the host could not start adb and asks for a retry after freeing
 processes or descriptors, without blaming `REA_ADB_PATH`. When adb never
 started, the refusal diagnostics record the spawn error as `filesystem_error`
 with `path_source`, never as an `exit_code`. A device operation whose adb
-cannot start for lack of host capacity reports a retryable `capacity`
-resource constraint rather than an adb protocol failure.
+cannot start for lack of host capacity, at its version probe or at a later
+adb command, reports a retryable `capacity` resource constraint rather than a
+capability refusal or an adb protocol failure.
 The `binary_session` inventory uses the same bounded client-version probe; it
 does not query devices, start the adb server, or establish that a requested
 serial is reachable. Device state is checked by each device operation.

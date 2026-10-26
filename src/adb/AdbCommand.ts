@@ -95,6 +95,25 @@ export interface AdbCommandTarget {
 }
 
 /** Run one bounded adb invocation and keep its exact failure shape. */
+/** The host, not adb, lacked process, memory or descriptor capacity to start it. */
+export const adbSpawnCapacityError = (
+  operation: string,
+  spawnError: string,
+  cause: unknown,
+): AnalysisResourceConstraintError =>
+  new AnalysisResourceConstraintError(
+    operation,
+    "capacity",
+    `The host could not start adb (${spawnError}) for ${operation}`,
+    { spawn_error: spawnError },
+    {
+      cause,
+      retryable: true,
+      remediationAction:
+        "The host ran out of process, memory or file-descriptor capacity. Close unused processes or files, or raise the process or open-file limit of the REA process, then retry.",
+    },
+  );
+
 export const runAdbCapture = async (
   operation: string,
   target: AdbCommandTarget,
@@ -213,20 +232,7 @@ export const runAdbCapture = async (
       );
     // The host, not adb, lacked capacity to start it.
     if (spawnCapacityExhausted(failure))
-      return err(
-        new AnalysisResourceConstraintError(
-          operation,
-          "capacity",
-          `The host could not start adb (${String(failure.code)}) for ${operation}`,
-          { spawn_error: String(failure.code) },
-          {
-            cause,
-            retryable: true,
-            remediationAction:
-              "The host ran out of process, memory or file-descriptor capacity. Close unused processes or files, or raise the process or open-file limit of the REA process, then retry.",
-          },
-        ),
-      );
+      return err(adbSpawnCapacityError(operation, String(failure.code), cause));
     return err(
       new AdbProtocolError(
         failure.spawnFailed === true
