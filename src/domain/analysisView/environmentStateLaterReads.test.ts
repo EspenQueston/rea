@@ -29,6 +29,16 @@ describe("deletes the application answers for afterwards", () => {
     });
   });
 
+  it("learns on the item view the flag later reads set on a soft-deleted contact", () => {
+    const item = (rows: readonly TimedCaptureRow[]) =>
+      viewOf(rows).views.find((view) => view.tool === "get_contacts_by_id");
+    expect(item(SOFT_DELETED_ROWS)).toMatchObject({
+      shape: "item",
+      deleted_flag: "deleted",
+    });
+    expect(item(MAX_SIZE_ROWS)).not.toHaveProperty("deleted_flag");
+  });
+
   it.each([
     [{ deleted: true }, true],
     [{ isDeleted: true }, true],

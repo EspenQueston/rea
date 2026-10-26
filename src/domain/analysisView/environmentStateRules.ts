@@ -151,6 +151,8 @@ export type StateItemView = EntityViewPlan &
   ReplayedReads & {
     readonly shape: "item";
     readonly envelope_ordinal: number;
+    /** The member later reads set `true` on an entity the application soft-deleted and still answers by id. */
+    readonly deleted_flag?: (typeof DELETED_FLAGS)[number] | undefined;
   };
 
 /** A query parameter that asks for some fields only (`fields`, `fields[...]`, `select`, `$select`). */
@@ -190,12 +192,12 @@ export type StateListView = EntityViewPlan &
   };
 
 /** Members an application sets `true` on an entity it has soft-deleted but still answers for by id. */
-const DELETED_FLAGS = ["deleted", "isDeleted", "is_deleted"];
+export const DELETED_FLAGS = ["deleted", "isDeleted", "is_deleted"] as const;
 
 /** The member an item read's object sets `true` to mark the entity soft-deleted, if it does. */
 export const deletedFlag = (
   object: JsonValue | undefined,
-): string | undefined =>
+): (typeof DELETED_FLAGS)[number] | undefined =>
   isObject(object)
     ? DELETED_FLAGS.find((name) => ownMember(object, name) === true)
     : undefined;

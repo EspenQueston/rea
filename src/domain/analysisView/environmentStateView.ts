@@ -9,6 +9,7 @@ import type {
   UnsignedAnalysisView,
 } from "./analysisView.js";
 import { EnvironmentStateAccumulator } from "./EnvironmentStateAccumulator.js";
+import { DELETED_FLAGS } from "./environmentStateRules.js";
 import { isClockZone } from "./environmentStateWriteValues.js";
 import { CLOCK_PATTERNS } from "./environmentStateWriteClockFormats.js";
 import {
@@ -167,6 +168,12 @@ const viewSchema = z.discriminatedUnion("shape", [
       .nonnegative()
       .describe(
         "Record whose response, with the entity object replaced, every item response shares.",
+      ),
+    deleted_flag: z
+      .enum(DELETED_FLAGS)
+      .optional()
+      .describe(
+        "Member later reads set true on an entity the application soft-deleted.",
       ),
     ...replayedReadFields,
   }),
