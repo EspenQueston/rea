@@ -43,6 +43,18 @@ const TRIMMED = {
   trimmed: true,
 } as const;
 
+/** A capture row whose response leaves out one field. */
+const omitting = (row: TimedCaptureRow, field: string): TimedCaptureRow => {
+  const [method, path, body, ...rest] = row;
+  if (!isObject(body)) throw new Error("Expected an object response");
+  return [
+    method,
+    path,
+    Object.fromEntries(Object.entries(body).filter(([key]) => key !== field)),
+    ...rest,
+  ];
+};
+
 describe("later creates must retain the learned value rules", () => {
   it("withholds a later create whose captured composed address is null", () => {
     const snapshot = null;
@@ -64,6 +76,33 @@ describe("later creates must retain the learned value rules", () => {
       reason: "unexplained-change",
     });
   });
+
+  it.each([
+    {
+      name: "composed snapshot address",
+      tool: "post_bookmarks",
+      rows: (): TimedCaptureRow[] =>
+        BOOKMARK_ROWS.slice(0, 6).map((row, index) =>
+          index === 5 ? omitting(row, "web_archive_snapshot_url") : row,
+        ),
+    },
+    {
+      name: "templated id text",
+      tool: "post_folders",
+      rows: (): TimedCaptureRow[] =>
+        mirrored((id) =>
+          id === 1656166745726976 ? {} : { idText: String(id) },
+        ),
+    },
+  ])(
+    "withholds a later create whose response omits the $name the plan rebuilds",
+    ({ tool, rows }) => {
+      expect(planOf(rows(), tool)).toMatchObject({
+        served: false,
+        reason: "unexplained-change",
+      });
+    },
+  );
 
   it.each([
     {
@@ -693,6 +732,31 @@ describe("slug spellings across updates", () => {
         [
           category(1, "Quay Notes", "quay-notes"),
           category(2, "Tide & Wind", "tide-and-wind"),
+        ],
+      );
+      expect(
+        planOf(rows, `${method.toLowerCase()}_categories_by_id`),
+      ).toMatchObject({
+        served: true,
+        rules: expect.arrayContaining([
+          { field: "slug", rule: "slug", from: "name", ampersand: "and" },
+        ]),
+      });
+    },
+  );
+
+  it.each(["PATCH", "PUT"] as const)(
+    "keeps a slug that spells & as the word when a later %s renames to a name without one",
+    (method) => {
+      const rows = renameRows(
+        method,
+        [
+          category(1, "Harbour Notes", "harbour-notes"),
+          category(2, "Lamp Oil", "lamp-oil"),
+        ],
+        [
+          category(1, "Tide & Wind", "tide-and-wind"),
+          category(2, "Quay Notes", "quay-notes"),
         ],
       );
       expect(

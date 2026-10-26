@@ -778,7 +778,8 @@ unexplained, such as an address whose two parts were the same text, takes the
 `composed` rule a later create learns for it when that rule spells the first
 create's value too, and the first create's body contract is learned again with
 it. A `composed` string or `template` a later create's answer shows otherwise
-is `unexplained-change`. A create whose observed reference differs from the
+or leaves out is `unexplained-change`. A create whose observed reference
+differs from the
 entity the plan rebuilds, whether or not it sent the reference member, is
 `unexplained-change`. So is a create that left out an echoed member yet shows a
 value different from the learned default.

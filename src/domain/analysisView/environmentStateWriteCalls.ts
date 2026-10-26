@@ -162,14 +162,16 @@ export const contradictsEarlierCalls = (
   const ruled = new Map(draft.plan.rules.map((rule) => [rule.field, rule]));
   return rules.some((rule) => {
     const held = ruled.get(rule.field);
-    // A slug that echoes, or that spells `&` otherwise than the plan's, must reproduce every earlier call.
+    // A slug that echoes, or that spells `&` as the word where the plan's drops it, must reproduce every earlier call; one that slugged no `&` keeps the plan's spelling.
     if (
       !(unsentChange(rule) || regenerates(rule) || rule.rule === "clock") ||
       (held !== undefined &&
         !(
           rule.rule === "slug" &&
           (held.rule === "echo" ||
-            (held.rule === "slug" && held.ampersand !== rule.ampersand))
+            (held.rule === "slug" &&
+              held.ampersand === undefined &&
+              rule.ampersand !== undefined))
         ))
     )
       return false;

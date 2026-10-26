@@ -544,16 +544,13 @@ const followsCreateRules = (
   draft.plan.rules.every((rule) => {
     const value = ownMember(created.fields, rule.field);
     const exemplar = ownMember(draft.observed, rule.field);
-    if (
-      rule.rule === "composed" ||
-      rule.rule === "template" ||
-      rule.rule === "reference"
-    )
+    // Serving always rebuilds a composed or templated field, so a response that leaves it out contradicts the plan.
+    if (rule.rule === "composed" || rule.rule === "template")
+      return value === ownMember(created.observed, rule.field);
+    if (rule.rule === "reference")
       return (
         !Object.hasOwn(created.observed, rule.field) ||
-        value === ownMember(created.observed, rule.field) ||
-        (rule.rule === "reference" &&
-          same(value, ownMember(created.observed, rule.field)))
+        same(value, ownMember(created.observed, rule.field))
       );
     if (rule.rule === "clock")
       return (
