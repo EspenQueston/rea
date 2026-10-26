@@ -637,6 +637,13 @@ it("reports exhausted host capacity at the version probe as a retryable constrai
     retryable: true,
     message: expect.stringContaining("EMFILE") as unknown,
     remediation: { action: expect.stringContaining("then retry") as unknown },
+    details: {
+      diagnostics: {
+        selected_binary: binary,
+        path_source: "environment",
+        filesystem_error: "EMFILE",
+      },
+    },
   });
 });
 

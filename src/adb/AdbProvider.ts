@@ -1349,6 +1349,7 @@ export class AdbProvider {
             request.operation,
             String(cause.diagnostics.filesystem_error),
             cause,
+            cause.diagnostics,
           ),
         );
       if (cause instanceof AdbConfigurationFailure)

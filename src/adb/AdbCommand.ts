@@ -7,6 +7,7 @@ import {
 } from "../domain/analysisErrorCore.js";
 import type { AnalysisError } from "../domain/analysisErrorBase.js";
 import { fixedAllowanceOptions } from "../domain/fixedAllowanceRemediation.js";
+import type { JsonValue } from "../domain/jsonValue.js";
 import { err, ok, type Result } from "../domain/result.js";
 import {
   execFileBytes,
@@ -94,12 +95,12 @@ export interface AdbCommandTarget {
   readonly localPath?: string;
 }
 
-/** Run one bounded adb invocation and keep its exact failure shape. */
 /** The host, not adb, lacked process, memory or descriptor capacity to start it. */
 export const adbSpawnCapacityError = (
   operation: string,
   spawnError: string,
   cause: unknown,
+  diagnostics?: Readonly<Record<string, JsonValue>>,
 ): AnalysisResourceConstraintError =>
   new AnalysisResourceConstraintError(
     operation,
@@ -108,12 +109,14 @@ export const adbSpawnCapacityError = (
     { spawn_error: spawnError },
     {
       cause,
+      diagnostics,
       retryable: true,
       remediationAction:
         "The host ran out of process, memory or file-descriptor capacity. Close unused processes or files, or raise the process or open-file limit of the REA process, then retry.",
     },
   );
 
+/** Run one bounded adb invocation and keep its exact failure shape. */
 export const runAdbCapture = async (
   operation: string,
   target: AdbCommandTarget,
