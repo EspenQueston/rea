@@ -684,6 +684,51 @@ it("refuses case-folding file and parent directory collisions in dry-run mode wh
       "Destination filesystem cannot store both dir and Dir; inventory retains both logical names.",
     );
     await expect(stat(parentOut)).rejects.toMatchObject({ code: "ENOENT" });
+
+    const sigmaZip = join(directory, "sigma-case.zip");
+    const sigmaWriter = new ZipWriter(new Uint8ArrayWriter());
+    await sigmaWriter.add("σ.txt", new TextReader("medial"));
+    await sigmaWriter.add("ς.txt", new TextReader("final"));
+    await writeFile(sigmaZip, Buffer.from(await sigmaWriter.close()));
+    const sigmaOut = join(directory, "sigma-case-out");
+    const sigmaError = await extractArtifact({
+      ...zipInput(sigmaZip, sigmaOut, resourceScope),
+      dryRun: true,
+      platform: "win32",
+    }).catch((cause: unknown) => cause);
+    expect(sigmaError).toBeInstanceOf(DestinationCaseCollisionFailure);
+    expect((sigmaError as DestinationCaseCollisionFailure).message).toBe(
+      "Destination filesystem cannot store both ς.txt and σ.txt; inventory retains both logical names.",
+    );
+    await expect(stat(sigmaOut)).rejects.toMatchObject({ code: "ENOENT" });
+
+    const emptyMount = join(directory, "empty-mount");
+    await mkdir(emptyMount, { recursive: true });
+    const unknownOut = join(emptyMount, "out");
+    const unknownPlan = await extractArtifact({
+      ...zipInput(fileCaseZip, unknownOut, resourceScope),
+      dryRun: true,
+      platform: "linux",
+    });
+    expect(unknownPlan.artifacts).toEqual([]);
+    expect(unknownPlan.plan?.totals).toMatchObject({
+      planned_files: 0,
+      unresolved_entries: 2,
+      observed_bytes_estimate: 0,
+    });
+    expect(
+      unknownPlan.plan?.entries.map(({ logical_path, status }) => ({
+        logical_path,
+        status,
+      })),
+    ).toEqual([
+      { logical_path: "Foo.txt", status: "unresolved" },
+      { logical_path: "foo.txt", status: "unresolved" },
+    ]);
+    expect(unknownPlan.limitations).toContain(
+      "Destination directory case sensitivity is unknown because the destination parent has no observable cased entry; case-colliding paths remain unresolved in the dry-run plan.",
+    );
+    await expect(stat(unknownOut)).rejects.toMatchObject({ code: "ENOENT" });
   } finally {
     await resourceScope.close();
   }

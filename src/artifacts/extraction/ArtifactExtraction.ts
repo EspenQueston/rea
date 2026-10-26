@@ -19,7 +19,9 @@ import { AsarArtifactReader } from "../AsarArtifactReader.js";
 import { GodotPckArtifactReader } from "../GodotPckArtifactReader.js";
 import {
   ArtifactPathRegistry,
+  destinationCaseCollisions,
   normalizeArtifactPath,
+  type DestinationCaseSensitivity,
 } from "../ArtifactPaths.js";
 import {
   ArtifactReaderFailure,
@@ -322,13 +324,14 @@ const materializeSelection = async ({
   try {
     await reader.prepareContainer?.(inventory.manifest.root_sha256, signal);
     const platform = input.platform ?? process.platform;
-    let destinationCaseInsensitive = false;
+    let destinationCaseSensitivity: DestinationCaseSensitivity =
+      "case-sensitive";
     if (dryRun) {
       const destination = await SafeOutputTree.checkDestination(
         input.outputRoot,
         platform,
       );
-      destinationCaseInsensitive = destination.caseInsensitive;
+      destinationCaseSensitivity = destination.caseSensitivity;
     } else {
       try {
         output = await SafeOutputTree.create(input.outputRoot, platform);
@@ -342,11 +345,12 @@ const materializeSelection = async ({
       status: inventory.coverage.status,
       limitations: inventory.limitations,
     });
+    let unresolvedCaseReasons: ReadonlyMap<string, string> = new Map();
     if (dryRun) {
-      await planSelectedEntries({
+      unresolvedCaseReasons = await planSelectedEntries({
         reader,
         platform,
-        caseInsensitive: destinationCaseInsensitive,
+        caseSensitivity: destinationCaseSensitivity,
         byPath,
         extracted,
         traversal,
@@ -391,6 +395,7 @@ const materializeSelection = async ({
       extracted,
       traversal.snapshot(),
       reader.provenance(),
+      unresolvedCaseReasons,
     );
     if (output !== undefined) await output.commit(signal);
     return completed;
@@ -419,7 +424,7 @@ const materializeSelection = async ({
 const planSelectedEntries = async ({
   reader,
   platform,
-  caseInsensitive,
+  caseSensitivity,
   byPath,
   extracted,
   traversal,
@@ -427,16 +432,21 @@ const planSelectedEntries = async ({
 }: {
   readonly reader: ArtifactReader;
   readonly platform: NodeJS.Platform;
-  readonly caseInsensitive: boolean;
+  readonly caseSensitivity: DestinationCaseSensitivity;
   readonly byPath: Map<string, SelectedOccurrence>;
   readonly extracted: ExtractedOccurrence[];
   readonly traversal: ArtifactTraversalObservation;
   readonly signal: AbortSignal | undefined;
-}): Promise<void> => {
+}): Promise<ReadonlyMap<string, string>> => {
   const readerRegistry = new ArtifactPathRegistry();
   const outputRegistry = new ArtifactPathRegistry({
-    caseInsensitive,
+    caseInsensitive: caseSensitivity === "case-insensitive",
+    platform,
   });
+  const staged: {
+    readonly selectedItem: SelectedOccurrence;
+    readonly destinationPath: string;
+  }[] = [];
   for await (const entry of reader.entries(signal, traversal)) {
     const path = normalizeArtifactPath(entry.path);
     readerRegistry.add(path, entry.kind);
@@ -459,13 +469,7 @@ const planSelectedEntries = async ({
       );
     const destinationPath = normalizeDestinationPath(path, platform);
     outputRegistry.add(destinationPath, "file");
-    extracted.push({
-      artifact_id: selectedItem.node.artifact_id,
-      relative_path: destinationPath,
-      sha256: selectedItem.node.sha256,
-      bytes_written: 0,
-      created: false,
-    });
+    staged.push({ selectedItem, destinationPath });
     byPath.delete(path);
   }
   if (byPath.size > 0)
@@ -473,11 +477,38 @@ const planSelectedEntries = async ({
       "integrity",
       `Inventoried regular artifact entries were not materialized: ${[...byPath.keys()].sort(compareUnicodeCodePoints).join(", ")}`,
     );
+  const unresolvedByOccurrenceId = new Map<string, string>();
+  const unknownCollisions =
+    caseSensitivity === "unknown"
+      ? destinationCaseCollisions(
+          staged.map(({ destinationPath }) => destinationPath),
+          platform,
+        )
+      : undefined;
+  for (const { selectedItem, destinationPath } of staged) {
+    const collision = unknownCollisions?.get(destinationPath)?.[0];
+    if (collision !== undefined) {
+      unresolvedByOccurrenceId.set(
+        selectedItem.occurrence.occurrence_id,
+        `Destination directory case sensitivity is unknown without creating files; case-colliding path ${collision.prefix} vs ${collision.other} cannot be verified as distinct during dry-run.`,
+      );
+      continue;
+    }
+    extracted.push({
+      artifact_id: selectedItem.node.artifact_id,
+      relative_path: destinationPath,
+      sha256: selectedItem.node.sha256,
+      bytes_written: 0,
+      created: false,
+    });
+  }
+  return unresolvedByOccurrenceId;
 };
 
 const createDryRunPlan = (
   inventory: ArtifactInventorySnapshot,
   selected: readonly SelectedOccurrence[],
+  unresolvedCaseReasons: ReadonlyMap<string, string>,
 ): ArtifactExtractionPlan => {
   const selectedById = new Map(
     selected.map((item) => [item.occurrence.occurrence_id, item] as const),
@@ -495,6 +526,22 @@ const createDryRunPlan = (
     if (occurrence.logical_path === ".") continue;
     const selectedItem = selectedById.get(occurrence.occurrence_id);
     if (selectedItem !== undefined) {
+      const unresolvedReason = unresolvedCaseReasons.get(
+        occurrence.occurrence_id,
+      );
+      if (unresolvedReason !== undefined) {
+        unresolvedEntries += 1;
+        entries.push({
+          occurrence_id: occurrence.occurrence_id,
+          logical_path: occurrence.logical_path,
+          entry_kind: occurrence.entry_kind,
+          status: "unresolved",
+          reason: unresolvedReason,
+          observed_bytes: selectedItem.node.size,
+          declared_bytes: occurrence.declared_size,
+        });
+        continue;
+      }
       plannedFiles += 1;
       observedBytesEstimate += selectedItem.node.size;
       if (occurrence.declared_size === null) declaredBytesEstimate = null;
@@ -658,6 +705,7 @@ const createExtractionResult = (
   extracted: readonly ExtractedOccurrence[],
   traversal: ArtifactReaderTraversal,
   materializationProvenance: readonly ArtifactCommand[],
+  unresolvedCaseReasons: ReadonlyMap<string, string> = new Map(),
 ): ArtifactExtractionResult => {
   const selectedIds = new Set(
     selected.map(({ occurrence }) => occurrence.occurrence_id),
@@ -684,7 +732,7 @@ const createExtractionResult = (
     ...(dryRun
       ? {
           dry_run: true,
-          plan: createDryRunPlan(inventory, selected),
+          plan: createDryRunPlan(inventory, selected, unresolvedCaseReasons),
         }
       : {}),
     artifacts: extracted,
@@ -711,6 +759,11 @@ const createExtractionResult = (
       dryRun
         ? "Dry-run byte totals are declared and observed content-byte estimates, not guaranteed disk usage."
         : "Publication verifies the selected inventoried regular files; it does not establish complete content decoding.",
+      ...(unresolvedCaseReasons.size === 0
+        ? []
+        : [
+            "Destination directory case sensitivity is unknown because the destination parent has no observable cased entry; case-colliding paths remain unresolved in the dry-run plan.",
+          ]),
       ...(integrityContradictions.length === 0
         ? []
         : [

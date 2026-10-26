@@ -19,6 +19,7 @@ import {
   ArtifactPathRegistry,
   destinationCaseCollision,
   normalizeArtifactPath,
+  type DestinationCaseSensitivity,
 } from "./ArtifactPaths.js";
 import { absoluteCallerPath } from "../filesystem/callerPath.js";
 import { ArtifactReaderFailure } from "./ArtifactReader.js";
@@ -148,7 +149,7 @@ export class SafeOutputTree {
   static async checkDestination(
     outputRoot: string,
     platform: NodeJS.Platform = process.platform,
-  ): Promise<{ readonly caseInsensitive: boolean }> {
+  ): Promise<{ readonly caseSensitivity: DestinationCaseSensitivity }> {
     const { canonicalOutput } = await this.#resolveDestination(outputRoot);
     const existing = await lstat(canonicalOutput).catch((cause: unknown) => {
       if (cause instanceof Error && "code" in cause && cause.code === "ENOENT")
@@ -184,8 +185,10 @@ export class SafeOutputTree {
       },
     );
     return {
-      caseInsensitive:
-        platform === "win32" || (await isCaseInsensitiveDirectory(parent)),
+      caseSensitivity:
+        platform === "win32"
+          ? "case-insensitive"
+          : await observeDirectoryCaseSensitivity(parent),
     };
   }
 
@@ -266,7 +269,12 @@ export class SafeOutputTree {
         0o600,
       ).catch(async (cause: unknown) => {
         if (isAlreadyExists(cause))
-          await throwIfDestinationCaseCollision(parent.path, path, cause);
+          await throwIfDestinationCaseCollision(
+            parent.path,
+            path,
+            cause,
+            this.platform,
+          );
         throw new ArtifactReaderFailure(
           "path",
           `Could not exclusively create extraction path: ${path}`,
@@ -576,6 +584,7 @@ export class SafeOutputTree {
           parent.path,
           logicalPath,
           creation.cause,
+          this.platform,
         );
         const identity = this.#nestedDirectories.get(current);
         if (identity === undefined) throw replacedDirectory(current);
@@ -767,65 +776,43 @@ export const normalizeDestinationPath = (
   return path;
 };
 
-const toggleFirstCasedCodePoint = (value: string): string | undefined => {
+const toggleFirstAsciiLetter = (value: string): string | undefined => {
   for (let index = 0; index < value.length; index += 1) {
-    const char = value[index]!;
-    const upper = char.toLocaleUpperCase("en-US");
-    const lower = char.toLocaleLowerCase("en-US");
-    if (upper === lower) continue;
-    const toggled = char === lower ? upper : lower;
-    return `${value.slice(0, index)}${toggled}${value.slice(index + 1)}`;
+    const code = value.charCodeAt(index);
+    if (code >= 0x41 && code <= 0x5a) {
+      return `${value.slice(0, index)}${String.fromCharCode(code + 0x20)}${value.slice(index + 1)}`;
+    }
+    if (code >= 0x61 && code <= 0x7a) {
+      return `${value.slice(0, index)}${String.fromCharCode(code - 0x20)}${value.slice(index + 1)}`;
+    }
   }
   return undefined;
 };
 
 /**
  * Observe whether an existing directory resolves case-folded entry lookups to
- * the same inode without creating or modifying any filesystem entries.
+ * the same inode without creating entries or inferring from parent mounts.
  */
-const isCaseInsensitiveDirectory = async (
+const observeDirectoryCaseSensitivity = async (
   directory: string,
-): Promise<boolean> => {
-  const entries = await readdir(directory).catch((): readonly string[] => []);
+): Promise<DestinationCaseSensitivity> => {
+  const entries = await readdir(directory).catch(() => undefined);
+  if (entries === undefined) return "unknown";
   for (const entry of entries) {
-    const toggled = toggleFirstCasedCodePoint(entry);
-    if (toggled === undefined || entries.includes(toggled)) continue;
+    const toggled = toggleFirstAsciiLetter(entry);
+    if (toggled === undefined) continue;
     const [original, candidate] = await Promise.all([
       lstat(join(directory, entry), { bigint: true }).catch(() => undefined),
       lstat(join(directory, toggled), { bigint: true }).catch(() => undefined),
     ]);
     if (original === undefined) continue;
-    return (
-      candidate !== undefined &&
+    return candidate !== undefined &&
       candidate.dev === original.dev &&
       candidate.ino === original.ino
-    );
+      ? "case-insensitive"
+      : "case-sensitive";
   }
-  let current = directory;
-  for (;;) {
-    const parent = dirname(current);
-    if (parent === current) return false;
-    const segment = basename(current);
-    const toggled = toggleFirstCasedCodePoint(segment);
-    if (toggled !== undefined && toggled !== segment) {
-      const siblingEntries = await readdir(parent).catch(
-        (): readonly string[] => [],
-      );
-      if (!siblingEntries.includes(toggled)) {
-        const [original, candidate] = await Promise.all([
-          lstat(current, { bigint: true }).catch(() => undefined),
-          lstat(join(parent, toggled), { bigint: true }).catch(() => undefined),
-        ]);
-        if (original !== undefined)
-          return (
-            candidate !== undefined &&
-            candidate.dev === original.dev &&
-            candidate.ino === original.ino
-          );
-      }
-    }
-    current = parent;
-  }
+  return "unknown";
 };
 
 const abortIfNeeded = (signal?: AbortSignal): void => {
@@ -850,13 +837,13 @@ const throwIfDestinationCaseCollision = async (
   parentDirectory: string,
   logicalPath: string,
   cause?: unknown,
+  platform: NodeJS.Platform = process.platform,
 ): Promise<void> => {
   const names = await readdir(parentDirectory).catch(() => undefined);
   if (names === undefined) return;
-  const failure = destinationCaseCollision(
-    logicalPath,
-    names,
-    cause === undefined ? undefined : { cause },
-  );
+  const failure = destinationCaseCollision(logicalPath, names, {
+    ...(cause === undefined ? {} : { cause }),
+    platform,
+  });
   if (failure !== undefined) throw failure;
 };

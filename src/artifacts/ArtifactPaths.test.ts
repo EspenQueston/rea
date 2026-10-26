@@ -187,3 +187,26 @@ it.each([["app.js"], ["app.js", "App.js"], ["other.js"]])(
     expect(destinationCaseCollision("res/app.js", names)).toBeUndefined();
   },
 );
+
+it("detects Greek final-sigma destination collisions under platform case mapping without 1-to-many expansion", () => {
+  const winCollision = destinationCaseCollision("res/ς.txt", ["σ.txt"], {
+    platform: "win32",
+  });
+  expect(winCollision).toBeInstanceOf(DestinationCaseCollisionFailure);
+  expect(winCollision).toMatchObject({
+    reason: "path",
+    requestedPath: "res/ς.txt",
+    existingPath: "res/σ.txt",
+  });
+
+  const registry = new ArtifactPathRegistry({
+    caseInsensitive: true,
+    platform: "win32",
+  });
+  registry.add("σ.txt", "file");
+  expect(() => registry.add("ς.txt", "file")).toThrow(
+    DestinationCaseCollisionFailure,
+  );
+  registry.add("ß.txt", "file");
+  expect(() => registry.add("SS.txt", "file")).not.toThrow();
+});
