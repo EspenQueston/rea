@@ -23,6 +23,7 @@ import {
 import { ENTRY_BYTES, textBytes } from "./webNetworkRouteTemplates.js";
 import {
   pathValuesOf,
+  type FieldRule,
   type WriteEffect,
 } from "./environmentStateWriteRules.js";
 
@@ -399,6 +400,27 @@ export const recordedPathValues = (
     ),
   );
 };
+
+/** Whether a linked create may take any path arguments: it creates into its type's own collection, whose path has no parameters, and stores each path value in a field, so none changes where it creates. */
+export const anyLinkedSource = (
+  plan: {
+    readonly target: string | null;
+    readonly collection: string | null;
+    readonly rules: readonly FieldRule[];
+  },
+  template: string,
+): boolean =>
+  plan.target !== null &&
+  plan.collection !== null &&
+  normalizedPath(plan.collection) === plan.target &&
+  !segmentsOf(plan.target).some(isParam) &&
+  segmentsOf(template)
+    .filter(isParam)
+    .every((segment) =>
+      plan.rules.some(
+        (rule) => rule.rule === "path" && rule.from === segment.slice(1, -1),
+      ),
+    );
 
 /**
  * Whether a linked create's call sends the path values its exemplar did, each as recorded or in the

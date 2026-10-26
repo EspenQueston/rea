@@ -25,6 +25,7 @@ import {
   unenveloped,
 } from "../../domain/analysisView/environmentStateWriteStamps.js";
 import {
+  anyLinkedSource,
   linkedCollection,
   sameLinkedSource,
 } from "../../domain/analysisView/environmentStateWriteLinks.js";
@@ -453,12 +454,13 @@ const writtenCollection = (
     return ok(
       createdCollection(serving, tool, request.args, plan.target ?? ""),
     );
-  // No read showed where other path arguments create.
-  return sameLinkedSource(
-    tool.path_template,
-    exemplarPath(serving, plan),
-    pathArguments(tool, request.args),
-  )
+  // No read showed where other path arguments create, unless they cannot change it.
+  return anyLinkedSource(plan, tool.path_template) ||
+    sameLinkedSource(
+      tool.path_template,
+      exemplarPath(serving, plan),
+      pathArguments(tool, request.args),
+    )
     ? ok(linked)
     : err(
         refused(
@@ -470,7 +472,7 @@ const writtenCollection = (
 
 /**
  * The path values a create's path fields take, decoded once as the gate learned them: a linked
- * create accepts its exemplar's source only, so it takes that; another the collection this call
+ * create that accepts its exemplar's source only takes that; another the collection this call
  * selects, else its own arguments.
  */
 const createdPathValues = (
@@ -481,7 +483,8 @@ const createdPathValues = (
 ): ReadonlyMap<string, string> => {
   const { tool, plan } = request;
   const exemplar =
-    linkedCollection(plan, tool.path_template) === undefined
+    linkedCollection(plan, tool.path_template) === undefined ||
+    anyLinkedSource(plan, tool.path_template)
       ? undefined
       : exemplarPath(serving, plan);
   return (

@@ -52,4 +52,15 @@ describe("served creates that count and make values", () => {
       { title: "Restock the fog-horn spares", index: 15, identifier: "#15" },
     ]);
   });
+
+  it("creates into another project when the task stores its project and lands in one collection", () => {
+    const tasks = servedFrom(BULK_TASK_ROWS);
+    const body = objectOf(
+      tasks.answer("post_projects_tasks_bulk_by_id", {
+        id: "7",
+        body: { tasks: [{ title: "Paint the gallery rail" }] },
+      }).body,
+    );
+    expect(body["tasks"]).toMatchObject([{ project_id: 7 }]);
+  });
 });

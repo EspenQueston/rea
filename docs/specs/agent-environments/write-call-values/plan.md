@@ -8,5 +8,6 @@
    the exemplar's value.
 4. **Made objects.** The `made-object` rule and schema; its explanation, merge, later-call check, counts taken, serving
    and own members.
-5. **Bulk link.** `respondedIds` reads the object of a one-element array member.
+5. **Bulk link.** `respondedIds` reads the object of a one-element array member; `anyLinkedSource` lets a linked
+   create take any path values its plan stores in fields, in replay and serving.
 6. **Skill, tests and docs.**

@@ -33,7 +33,9 @@ id nor updated. Both are recording gaps the skill now addresses.
 - **Made objects.** A created object no other entity of the type holds otherwise, with a member the request stamped, is
   a `made-object`: stamped members take the write's clock, members holding the entity's identity take its id, counts
   go one past the largest value held objects show from a `start`, and other members stay as recorded.
-- **Linked bulk creates.** A create's answer names the id of the one object a one-element array member holds.
+- **Linked bulk creates.** A create's answer names the id of the one object a one-element array member holds. A linked
+  create accepts any path values when it creates into its type's own collection, whose path has no parameters, and
+  stores each path value in a field, as a Vikunja task stores its project: no path value changes where it creates.
 - **Skill.** Recordings read each listed object by id, up to ten per collection, before writing.
 
 Plans and views that need none of this are unchanged.

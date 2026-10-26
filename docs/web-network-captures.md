@@ -734,8 +734,10 @@ plus one trailing parameter, or to that item path plus one action segment,
 document's path, an `update` or `delete` of each entity a write at the
 collection names by id in its body, a `create` for a `POST` whose answer names
 an id (at its top level, in an object member or in the one object of a
-one-element array member) that a later item read of a type first shows, and
-otherwise `none` with reason `no-state-target`. A plan is built from the tool's first successful call: its
+one-element array member) that a later item read of a type first shows (served
+only with the path values its recorded call sent, unless it creates into the
+type's own collection, whose path has no parameters, and a `path` rule stores
+each of its path values), and otherwise `none` with reason `no-state-target`. A plan is built from the tool's first successful call: its
 request body must be a usable JSON object (as response bodies are usable), and
 the written entity must show in that call's response or in a later read before
 the next write. Each field of a created entity gets the first rule that

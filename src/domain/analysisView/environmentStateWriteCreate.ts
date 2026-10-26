@@ -26,6 +26,7 @@ import {
   restampedFields,
 } from "./environmentStateWriteStamps.js";
 import {
+  anyLinkedSource,
   recordedPathValues,
   respondedIds,
   sameLinkedSource,
@@ -723,6 +724,7 @@ const fromLinkedSource = (
   draft: WriteDraft,
   step: WriteStep,
 ): boolean =>
+  anyLinkedSource(draft.plan, step.tool.path_template) ||
   sameLinkedSource(
     step.tool.path_template,
     context.records.find(
