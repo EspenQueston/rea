@@ -1,6 +1,7 @@
 import { jsonTextCodeUnits } from "../jsonSerialization.js";
 import type { JsonValue } from "../jsonValue.js";
 import {
+  ownMember,
   isObject,
   locateItem,
   at,
@@ -109,7 +110,7 @@ export const clockEvidence = (
   draft: WriteDraft,
   field: string,
 ): JsonValue | undefined =>
-  draft.fixedWidth.get(field) ?? draft.observed?.[field];
+  draft.fixedWidth.get(field) ?? ownMember(draft.observed, field);
 
 /** A write observation plus the fields its selected read view actually covers, if any. */
 type UpdateObservation = Observed & {
@@ -605,8 +606,8 @@ export const updateEntity = (
     (rule) =>
       recordedGeneratedValue(
         rule,
-        entity.fields[rule.field],
-        after.object[rule.field],
+        ownMember(entity.fields, rule.field),
+        ownMember(after.object, rule.field),
       ),
     referencedIn(context),
   );
@@ -669,7 +670,7 @@ const fitUpdateClocks = (
       return rule;
     const format = fittedClockFormat(
       rule.format,
-      after[rule.field],
+      ownMember(after, rule.field),
       clockEvidence(draft, rule.field),
     );
     return format === undefined ? rule : { ...rule, format };
@@ -688,7 +689,10 @@ const fitUpdateClocks = (
         const held = planned.get(rule.field);
         return rule.rule === "clock" &&
           held?.rule === "clock" &&
-          matchesClockFormat(held.format, readClock(after[rule.field]))
+          matchesClockFormat(
+            held.format,
+            readClock(ownMember(after, rule.field)),
+          )
           ? { ...rule, format: held.format }
           : rule;
       }),
@@ -716,7 +720,7 @@ const contradictsGeneratedClock = (
       )
     )
       return false;
-    const previous = readClock(before[rule.field]);
+    const previous = readClock(ownMember(before, rule.field));
     if (previous === undefined) return false;
     const next = readClock(after[rule.field]);
     return (

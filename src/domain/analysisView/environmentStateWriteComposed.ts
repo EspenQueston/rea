@@ -1,5 +1,10 @@
 import type { JsonValue } from "../jsonValue.js";
-import { same, scalarText, type JsonObject } from "./environmentStateRules.js";
+import {
+  ownMember,
+  same,
+  scalarText,
+  type JsonObject,
+} from "./environmentStateRules.js";
 import { COPY_MIN_LENGTH } from "./environmentStateWriteCopies.js";
 import { GENERATED } from "./environmentStateWriteGenerated.js";
 import type { ComposedPart, FieldRule } from "./environmentStateWriteRules.js";
@@ -40,7 +45,7 @@ export const composedPartText = (
   fields: JsonObject,
 ): string | undefined => {
   if ("text" in part) return part.text;
-  const value = fields[part.from];
+  const value = ownMember(fields, part.from);
   if (part.as === "clock") return clockDigits(value, part.pattern);
   if (part.as === "value") return scalarText(value);
   return typeof value === "string" ? slugOf(value, part.ampersand) : undefined;
@@ -134,7 +139,7 @@ const ampersandWord = (
   const spelled = parts.map((part): ComposedPart => {
     if (!("as" in part) || part.as !== "slug" || part.ampersand !== undefined)
       return part;
-    const source = entity[part.from];
+    const source = ownMember(entity, part.from);
     if (typeof source === "string" && source.includes("&")) return part;
     changed = true;
     return { ...part, ampersand: "and" };
@@ -247,14 +252,14 @@ export const createdComposer = (
       zones.get(left.from) === zones.get(right.from));
   let index: CandidateIndex | undefined;
   return (field) => {
-    const text = entity[field];
+    const text = ownMember(entity, field);
     if (typeof text !== "string") return undefined;
     index ??= indexed(
       rules.flatMap((rule) =>
         SOURCES.has(rule.rule)
           ? candidatesOf(
               rule.field,
-              entity[rule.field],
+              ownMember(entity, rule.field),
               // A generated value is short and still the call's own, as a template's is.
               GENERATED.has(rule.rule) ? 1 : COPY_MIN_LENGTH,
             )
@@ -293,8 +298,8 @@ export const composedChange = (
   },
 ): FieldRule | undefined => {
   const { before, after, sent, idField } = entity;
-  const text = after[field];
-  if (typeof text !== "string" || typeof before[field] !== "string")
+  const text = ownMember(after, field);
+  if (typeof text !== "string" || typeof ownMember(before, field) !== "string")
     return undefined;
   const known = Object.keys(after).filter(
     (other) =>
@@ -307,14 +312,14 @@ export const composedChange = (
     known.flatMap((other) =>
       candidatesOf(
         other,
-        after[other],
+        ownMember(after, other),
         other === idField ? 1 : COPY_MIN_LENGTH,
       ),
     ),
   );
   const fits = segmentations(text, index, samePart).filter(
     (parts) =>
-      composedValue(parts, before) === before[field] &&
+      composedValue(parts, before) === ownMember(before, field) &&
       heldSpellings(parts, field, entity.others) !== undefined,
   );
   return fits.length === 1

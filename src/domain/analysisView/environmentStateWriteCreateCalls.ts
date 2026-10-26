@@ -1,5 +1,5 @@
 import type { JsonValue } from "../jsonValue.js";
-import { same, type JsonObject } from "./environmentStateRules.js";
+import { ownMember, same, type JsonObject } from "./environmentStateRules.js";
 import { storedKinds } from "./environmentStateWriteApply.js";
 import { fittedClockFormat } from "./environmentStateWriteClockFormats.js";
 import { composedValue } from "./environmentStateWriteComposed.js";
@@ -79,7 +79,7 @@ const showsAmpersand = (rule: FieldRule, entity: JsonObject): boolean =>
         )
       : []
   ).some((field) => {
-    const value = entity[field];
+    const value = ownMember(entity, field);
     return typeof value === "string" && value.includes("&");
   });
 
@@ -134,10 +134,13 @@ export const noteHeldAmpersands = (
     const plain = unspelled(rule);
     for (const entity of held) {
       if (!showsAmpersand(rule, entity)) continue;
+      const source =
+        rule.rule === "slug" ? ownMember(entity, rule.from) : undefined;
+      const stored = ownMember(entity, rule.field);
       const spelled = (spelling: Ampersand | undefined): string | undefined =>
         rule.rule === "slug"
-          ? typeof entity[rule.from] === "string"
-            ? slugOf(entity[rule.from] as string, spelling)
+          ? typeof source === "string"
+            ? slugOf(source, spelling)
             : undefined
           : plain.rule === "composed"
             ? composedValue(
@@ -150,10 +153,9 @@ export const noteHeldAmpersands = (
               )
             : undefined;
       // A field that spells neither way shows nothing of how its slug spells `&`; dropping it wins over the word.
-      if (spelled(undefined) === entity[rule.field])
-        ampersands.set(rule.field, "dropped");
+      if (spelled(undefined) === stored) ampersands.set(rule.field, "dropped");
       else if (
-        spelled("and") === entity[rule.field] &&
+        spelled("and") === stored &&
         ampersands.get(rule.field) !== "dropped"
       )
         ampersands.set(rule.field, "and");
@@ -255,9 +257,12 @@ const mergedField = (
   // This call echoes a member the plan's calls left out: what they stored there is its default.
   if (after !== undefined)
     return after.rule === "echo" && !calls.required.includes(field)
-      ? { rule: after, default: { member: field, value: exemplar[field]! } }
+      ? {
+          rule: after,
+          default: { member: field, value: ownMember(exemplar, field)! },
+        }
       : undefined;
-  return same(exemplar[field], later.entity[field]) ? {} : undefined;
+  return same(ownMember(exemplar, field), later.entity[field]) ? {} : undefined;
 };
 
 /**
@@ -279,7 +284,7 @@ export const mergedCreatePlan = (
   },
   earlier: EarlierEvidence = {
     kept: new Set(),
-    clockOf: (field) => exemplar[field],
+    clockOf: (field) => ownMember(exemplar, field),
   },
 ): { readonly rules: FieldRule[]; readonly body: WriteBody } | undefined => {
   const held = new Map(plan.rules.map((rule) => [rule.field, rule]));
