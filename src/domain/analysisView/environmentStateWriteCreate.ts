@@ -20,7 +20,9 @@ import {
 } from "./environmentStateWriteApply.js";
 import {
   createdToken,
+  heldObjects,
   isOpaqueToken,
+  nextMadeCount,
   restampedFields,
 } from "./environmentStateWriteStamps.js";
 import {
@@ -84,6 +86,8 @@ import {
   isUuid,
   likeGeneratedInteger,
   nextSequence,
+  readClock,
+  startedSequence,
   sequenceNumber,
   spelledLike,
 } from "./environmentStateWriteValues.js";
@@ -283,7 +287,11 @@ const refineCreate = (
           : { envelope: evidence.envelope }),
       },
     },
-    { kept: draft.kept, clockOf: (field) => clockEvidence(draft, field) },
+    {
+      kept: draft.kept,
+      clockOf: (field) => clockEvidence(draft, field),
+      startOf: (field) => draft.starts.get(field),
+    },
   );
   if (merged === undefined) return false;
   retainFixed(context, merged.body.fixed.slice(draft.plan.body!.fixed.length));
@@ -398,6 +406,13 @@ const buildCreate = (
   });
   draft.observed = evidence.observed.object;
   for (const entity of held) noteFixedWidths(draft.fixedWidth, entity);
+  const ruled = new Set(explained.rules.map((rule) => rule.field));
+  for (const [field, value] of Object.entries(evidence.observed.object)) {
+    const integer = sequenceNumber(value);
+    if (ruled.has(field) || integer === undefined) continue;
+    const next = nextInteger(held, field, value);
+    if (next === undefined || integer >= next) draft.starts.set(field, integer);
+  }
   return true;
 };
 
@@ -437,10 +452,13 @@ const followsSequences = (
         rule.scope === "type" || entity.collection === created.collection,
     );
     const next = nextSequence(
-      nextInteger(
-        fieldsOf(scope),
-        rule.field,
-        ownMember(draft.observed, rule.field),
+      startedSequence(
+        nextInteger(
+          fieldsOf(scope),
+          rule.field,
+          ownMember(draft.observed, rule.field),
+        ),
+        rule.start,
       ),
       draft.sequences.get(key),
     );
@@ -538,7 +556,52 @@ const followsCreateRules = (
     return (
       rule.rule !== "identity" || rule.generator !== "uuid" || isUuid(value)
     );
-  }) && followsSequences(context, draft, created);
+  }) &&
+  followsSequences(context, draft, created) &&
+  followsMadeObjects(context, draft, created);
+
+/** The key a made object's count is taken under in a plan's sequences. */
+const madeKey = (field: string, member: string): string => `${field}/${member}`;
+
+/** Whether a later call's made objects hold what serving makes: the exemplar's members, the entity's identity, clocks, and each count one past what held objects show or started with, past the plan's last. */
+const followsMadeObjects = (
+  context: EffectContext,
+  draft: WriteDraft,
+  created: Pick<StateEntity, "type" | "collection" | "fields">,
+): boolean =>
+  draft.plan.rules.every((rule) => {
+    if (rule.rule !== "made-object") return true;
+    const made = ownMember(created.fields, rule.field);
+    const exemplar = ownMember(draft.observed, rule.field);
+    if (!isObject(made) || !isObject(exemplar)) return false;
+    const id = scalarText(
+      ownMember(created.fields, context.idField(created.type)),
+    );
+    const held = heldObjects(
+      [
+        ...context.state.ofType(created.type),
+        ...context.startedWith(created.type),
+      ].map((entity) => entity.fields),
+      rule.field,
+    );
+    return [...new Set([...Object.keys(exemplar), ...Object.keys(made)])].every(
+      (member) => {
+        const value = ownMember(made, member);
+        if (rule.clocks.includes(member)) return readClock(value) !== undefined;
+        if (rule.own.includes(member)) return scalarText(value) === id;
+        const count = rule.counts.find((entry) => entry.member === member);
+        if (count === undefined)
+          return same(value, ownMember(exemplar, member));
+        return (
+          sequenceNumber(value) ===
+          nextSequence(
+            nextMadeCount(held, count, ownMember(exemplar, member)),
+            draft.sequences.get(madeKey(rule.field, member)),
+          )
+        );
+      },
+    );
+  });
 
 /** Widen the plan's clock formats to the trimmed spelling a later call showed, and its other clocks with them unless a value the plan saw shows them at a fixed width. */
 const fitClocks = (draft: WriteDraft, fields: JsonObject): void => {
@@ -573,6 +636,17 @@ const takeSequences = (
       ownMember(draft.observed, rule.field),
     );
     if (value !== undefined) draft.sequences.set(key, value);
+  }
+  for (const rule of draft.plan.rules) {
+    if (rule.rule !== "made-object") continue;
+    const made = ownMember(created.fields, rule.field);
+    for (const { member } of rule.counts) {
+      const value = isObject(made)
+        ? sequenceNumber(ownMember(made, member))
+        : undefined;
+      if (value !== undefined)
+        draft.sequences.set(madeKey(rule.field, member), value);
+    }
   }
 };
 

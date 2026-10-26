@@ -41,10 +41,12 @@ export type GeneratedRule =
       readonly rule: "identity";
       readonly generator: "sequence" | "uuid" | "token";
     }
+  /** One past the largest value its scope holds, and never below `start`, a value the first create took above them. */
   | {
       readonly field: string;
       readonly rule: "sequence";
       readonly scope: "collection" | "type";
+      readonly start?: number;
     }
   | { readonly field: string; readonly rule: "unique" }
   /** The value kept with each UUID at the pointers (`*` for any array index) replaced by a fresh one, as rewritten child rows are. */
@@ -70,6 +72,15 @@ export type GeneratedRule =
       readonly field: string;
       readonly rule: "held-clock";
       readonly format: ClockFormat;
+    }
+  /** An object made with the entity, which no initial entity holds: `clocks` take the write's clock, `own` the entity's identity, each of `counts` one past the largest value held objects show and never below its start; other members as the exemplar showed them. */
+  | {
+      readonly field: string;
+      readonly rule: "made-object";
+      readonly clocks: string[];
+      readonly format: ClockFormat;
+      readonly own: string[];
+      readonly counts: { readonly member: string; readonly start: number }[];
     };
 
 /** How one field of a written entity gets its value; fields no rule names keep the observed value. */

@@ -18,7 +18,10 @@ import {
 } from "../../domain/analysisView/environmentStateWriteExplain.js";
 import { callRenewal } from "../../domain/analysisView/environmentStateWriteGenerated.js";
 import {
+  heldObjects,
+  madeObjectValue,
   nestedClockValue,
+  nextMadeCount,
   unenveloped,
 } from "../../domain/analysisView/environmentStateWriteStamps.js";
 import {
@@ -38,6 +41,7 @@ import {
   seededInteger,
   seededLike,
   spelledLike,
+  startedSequence,
 } from "../../domain/analysisView/environmentStateWriteValues.js";
 import {
   ownMember,
@@ -283,16 +287,41 @@ export const generator = (
             exemplar,
             sequence(
               `${request.tool.name} ${rule.field} ${rule.scope === "collection" ? target.name : ""}`,
-              nextHeld(
-                rule.scope === "collection"
-                  ? [...target.collection, ...startedIn(target.name)]
-                  : [...ofType, ...started],
-                rule.field,
-                exemplar,
+              startedSequence(
+                nextHeld(
+                  rule.scope === "collection"
+                    ? [...target.collection, ...startedIn(target.name)]
+                    : [...ofType, ...started],
+                  rule.field,
+                  exemplar,
+                ),
+                rule.start,
               ),
             ),
           ),
         );
+      case "made-object": {
+        const clock = formatClock(write.clockMs, rule.format);
+        if (clock === undefined)
+          return err(
+            `The generated clock for ${rule.field} is outside its recorded four-digit year format.`,
+          );
+        const base = ownMember(target.observed, rule.field);
+        const held = heldObjects(
+          [...ofType, ...started].map((entity) => entity.fields),
+          rule.field,
+        );
+        return madeObjectValue(base, rule, clock, (count) =>
+          sequence(
+            `${request.tool.name} ${rule.field}/${count.member}`,
+            nextMadeCount(
+              held,
+              count,
+              isObject(base) ? ownMember(base, count.member) : undefined,
+            ),
+          ),
+        );
+      }
       case "unique":
         return unused(rule.field, (attempt) =>
           generatedIntegerDigits(exemplar) === undefined
