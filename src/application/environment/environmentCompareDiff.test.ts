@@ -828,6 +828,28 @@ describe("scalar sets of mapped ids", () => {
     ]);
     expect(compared.normalised.ids).toBe(1);
   });
+
+  it("pairs a surviving id by its mapping when a removal shifts its position", () => {
+    const map = new IdMap();
+    map.learn(101, 1);
+    map.learn(102, 2);
+    const compared = compareAnswers(
+      { status: 200, body: { kind: "json", value: { ids: [101, 102] } } },
+      { status: 200, body: { kind: "json", value: { ids: [2] } } },
+      map,
+    );
+    // 102 -> 2 survives at a new index; only the removal is reported, with no
+    // false /ids/0 difference from pairing 101 against the survivor.
+    expect(compared.differences).toEqual([
+      {
+        category: "length",
+        pointer: "/ids",
+        live: "2 items",
+        env: "1 items (1 paired)",
+      },
+    ]);
+    expect(compared.normalised.ids).toBe(1);
+  });
 });
 
 describe("ids two collections reuse", () => {
