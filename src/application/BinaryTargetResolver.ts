@@ -69,6 +69,7 @@ import {
 } from "../domain/apple/appleArchiveFormat.js";
 import { hasDiskImageSignature } from "../domain/apple/diskImageFormat.js";
 import { hasGodotPckHeader } from "../domain/godotPckFormat.js";
+import { hasUImageMagic } from "../artifacts/uimage/UImageHeader.js";
 import {
   hasZipSignature,
   locateTrailingZipArchive,
@@ -654,6 +655,7 @@ const detectArtifactFormat = async (
     );
   if (hasZipSignature(magic)) return zipRootPackageFormat(lower);
   if (hasGodotPckHeader(magic)) return "godot-pck";
+  if (hasUImageMagic(magic)) return "uimage";
   // Binary plists, including keyed archives, often use other extensions.
   if (hasBinaryPlistSignature(magic)) return "plist";
   const named = namedArtifactFormat(lower);

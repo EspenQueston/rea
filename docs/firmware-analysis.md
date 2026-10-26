@@ -292,3 +292,16 @@ Use [`inspect_devicetree`](devicetree.md) / `rea inspect-devicetree` on an
 extracted DTB for its node/property tree, reservations, hardware summary and
 selected phandle relationships. FDT v16/v17 inspection is portable and requires
 no external tool or disassembler.
+
+## Inspect U-Boot legacy uImages
+
+`inspect-artifact` / `extract-artifact` recognize a legacy uImage by its
+`0x27051956` magic and inventory it without running or decompressing it.
+The root facts record the 64-byte header (architecture, OS, type, and
+compression as raw values and names, load and entry addresses, image name,
+and timestamp) with the header and data CRC32 verified; the stored payload
+is extractable as `payload.bin`, and multi-file images additionally expose
+each sub-image as `image-<n>.bin` from the stored size table. Declared
+addresses are facts from the header, not proven entry points, and compressed
+payloads stay as stored. Intel HEX/S-record and FIT images are separate
+readers and are not covered here.

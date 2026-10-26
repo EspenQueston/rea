@@ -74,6 +74,7 @@ const subjectFormatSchema = z.enum([
   "entitlements",
   "pyinstaller",
   "node-sea",
+  "uimage",
 ]);
 const subjectBaseSchema = z.strictObject({
   name: z.string().min(1),

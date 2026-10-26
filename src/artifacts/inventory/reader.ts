@@ -9,6 +9,7 @@ import { GodotPckArtifactReader } from "../GodotPckArtifactReader.js";
 import { MachOSliceArtifactReader } from "../MachOSliceArtifactReader.js";
 import { NativeDmgArtifactReader } from "../NativeDmgArtifactReader.js";
 import { NodeSeaArtifactReader } from "../NodeSeaArtifactReader.js";
+import { UImageArtifactReader } from "../UImageArtifactReader.js";
 import { PyInstallerArtifactReader } from "../PyInstallerArtifactReader.js";
 import { ZipArtifactReader } from "../ZipArtifactReader.js";
 import type {
@@ -44,6 +45,8 @@ export const createReader = (
       return new PyInstallerArtifactReader(path, rootSource);
     case "node-sea":
       return new NodeSeaArtifactReader(path, rootSource);
+    case "uimage":
+      return new UImageArtifactReader(path, rootSource);
     case "godot-pck":
       return new GodotPckArtifactReader(path, rootSource);
     case "mach-o-universal":
@@ -84,6 +87,11 @@ export const inventoryCoverage = (
               "Node SEA inventory establishes the injected blob, flags, fuse sentinel, main script, optional code cache, snapshot, and assets. V8 snapshots and code cache are not deserialized, and the application is not executed.",
             ]
           : []),
+        ...(reader.format === "uimage"
+          ? [
+              "uImage inventory establishes the 64-byte legacy header facts and the stored payload bytes. Compressed payloads are not decompressed, and the image is not executed.",
+            ]
+          : []),
         ...traversal.limitations,
       ],
     };
@@ -107,7 +115,8 @@ export const inventoryCoverage = (
     format === "directory" ||
     format === "asar" ||
     format === "godot-pck" ||
-    format === "node-sea"
+    format === "node-sea" ||
+    format === "uimage"
   )
     return {
       coverage: { scope: "container-entries", status: "unknown" },

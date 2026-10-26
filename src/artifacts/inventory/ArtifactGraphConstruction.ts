@@ -1,4 +1,5 @@
 import { hasGodotPckHeader } from "../../domain/godotPckFormat.js";
+import { hasUImageMagic } from "../uimage/UImageHeader.js";
 import type { ArtifactClassificationEvidence } from "../ArtifactClassificationProbe.js";
 import { asarHeaderAdmissionFailure } from "../AsarHeader.js";
 import { hasDestinationPath } from "../ArtifactPaths.js";
@@ -267,9 +268,15 @@ export const rootOccurrenceFor = (
   artifact_kind:
     metadata.format === "directory" ||
     isZipPackageFormat(metadata.format) ||
-    ["asar", "godot-pck", "dmg", "pkg", "pyinstaller", "node-sea"].includes(
-      metadata.format,
-    )
+    [
+      "asar",
+      "godot-pck",
+      "dmg",
+      "pkg",
+      "pyinstaller",
+      "node-sea",
+      "uimage",
+    ].includes(metadata.format)
       ? "container"
       : artifactRoleForFormat(metadata.path, metadata.format).kind,
   artifact_format: metadata.format,
@@ -560,6 +567,7 @@ const artifactRoleForFormat = (
     };
   if (format === "plist") return { kind: "plist", format };
   if (format === "godot-pck") return { kind: "container", format };
+  if (format === "uimage") return { kind: "container", format };
   return {
     kind: ["native-addon", "dynamic-library"].includes(byPath.kind)
       ? byPath.kind
@@ -578,6 +586,7 @@ export const classifyArtifactBytes = (
   if (hasGodotPckHeader(prefix)) return "godot-pck";
   if (hasBinaryPlistSignature(prefix)) return "plist";
   if (hasXmlPlistSignature(prefix)) return "plist";
+  if (hasUImageMagic(prefix)) return "uimage";
   const fatFormat = classifyFatArtifact(evidence, fileSize);
   if (fatFormat !== null) return fatFormat;
   if (prefix.length >= 4) {

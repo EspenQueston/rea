@@ -76,6 +76,7 @@ const formatSchema = z.enum([
   "plist",
   "javascript",
   "source-map",
+  "uimage",
 ]);
 const kindSchema = z.enum(["executable", "database", "archive", "artifact"]);
 const subjectBaseSchema = z.object({
