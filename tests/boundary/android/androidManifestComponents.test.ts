@@ -121,6 +121,32 @@ it("bounds the total copied component process declarations", () => {
   expect(result.limitations.join(" ")).toContain("process declarations are capped");
 });
 
+it("enforces the process copy budget across individually valid components", () => {
+  const processName = "p".repeat(2_050);
+  const declarations = Array.from(
+    { length: ANDROID_MANIFEST_LIMITS.components },
+    (_, index) =>
+      `<service android:name=".S${String(index)}" android:process="${processName}"/>`,
+  ).join("");
+  const result = parseAndroidManifestComponents(
+    `<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="com.example"><application>${declarations}</application></manifest>`,
+    "complete",
+    "33",
+  );
+  expect(result.items).toHaveLength(ANDROID_MANIFEST_LIMITS.components);
+  expect(result.items[0]?.process).toBe(processName);
+  expect(result.items.at(-2)?.process).toBe(processName);
+  expect(result.items.at(-1)?.process).toBeNull();
+  expect(result.status).toBe("partial");
+  expect(result.limitations.join(" ")).toContain("process declarations are capped");
+  expect(
+    result.items.reduce(
+      (bytes, item) => bytes + Buffer.byteLength(item.process ?? ""),
+      0,
+    ),
+  ).toBeLessThanOrEqual(ANDROID_MANIFEST_LIMITS.processBytes);
+});
+
 it("keeps older component Evidence valid with unknown new fields", () => {
   const item = parseAndroidManifestComponents(
     '<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="com.example"><application><receiver android:name=".Receiver"/></application></manifest>',
