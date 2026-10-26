@@ -1,5 +1,6 @@
 import { expect, it } from "vitest";
 import type { WebBundleAnalysis } from "../webBundleAnalysis.js";
+import { AnalysisInputError } from "../analysisErrorCore.js";
 import {
   analysisViewRequestSchema,
   projectAnalysisView,
@@ -127,6 +128,85 @@ const query = (
   if (!result.ok) throw result.error;
   return result.value;
 };
+
+it.each([undefined, null, "https://example.test"])(
+  "preserves historical omitted and explicit target origins: %s",
+  (origin) => {
+    const report = sampleAnalysis();
+    if (origin === undefined) delete report.capture.target_origin;
+    else report.capture.target_origin = origin;
+    const parent = makeParent(report);
+    for (const selection of [
+      { kind: "summary" },
+      { kind: "web-bundle", collection: "summary" },
+      { kind: "web-bundle", collection: "endpoints", fields: ["value"] },
+    ]) {
+      const view = query(parent, selection);
+      if (origin === undefined)
+        expect(view).not.toHaveProperty("target_origin");
+      else expect(view).toHaveProperty("target_origin", origin);
+      if (
+        view.kind === "summary" ||
+        (view.kind === "web-bundle" && view.summary !== null)
+      ) {
+        if (origin === undefined)
+          expect(view.summary).not.toHaveProperty("target_origin");
+        else expect(view.summary).toHaveProperty("target_origin", origin);
+      }
+    }
+  },
+);
+
+it("counts the distinct full parent/report limitation union before bounding", () => {
+  const base = makeParent({
+    limitations: [
+      "Parent run was bounded",
+      "Script evaluation was omitted",
+      "x".repeat(100_000),
+    ],
+  });
+  const parent = {
+    ...base,
+    limitations: [...base.limitations, "Parent-only condition"],
+  };
+  for (const selection of [
+    { kind: "summary" },
+    { kind: "web-bundle", collection: "summary" },
+  ]) {
+    const view = query(parent, selection);
+    expect(view).toHaveProperty("summary.limitation_count", 4);
+    expect(view.limitations).not.toContain("x".repeat(100_000));
+    expect(view.limitations).toContainEqual(
+      expect.stringContaining("additional limitations omitted"),
+    );
+  }
+});
+
+it("retains distinct structured unknown scopes on filtered pages", () => {
+  const unknowns = [
+    {
+      dimension: "parse",
+      reason: "Source unavailable",
+      affected_script_keys: ["app.js"],
+    },
+    {
+      dimension: "parse",
+      reason: "Source unavailable",
+      affected_script_keys: ["vendor.js"],
+    },
+  ];
+  const parent = makeParent({ unknowns });
+  for (const collection of ["endpoints", "inferences"]) {
+    const view = query(parent, {
+      kind: "web-bundle",
+      collection,
+      script_keys: ["app.js"],
+      fields: ["value"],
+    });
+    expect(view).toHaveProperty("source_unknowns", unknowns);
+    expect(view).toHaveProperty("completeness.status", "partial");
+  }
+});
 
 it("pages endpoints and concatenated pages match original records exactly, preserving duplicates", () => {
   const parent = makeParent();
@@ -336,37 +416,59 @@ it("returns typed AnalysisResourceConstraintError when a single record exceeds 1
   expect(result.error.message).toContain("byte budget");
 });
 
-it("bounds multi-item page before budget overflow and sets byte_limited: true", () => {
-  const largeRecord = (index: number) => ({
-    value: `/api/${index}/` + "x".repeat(300_000),
-    mechanism: "call:fetch",
-    location: { script_key: "app.js", line: index, column: 0 },
-  });
-  const parent = makeParent({
-    observations: {
-      ...sampleAnalysis().observations,
-      endpoints: [
-        largeRecord(1),
-        largeRecord(2),
-        largeRecord(3),
-        largeRecord(4),
-      ],
-    },
-  });
+it.each([undefined, ["call:fetch"]])(
+  "counts all matching rows after a byte-limited page: %s",
+  (mechanisms) => {
+    const largeRecord = (index: number) => ({
+      value: `/api/${index}/` + "x".repeat(300_000),
+      mechanism: "call:fetch",
+      location: { script_key: "app.js", line: index, column: 0 },
+    });
+    const parent = makeParent({
+      observations: {
+        ...sampleAnalysis().observations,
+        endpoints: [
+          largeRecord(1),
+          largeRecord(2),
+          largeRecord(3),
+          largeRecord(4),
+        ],
+      },
+    });
 
-  const page = query(parent, {
-    kind: "web-bundle",
-    collection: "endpoints",
-    limit: 10,
-  });
+    const page = query(parent, {
+      kind: "web-bundle",
+      collection: "endpoints",
+      limit: 10,
+      mechanisms,
+    });
 
-  if (page.kind !== "web-bundle") throw new Error("Expected web-bundle view");
-  expect(page.byte_limited).toBe(true);
-  expect(page.items.length).toBeGreaterThan(0);
-  expect(page.items.length).toBeLessThan(4);
-  expect(page.coverage.next_offset).toBe(page.items.length);
-  expect(page.coverage.exhausted).toBe(false);
-});
+    if (page.kind !== "web-bundle") throw new Error("Expected web-bundle view");
+    expect(page.byte_limited).toBe(true);
+    expect(page.items.length).toBeGreaterThan(0);
+    expect(page.items.length).toBeLessThan(4);
+    expect(page.coverage.next_offset).toBe(page.items.length);
+    expect(page.coverage.exhausted).toBe(false);
+    expect(page.coverage.total).toBe(4);
+  },
+);
+
+it.each(["indices", "values", "script_keys", "mechanisms"])(
+  "treats an explicit empty %s selector as an empty selection",
+  (selector) => {
+    const page = query(makeParent(), {
+      kind: "web-bundle",
+      collection: "endpoints",
+      [selector]: [],
+    });
+    expect(page).toHaveProperty("items", []);
+    expect(page.coverage).toMatchObject({
+      total: 0,
+      exhausted: true,
+      next_offset: null,
+    });
+  },
+);
 
 it("rejects non-web-bundle parent operation with invalid_value", () => {
   const invalidParent: AnalysisViewParent = {
@@ -386,10 +488,11 @@ it("rejects non-web-bundle parent operation with invalid_value", () => {
 
   expect(result.ok).toBe(false);
   if (result.ok) throw new Error("Expected failure");
-  expect((result.error as any).issues[0].message).toContain(
+  if (!(result.error instanceof AnalysisInputError)) throw result.error;
+  expect(result.error.issues[0]!.message).toContain(
     "Web-bundle views require analyze_web_bundle",
   );
-  expect((result.error as any).issues[0].reason).toBe("invalid_value");
+  expect(result.error.issues[0]!.reason).toBe("invalid_value");
 });
 
 it("preserves parent artifact identity across summary and page views", () => {

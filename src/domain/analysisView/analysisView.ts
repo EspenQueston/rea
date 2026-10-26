@@ -897,6 +897,7 @@ export const webBundleSummaryViewResultSchema = z.strictObject({
   parent_operation: z.literal("analyze_web_bundle"),
   target_url: z.string(),
   target_origin: recordedBrowserOriginSchema.nullable().optional(),
+  source_unknowns: webBundleAnalysisSchema.shape.unknowns,
   summary: webBundleSummarySchema,
 });
 
@@ -907,6 +908,7 @@ export const webBundlePageViewResultSchema = z.strictObject({
   parent_operation: z.literal("analyze_web_bundle"),
   target_url: z.string(),
   target_origin: recordedBrowserOriginSchema.nullable().optional(),
+  source_unknowns: webBundleAnalysisSchema.shape.unknowns,
   view: webBundleViewRequestSchema,
   completeness: webBundleAnalysisSchema.shape.completeness,
   items: webBundleViewItemsSchema,

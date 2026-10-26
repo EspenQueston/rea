@@ -103,17 +103,14 @@ export const webBundleViewItemsSchema = z.union([
 
 const readReport = createAnalysisViewResultReader(webBundleAnalysisSchema);
 
-const choose = <T extends Record<string, JsonValue>>(
+const choose = <T extends object>(
   row: T,
-  fields: readonly string[] | undefined,
-): Record<string, JsonValue> => {
+  fields: ReadonlySet<string> | undefined,
+): Partial<T> => {
   if (fields === undefined) return { ...row };
-  const allowed = new Set(fields);
-  const out: Record<string, JsonValue> = {};
-  for (const [k, v] of Object.entries(row)) {
-    if (allowed.has(k)) {
-      out[k] = v;
-    }
+  const out: Partial<T> = {};
+  for (const key of Object.keys(row) as (keyof T)[]) {
+    if (fields.has(String(key))) out[key] = row[key];
   }
   return out;
 };
@@ -149,15 +146,24 @@ export const projectWebBundleView = (
   if (!parsed.ok) return parsed;
   const report: WebBundleAnalysis = parsed.value;
 
+  const targetOrigin =
+    report.capture.target_origin === undefined
+      ? {}
+      : { target_origin: report.capture.target_origin };
+  const sourceLimitations = [
+    ...new Set([...parent.limitations, ...report.limitations]),
+  ];
+
   const shared = {
     parent_evidence_id: parent.evidenceId,
     parent_operation: "analyze_web_bundle" as const,
     parent_digest: parent.evidenceId.slice(3),
     artifact: parent.artifact ?? null,
     target_url: report.capture.target_url,
-    target_origin: report.capture.target_origin ?? null,
+    ...targetOrigin,
+    source_unknowns: report.unknowns,
     limitations: boundedViewMessages(
-      [...parent.limitations, ...report.limitations],
+      sourceLimitations,
       parent.evidenceId,
       "limitations",
     ),
@@ -188,20 +194,22 @@ export const projectWebBundleView = (
 
   const buildSummary = (): z.output<typeof webBundleSummarySchema> => ({
     target_url: report.capture.target_url,
-    target_origin: report.capture.target_origin ?? null,
+    ...targetOrigin,
     scripts_observed: report.capture.scripts_observed,
     scripts_analyzed: report.capture.scripts_analyzed,
     counts: {
       endpoints: report.observations.endpoints.length,
       inferences: report.inferences.length,
-      endpoint_candidates: report.inferences.filter(
-        (i) => i.kind === "endpoint_candidate",
-      ).length,
+      endpoint_candidates: report.inferences.reduce(
+        (count, inference) =>
+          count + Number(inference.kind === "endpoint_candidate"),
+        0,
+      ),
       chunks: report.observations.chunks.nodes.length,
       routes: report.observations.routes.length,
     },
     completeness: report.completeness,
-    limitation_count: report.limitations.length,
+    limitation_count: sourceLimitations.length,
   });
 
   if (selected.kind === "summary") {
@@ -242,9 +250,15 @@ export const projectWebBundleView = (
       : ok(result);
   }
 
-  const deliverRows = <T extends Record<string, JsonValue>>(
-    rows: readonly { readonly row: T; readonly source_index: number }[],
-    project: (row: T, source_index: number) => Record<string, JsonValue>,
+  type Item =
+    | z.output<typeof webBundleEndpointRowSchema>
+    | z.output<typeof webBundleInferenceRowSchema>;
+  const fields =
+    view.fields === undefined ? undefined : new Set<string>(view.fields);
+  const deliverRows = <T>(
+    rows: readonly T[],
+    matches: ((row: T, source_index: number) => boolean) | undefined,
+    project: (row: T, source_index: number) => Item,
   ): Result<UnsignedAnalysisView, AnalysisError> => {
     const baseEnvelope = {
       ...shared,
@@ -272,29 +286,41 @@ export const projectWebBundleView = (
 
     if (bytes > PAGE_BYTES) return tooLarge(view.collection);
 
-    const items: Record<string, JsonValue>[] = [];
+    const items: Item[] = [];
     let byte_limited = false;
+    let total = matches === undefined ? rows.length : 0;
 
+    // Unfiltered pages use the producer's array length and direct offsets.
+    // Filtered pages count every match but only allocate selected output rows.
     for (
-      let index = view.offset;
-      index < rows.length && items.length < view.limit;
-      index++
+      let source_index =
+        matches === undefined ? Math.min(view.offset, rows.length) : 0;
+      source_index < rows.length;
+      source_index++
     ) {
-      const { row, source_index } = rows[index]!;
+      const row = rows[source_index]!;
+      if (matches !== undefined && !matches(row, source_index)) continue;
+      const ordinal = matches === undefined ? source_index : total++;
+      if (ordinal < view.offset) continue;
+      if (items.length >= view.limit || byte_limited) {
+        if (matches === undefined) break;
+        continue;
+      }
       const item = project(row, source_index);
       const addedBytes =
-        jsonValueByteLength(item, PAGE_BYTES - bytes) +
+        jsonValueByteLength(item as JsonValue, PAGE_BYTES - bytes) +
         (items.length > 0 ? 1 : 0);
       if (bytes + addedBytes > PAGE_BYTES) {
         if (items.length === 0) return tooLarge(view.collection);
         byte_limited = true;
-        break;
+        if (matches === undefined) break;
+        continue;
       }
       bytes += addedBytes;
       items.push(item);
     }
 
-    const coverage = pageViewCoverage(view.offset, items.length, rows.length);
+    const coverage = pageViewCoverage(view.offset, items.length, total);
     const result: UnsignedAnalysisView = {
       ...shared,
       kind: "web-bundle" as const,
@@ -323,27 +349,22 @@ export const projectWebBundleView = (
     const mechanisms =
       view.mechanisms !== undefined ? new Set(view.mechanisms) : undefined;
 
-    const matched: {
-      readonly row: (typeof report.observations.endpoints)[number];
-      readonly source_index: number;
-    }[] = [];
-    for (const [index, row] of report.observations.endpoints.entries()) {
-      if (indices !== undefined && !indices.has(index)) continue;
-      if (values !== undefined && !values.has(row.value)) continue;
-      if (scriptKeys !== undefined && !scriptKeys.has(row.location.script_key))
-        continue;
-      if (mechanisms !== undefined && !mechanisms.has(row.mechanism)) continue;
-      matched.push({ row, source_index: index });
-    }
-
+    const filters = [indices, values, scriptKeys, mechanisms];
     return deliverRows(
-      matched as unknown as readonly {
-        readonly row: Record<string, JsonValue>;
-        readonly source_index: number;
-      }[],
+      filters.some((filter) => filter?.size === 0)
+        ? []
+        : report.observations.endpoints,
+      filters.every((filter) => filter === undefined)
+        ? undefined
+        : (row, index) =>
+            (indices === undefined || indices.has(index)) &&
+            (values === undefined || values.has(row.value)) &&
+            (scriptKeys === undefined ||
+              scriptKeys.has(row.location.script_key)) &&
+            (mechanisms === undefined || mechanisms.has(row.mechanism)),
       (row, source_index) => ({
         source_index,
-        ...choose(row, view.fields),
+        ...choose(row, fields),
       }),
     );
   }
@@ -355,30 +376,20 @@ export const projectWebBundleView = (
   const scriptKeys =
     view.script_keys !== undefined ? new Set(view.script_keys) : undefined;
 
-  const matched: {
-    readonly row: (typeof report.inferences)[number];
-    readonly source_index: number;
-  }[] = [];
-  for (const [index, row] of report.inferences.entries()) {
-    if (indices !== undefined && !indices.has(index)) continue;
-    if (kinds !== undefined && !kinds.has(row.kind)) continue;
-    if (values !== undefined && !values.has(row.value)) continue;
-    if (
-      scriptKeys !== undefined &&
-      !row.basis.some((b) => scriptKeys.has(b.script_key))
-    )
-      continue;
-    matched.push({ row, source_index: index });
-  }
-
+  const filters = [indices, kinds, values, scriptKeys];
   return deliverRows(
-    matched as unknown as readonly {
-      readonly row: Record<string, JsonValue>;
-      readonly source_index: number;
-    }[],
+    filters.some((filter) => filter?.size === 0) ? [] : report.inferences,
+    filters.every((filter) => filter === undefined)
+      ? undefined
+      : (row, index) =>
+          (indices === undefined || indices.has(index)) &&
+          (kinds === undefined || kinds.has(row.kind)) &&
+          (values === undefined || values.has(row.value)) &&
+          (scriptKeys === undefined ||
+            row.basis.some((basis) => scriptKeys.has(basis.script_key))),
     (row, source_index) => ({
       source_index,
-      ...choose(row, view.fields),
+      ...choose(row, fields),
     }),
   );
 };
