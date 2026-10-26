@@ -8,6 +8,7 @@ import {
   isObject,
   listItems,
   listsAll,
+  markedDeleted,
   missingRequiredFields,
   pathSegmentMatches,
   renderStateEntity,
@@ -432,6 +433,9 @@ export const checkItemRead = (
     return check.body === undefined || entity === undefined
       ? undefined
       : { pass: false, targets, unheld: [] };
+  // An entity the application answers for as soft-deleted is one serving no longer holds.
+  if (markedDeleted(object))
+    return { pass: entity === undefined, targets, unheld: [] };
   if (entity === undefined) return { pass: false, targets, unheld: targets };
   // Serving refuses an entity lacking a field every recording carried, so no read can confirm one.
   if (missingRequiredFields(entity, view, check.volatile).length > 0)

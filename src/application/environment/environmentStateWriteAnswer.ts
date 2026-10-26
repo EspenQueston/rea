@@ -1,6 +1,7 @@
 import {
   createdFields,
   documentBodyProblem,
+  laterItemFields,
   optionalFields,
   renewUuids,
   updatedEntity,
@@ -373,6 +374,11 @@ export const writeAnswer = (
                 : [],
           },
           optionalFields(plan),
+          laterItemFields(
+            serving.store.state.views.values(),
+            serving.store.state.entities,
+            plan.target,
+          ),
         );
   if (!body.ok) return err(refused(tool, body.error));
   return stateAnswer(serving, { exchange, exact }, body.value ?? null, state);

@@ -438,7 +438,7 @@ export class EnvironmentStateExtraction {
     candidate: Candidate,
     pointer: string,
     recordings: readonly StateRecordFacts[],
-    replayed: Pick<StatePlan, "projected" | "late"> = {},
+    replayed: Pick<StatePlan, "projected" | "late" | "laterFields"> = {},
   ): void {
     this.#plans.push({
       ...candidate,
@@ -447,7 +447,48 @@ export class EnvironmentStateExtraction {
       latest: this.#latestPerLine(recordings),
       projected: replayed.projected ?? [],
       late: replayed.late ?? [],
+      ...(replayed.laterFields === undefined ||
+      replayed.laterFields.length === 0
+        ? {}
+        : { laterFields: replayed.laterFields }),
     });
+  }
+
+  /** The members later plain item reads show of the entity they name, in first-seen order. */
+  #laterFields(
+    tool: StateToolFacts,
+    type: string,
+    entity: { readonly field: string; readonly pointer: string },
+  ): string[] {
+    const limit = this.#initLimit(type);
+    const names: string[] = [];
+    const seen = new Set<string>();
+    if (limit === undefined) return names;
+    for (const ordinal of tool.record_ordinals) {
+      const record = this.#byOrdinal.get(ordinal);
+      if (
+        record === undefined ||
+        record.status === null ||
+        record.status < 200 ||
+        record.status >= 300 ||
+        (record.query ?? "") !== "" ||
+        this.#beforeInitLimit(record, limit)
+      )
+        continue;
+      this.#withBody(ordinal, (body) => {
+        const object =
+          body === undefined ? undefined : at(body, entity.pointer);
+        if (!isObject(object) || ownMember(object, entity.field) === undefined)
+          return;
+        for (const name of Object.keys(object))
+          if (!seen.has(name)) {
+            seen.add(name);
+            names.push(name);
+            this.#retain(ENTRY_BYTES + textBytes(name.length));
+          }
+      });
+    }
+    return names;
   }
 
   /**
@@ -555,7 +596,8 @@ export class EnvironmentStateExtraction {
     projected.sort(
       (left, right) => this.#position.get(left)! - this.#position.get(right)!,
     );
-    this.#addPlan(candidate, pointer, kept, { projected, late });
+    const laterFields = this.#laterFields(tool, type, { field, pointer });
+    this.#addPlan(candidate, pointer, kept, { projected, late, laterFields });
   }
 
   /**
@@ -779,6 +821,16 @@ export class EnvironmentStateExtraction {
       entity: (type, collection, id) =>
         this.#merged.get(entityKey(type, collection, id)),
       inCollection: (type, collection) => this.#inCollection(type, collection),
+      heldFields: (type) => {
+        const fields = new Set<string>();
+        for (const entity of this.#merged.values())
+          if (entity.type === type) {
+            for (const name of Object.keys(entity.fields)) fields.add(name);
+            for (const view of entity.view_fields)
+              for (const name of Object.keys(view.fields)) fields.add(name);
+          }
+        return fields;
+      },
       volatileOf: (type) => this.#volatileOf(type),
       idField: (type) => this.#identity.get(type)!.field,
     };

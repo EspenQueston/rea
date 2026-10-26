@@ -6,6 +6,7 @@ import {
   isStateWrite,
   listItems,
   listsAll,
+  markedDeleted,
   normalizedPath,
   ownMember,
   same,
@@ -455,7 +456,16 @@ export class EnvironmentStateWriteSimulation {
     const writes = this.#touched.get(target) ?? new Map();
     this.#taint.known(entity.type, entity.collection, entity.id);
     this.#touched.delete(target);
-    if (isAbsence(record.status)) {
+    if (
+      isAbsence(record.status) ||
+      this.#input.io.withBody(record.ordinal, (body) =>
+        markedDeleted(
+          body === undefined || body === null
+            ? undefined
+            : at(body, view.pointer),
+        ),
+      )
+    ) {
       this.#removeEntity(entity);
       return;
     }

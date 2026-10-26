@@ -12,6 +12,7 @@ import {
   scalarText,
   type JsonObject,
   type StateEntity,
+  type StateView,
 } from "./environmentStateRules.js";
 import {
   emptySpellings,
@@ -520,6 +521,27 @@ export const optionalFields = (
   );
 };
 
+/** Fields an item view of the type shows that no initial entity of the type holds, which only later reads showed. */
+export const laterItemFields = (
+  views: Iterable<StateView>,
+  entities: readonly StateEntity[],
+  type: string | null,
+): Set<string> => {
+  const fields = new Set<string>();
+  for (const view of views)
+    if (view.shape === "item" && view.type === type)
+      for (const field of view.fields)
+        if (!view.required_fields.includes(field)) fields.add(field);
+  for (const entity of entities)
+    if (entity.type === type)
+      for (const held of [
+        entity.fields,
+        ...entity.view_fields.map((view) => view.fields),
+      ])
+        for (const field of Object.keys(held)) fields.delete(field);
+  return fields;
+};
+
 /** A write's answer body from its recorded response: the entity or identity rendered in, nothing, or the recorded body; optional fields show only when written. */
 export const writtenResponse = (
   response: WriteResponse,
@@ -531,6 +553,8 @@ export const writtenResponse = (
     readonly clocks?: readonly string[];
   },
   optional: readonly string[] = [],
+  /** Fields only later reads showed, which the answer leaves out when the entity does not hold them. */
+  later: ReadonlySet<string> = new Set(),
 ): Applied<JsonValue | undefined> => {
   if (response.shape === "empty") return ok(undefined);
   if (response.shape === "recorded" || recorded === undefined)
@@ -551,7 +575,7 @@ export const writtenResponse = (
     return err("The recorded response does not carry the entity.");
   const held = (field: string) => Object.hasOwn(written.fields!, field);
   const missing = Object.keys(shown).filter(
-    (field) => !held(field) && !optional.includes(field),
+    (field) => !held(field) && !optional.includes(field) && !later.has(field),
   );
   if (missing.length > 0)
     return err(

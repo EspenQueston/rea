@@ -130,8 +130,11 @@ client with it. Match `wait_for` locators to exactly one element.
    read 2, list; never several writes before their reads.
 4. Leave more than a second between a create and its first edit
    (`wait_for_timeout` with `duration_ms: 1100`).
-5. Update both objects and read each back; delete both and read each back
-   (expect 404) and the list.
+5. Update both objects and read each back, changing the fields a person
+   would change (a name, an email address, a status, a due date) rather than
+   only a description: a served update accepts only the members a recorded
+   update stored. Delete both and read each back (expect 404, or the object
+   marked deleted) and the list.
 6. Vary what the two creates send, however you write them: the first every
    field the application takes, the second only what a person must give (its
    title or name), with the other fields left out or empty. A served create
