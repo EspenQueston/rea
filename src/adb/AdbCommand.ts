@@ -349,3 +349,10 @@ const probeAdbPath = async (
     }),
   );
 };
+
+/**
+ * Device states adb reports while a device is still appearing, with or without
+ * the quoted serial. Owned here beside the classifier that produces them.
+ */
+export const ADB_TRANSIENT_DEVICE_STATE =
+  /device(?: '[^'\n]*')? (?:offline|not found)\b|still authorizing|still connecting|no devices|error: closed/iu;

@@ -2,6 +2,7 @@ import type { RegularFileState } from "../filesystem/RegularFile.js";
 import {
   RegularFileChangedError,
   sameRegularFileState,
+  RegularFileOperationCancelled,
 } from "../filesystem/RegularFile.js";
 import { assertKunaFileState } from "./KunaProjectState.js";
 import { createReadStream } from "node:fs";
@@ -24,7 +25,6 @@ import {
   OwnedRegularFileOperationFailure,
   withOwnedFileHandle,
 } from "../filesystem/OwnedRegularFile.js";
-import { RegularFileOperationCancelled } from "../filesystem/RegularFile.js";
 import { ABORTED, waitForAbortable } from "../process/AbortablePromise.js";
 import type { KunaProject } from "./KunaProjectCache.js";
 import {

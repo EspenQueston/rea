@@ -4,7 +4,11 @@ import {
   ExecFileOutputCancelledError,
   execFileBytes,
 } from "../process/ExecFileOutput.js";
-import { probeAdbPathExistence, runAdbCapture } from "./AdbCommand.js";
+import {
+  ADB_TRANSIENT_DEVICE_STATE,
+  probeAdbPathExistence,
+  runAdbCapture,
+} from "./AdbCommand.js";
 
 vi.mock("../process/ExecFileOutput.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../process/ExecFileOutput.js")>()),
@@ -264,4 +268,17 @@ it("keeps a physical failure even when the later abort reason is that same error
     ok: false,
     error: { _tag: "AnalysisProtocolError", cause: failure },
   });
+});
+
+it.each([
+  "device offline",
+  "device 'emulator-5554' offline",
+  "device 'emulator-5554' not found",
+  "error: device still authorizing",
+])("treats %s as a transient boot state", (message) => {
+  expect(ADB_TRANSIENT_DEVICE_STATE.test(message)).toBe(true);
+});
+
+it("does not treat an unauthorized device as transient", () => {
+  expect(ADB_TRANSIENT_DEVICE_STATE.test("device unauthorized")).toBe(false);
 });
