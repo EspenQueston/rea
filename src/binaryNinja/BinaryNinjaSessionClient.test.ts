@@ -1,5 +1,5 @@
 import { rm } from "node:fs/promises";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createBinaryNinjaTarget,
   RecordingBinaryNinjaMcp,
@@ -9,14 +9,32 @@ import {
   AnalysisInputError,
   AnalysisProtocolError,
   AnalysisResourceConstraintError,
+  AnalysisTimeoutError,
 } from "../domain/analysisErrorCore.js";
 import { ProviderAdapterError } from "../domain/providerAdapterError.js";
 import type { BinaryNinjaConfiguration } from "./BinaryNinjaConfiguration.js";
 import { BINARY_NINJA_XREF_LIMITATION } from "./BinaryNinjaProviderCapabilities.js";
 import { BinaryNinjaSessionClient } from "./BinaryNinjaSessionClient.js";
 
+const heapCapacity = vi.hoisted(() => ({
+  available: undefined as number | undefined,
+}));
+vi.mock("node:v8", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:v8")>();
+  return {
+    ...actual,
+    getHeapStatistics: () => {
+      const heap = actual.getHeapStatistics();
+      return heapCapacity.available === undefined
+        ? heap
+        : { ...heap, total_available_size: heapCapacity.available };
+    },
+  };
+});
+
 const roots: string[] = [];
 afterEach(async () => {
+  heapCapacity.available = undefined;
   for (const root of roots.splice(0))
     await rm(root, { recursive: true, force: true });
 });
@@ -551,4 +569,184 @@ it("rejects missing chunk bytes instead of returning zero-filled string content"
   } finally {
     expect((await client.close()).ok).toBe(true);
   }
+});
+
+describe("Binary Ninja string capacity", () => {
+  it("admits string inventories against combined memory use before reading bytes", async () => {
+    const { client, producer } = await fixture();
+    heapCapacity.available = 60000;
+    producer.strings = [
+      {
+        address: "0x500000",
+        type: "AsciiString",
+        bytes: Buffer.from("a".repeat(1024)),
+      },
+    ];
+    try {
+      expect((await value(client, "list_strings")).result).toHaveLength(1);
+      producer.strings.push({
+        address: "0x501000",
+        type: "AsciiString",
+        bytes: Buffer.from("b".repeat(1024)),
+      });
+      const start = producer.calls.length;
+      const refused = await client.execute("list_strings", {});
+      expect(refused).toMatchObject({
+        ok: false,
+        error: {
+          _tag: "AnalysisResourceConstraintError",
+          reportedLimits: { required_bytes: "106496", available_bytes: 60000 },
+        },
+      });
+      expect(
+        producer.calls
+          .slice(start)
+          .some(
+            ({ name, args }) =>
+              name === "bn_memory_read" &&
+              BigInt(String(args.address)) >= 0x500000n,
+          ),
+      ).toBe(false);
+    } finally {
+      expect((await client.close()).ok).toBe(true);
+    }
+  });
+
+  it("rejects an unrepresentable declared string length before allocation", async () => {
+    const { client, producer } = await fixture();
+    producer.strings = [
+      { address: "0x500000", type: "AsciiString", bytes: Buffer.from("test") },
+    ];
+    const original = producer.call.bind(producer);
+    producer.call = async (name, args) => {
+      const reply = await original(name, args);
+      return name === "bn_string_list"
+        ? {
+            ...reply,
+            text: reply.text!.replace("| 0x4 |", "| 0xffffffffffffffff |"),
+          }
+        : reply;
+    };
+    try {
+      expect(
+        await client.execute("search_strings", { pattern: "test" }),
+      ).toMatchObject({
+        ok: false,
+        error: { _tag: "AnalysisResourceConstraintError" },
+      });
+      expect(
+        producer.calls.some(
+          ({ name, args }) =>
+            name === "bn_memory_read" && args.address === "0x500000",
+        ),
+      ).toBe(false);
+    } finally {
+      expect((await client.close()).ok).toBe(true);
+    }
+  });
+});
+
+describe("Binary Ninja cancellation and startup retries", () => {
+  it.each(["before", "during"])(
+    "retains the caller's cancellation cause %s execution",
+    async (when) => {
+      const { client, producer } = await fixture();
+      const controller = new AbortController();
+      const reason = { caller: "stop this analysis" };
+      if (when === "before") controller.abort(reason);
+      else
+        producer.beforeCall = (name) => {
+          if (name === "bn_function_list") controller.abort(reason);
+        };
+      try {
+        const result = await client.execute(
+          "list_procedures",
+          {},
+          { signal: controller.signal },
+        );
+        expect(result).toMatchObject({
+          ok: false,
+          error: { _tag: "AnalysisCancelledError" },
+        });
+        if (!result.ok) expect(result.error.cause).toBe(reason);
+        if (when === "before") expect(producer.calls).toHaveLength(0);
+      } finally {
+        expect((await client.close()).ok).toBe(true);
+      }
+    },
+  );
+
+  it.each(["timeout", "cancellation"])(
+    "keeps the original GUI selection when startup retries after %s",
+    async (mode) => {
+      const { client, producer } = await fixture();
+      producer.active = "view_2";
+      const controller = new AbortController();
+      const reason = new Error("cancel startup after selection");
+      const original = producer.call.bind(producer);
+      let failed = false;
+      producer.call = async (name, args) => {
+        const reply = await original(name, args);
+        if (
+          !failed &&
+          name === "bn_binary_view_set_active" &&
+          args.binaryView === "view_1"
+        ) {
+          failed = true;
+          if (mode === "cancellation") {
+            controller.abort(reason);
+            throw new AnalysisCancelledError(name, { cause: reason });
+          }
+          throw new AnalysisTimeoutError(name, 1000);
+        }
+        return reply;
+      };
+      try {
+        expect(
+          (
+            await client.execute(
+              "list_procedures",
+              {},
+              { signal: controller.signal },
+            )
+          ).ok,
+        ).toBe(false);
+        expect(producer.active).toBe("view_1");
+        expect((await value(client, "list_procedures")).result).toHaveLength(2);
+      } finally {
+        expect((await client.close()).ok).toBe(true);
+      }
+      expect(producer.active).toBe("view_2");
+    },
+  );
+});
+
+describe("Binary Ninja page coverage", () => {
+  it.each(["bn_binary_view_list", "bn_function_list"])(
+    "rejects incomplete final coverage from %s",
+    async (tool) => {
+      const { client, producer } = await fixture();
+      producer.pageSize = 1;
+      const original = producer.call.bind(producer);
+      producer.call = async (name, args) => {
+        const reply = await original(name, args);
+        return name === tool && args.offset === 0
+          ? {
+              ...reply,
+              text: reply
+                .text!.replace("nextOffset: 1", "nextOffset: null")
+                .replace("truncated: true", "truncated: false"),
+            }
+          : reply;
+      };
+      try {
+        expect(await client.execute("list_procedures", {})).toMatchObject({
+          ok: false,
+          error: { _tag: "AnalysisOutputError" },
+        });
+      } finally {
+        expect((await client.close()).ok).toBe(true);
+      }
+    },
+  );
 });

@@ -59,7 +59,7 @@ const [
 ] = await Promise.all([
   importBuilt("contracts/toolContracts.js"),
   importBuilt("domain/evidence.js"),
-  importBuilt("domain/hopperValues.js"),
+  importBuilt("domain/native/functionDossier.js"),
   importBuilt("binaryNinja/BinaryNinjaConfiguration.js"),
   importBuilt("binaryNinja/BinaryNinjaMcpConnection.js"),
   importBuilt("binaryNinja/BinaryNinjaProtocolValues.js"),

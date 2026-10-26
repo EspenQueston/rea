@@ -149,7 +149,11 @@ export class BinaryNinjaSessionClient implements AnalysisClient {
         ),
       );
     if (wasCancelled(options))
-      return err(new AnalysisCancelledError(operation));
+      return err(
+        new AnalysisCancelledError(operation, {
+          cause: options?.signal?.reason,
+        }),
+      );
     if (operation !== "health" && !isBinaryNinjaOperation(operation))
       return err(
         new AnalysisCapabilityUnavailableError(
@@ -256,7 +260,7 @@ export class BinaryNinjaSessionClient implements AnalysisClient {
     let failure: AnalysisError;
     if (wasCancelled(options))
       failure = new AnalysisCancelledError(operation, {
-        cause,
+        cause: options?.signal?.reason,
         ...(cause instanceof AnalysisError
           ? { diagnostics: cause.diagnostics }
           : {}),
@@ -486,7 +490,8 @@ export class BinaryNinjaSessionClient implements AnalysisClient {
     const active = binaryNinjaActiveViewSchema.parse(
       (await this.#call("bn_binary_view_get_active", {}, signal)).structured,
     );
-    this.#previousActiveView = active.binaryView?.handle ?? null;
+    if (this.#previousActiveView === undefined)
+      this.#previousActiveView = active.binaryView?.handle ?? null;
     const rawHandle = raw.binaryView ?? "";
     const analysisHandle = analysis[0]?.binaryView ?? "";
     const selected = await this.#setActive(analysisHandle, signal);

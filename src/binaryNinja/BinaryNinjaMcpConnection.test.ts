@@ -16,7 +16,7 @@ afterEach(async () => {
 });
 
 /** Loopback server that enforces the real GUI server's protocol and bearer checks. */
-const startServer = async () => {
+const startServer = async (onRequest?: (method: string) => void) => {
   const seen: {
     authorization: string | undefined;
     protocol: string | undefined;
@@ -49,6 +49,7 @@ const startServer = async () => {
       method: string;
       params?: { name?: string };
     };
+    onRequest?.(message.method);
     if (message.id === undefined) {
       response.writeHead(202).end();
       return;
@@ -179,3 +180,33 @@ describe("Binary Ninja tool results", () => {
     );
   });
 });
+
+it.each(["before", "connect", "call"])(
+  "preserves the caller cancellation cause at the transport boundary: %s",
+  async (stage) => {
+    const controller = new AbortController();
+    const reason = { source: "caller", operation: stage };
+    const { url, seen } = await startServer((method) => {
+      if (
+        (stage === "connect" && method === "initialize") ||
+        (stage === "call" && method === "tools/call")
+      )
+        controller.abort(reason);
+    });
+    const connection = createBinaryNinjaMcpConnection(config(url));
+    try {
+      if (stage === "call") await connection.connect();
+      if (stage === "before") controller.abort(reason);
+      const failure = await (
+        stage === "call"
+          ? connection.call("bn_memory_read", {}, controller.signal)
+          : connection.connect(controller.signal)
+      ).catch((cause: unknown) => cause);
+      expect(failure).toMatchObject({ _tag: "AnalysisCancelledError" });
+      expect((failure as Error).cause).toBe(reason);
+      if (stage === "before") expect(seen).toHaveLength(0);
+    } finally {
+      await connection.close();
+    }
+  },
+);

@@ -1,3 +1,5 @@
+import { constants as bufferConstants } from "node:buffer";
+import { getHeapStatistics } from "node:v8";
 import type { RegexMatchingDeadline } from "../config/regexMatchingDeadline.js";
 import type { RegexWorkerHeapRequest } from "../config/regexWorkerHeapRequest.js";
 import { matchRegexValues } from "../process/RegexMatcher.js";
@@ -9,13 +11,14 @@ import {
   AnalysisCancelledError,
   AnalysisInputError,
   AnalysisProtocolError,
+  AnalysisResourceConstraintError,
 } from "../domain/analysisErrorCore.js";
 import type { EvidenceLocation } from "../domain/evidence.js";
 import { combineFunctionRelationshipCoverage } from "../domain/functionCallCoverage.js";
 import {
   functionDossierSchema,
   functionInstructionWindowSchema,
-} from "../domain/hopperValues.js";
+} from "../domain/native/functionDossier.js";
 import { jsonValueSchema, type JsonValue } from "../domain/jsonValue.js";
 import type { RelationshipCoverage } from "../domain/relationshipCoverage.js";
 import {
@@ -137,7 +140,9 @@ export class BinaryNinjaOperationRunner {
 
   private throwIfCancelled(tool: string): void {
     if (this.options.signal?.aborted === true)
-      throw new AnalysisCancelledError(tool);
+      throw new AnalysisCancelledError(tool, {
+        cause: this.options.signal.reason,
+      });
   }
 
   private async document(
@@ -317,11 +322,18 @@ export class BinaryNinjaOperationRunner {
     );
     const result: { address: string; value: string }[] = [];
     const omitted = new Set<string>();
-    for (const row of await this.table("bn_string_list", {
-      previewBytes: STRING_PREVIEW_BYTES,
-    })) {
-      const address = binaryNinjaAddressSchema.parse(row.string);
-      const length = Number(BigInt(binaryNinjaAddressSchema.parse(row.length)));
+    const entries = (
+      await this.table("bn_string_list", {
+        previewBytes: STRING_PREVIEW_BYTES,
+      })
+    ).map((row) => ({
+      row,
+      address: binaryNinjaAddressSchema.parse(row.string),
+      length: BigInt(binaryNinjaAddressSchema.parse(row.length)),
+    }));
+    this.requireStringCapacity(entries);
+    for (const { row, address, length: declaredLength } of entries) {
+      const length = Number(declaredLength);
       let bytes: Buffer = Buffer.from(row.previewHex ?? "", "hex");
       if (row.previewTruncated === "true") {
         bytes = await this.read(address, length);
@@ -344,6 +356,59 @@ export class BinaryNinjaOperationRunner {
     }
     this.limitations.push(...omitted);
     return result;
+  }
+
+  private requireStringCapacity(
+    entries: readonly {
+      readonly length: bigint;
+      readonly row: Readonly<Record<string, string>>;
+    }[],
+  ): void {
+    const heap = getHeapStatistics();
+    const hostAvailable =
+      typeof process.availableMemory === "function"
+        ? process.availableMemory()
+        : heap.total_available_size;
+    const availableBytes = Math.max(
+      0,
+      Math.floor(Math.min(heap.total_available_size, hostAvailable)),
+    );
+    let requiredBytes = 0n;
+    for (const { length, row } of entries) {
+      // Per input byte: buffer (1), decoded UTF-16 (2), retained text/hex
+      // replies (8), and two serialized Evidence representations (2 * 20).
+      // The serialization allowance includes worst-case JSON escaping.
+      // Reserve 1 KiB per chunk for its reply envelope and retained objects.
+      const chunks =
+        (length + BigInt(BINARY_NINJA_MEMORY_READ_LIMIT) - 1n) /
+        BigInt(BINARY_NINJA_MEMORY_READ_LIMIT);
+      requiredBytes += length * 51n + chunks * 1024n;
+      const codeUnits =
+        row.type === "Utf32String" || row.type === "Utf16String"
+          ? length / 2n
+          : length;
+      if (
+        length > BigInt(bufferConstants.MAX_LENGTH) ||
+        codeUnits > BigInt(bufferConstants.MAX_STRING_LENGTH) ||
+        requiredBytes > BigInt(availableBytes)
+      )
+        throw new AnalysisResourceConstraintError(
+          "binary_ninja_strings",
+          "memory",
+          "Insufficient runtime capacity for the complete string inventory, retained replies, and serialized Evidence.",
+          {
+            required_bytes: requiredBytes.toString(),
+            available_bytes: availableBytes,
+            available_heap_bytes: heap.total_available_size,
+            maximum_buffer_bytes: bufferConstants.MAX_LENGTH,
+            maximum_string_code_units: bufferConstants.MAX_STRING_LENGTH,
+          },
+          {
+            remediationAction:
+              "Free memory or raise the Node.js heap allowance for REA, then retry. This is a runtime capacity check, not the registration maxInputBytes limit.",
+          },
+        );
+    }
   }
 
   private async read(address: string, length: number): Promise<Buffer> {

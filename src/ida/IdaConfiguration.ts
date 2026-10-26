@@ -1,6 +1,7 @@
 import { readProviderRegistration } from "../providers/ReadProviderRegistration.js";
 import { isAbsolute } from "node:path";
 import { z } from "zod";
+import { jsonRecordSchema } from "../domain/jsonRecord.js";
 import type { RetainedResourceScope } from "../application/AnalysisProvider.js";
 import { ConfigurationError } from "../domain/configurationErrors.js";
 import { projectInputIssues } from "../domain/inputIssueProjection.js";
@@ -38,7 +39,7 @@ const registrationSchema = z
         type: z.literal("stdio").optional(),
         command: z.string().min(1),
         args: z.array(z.string()).default([]),
-        env: z.record(z.string(), z.string()).default({}),
+        env: jsonRecordSchema(z.string()).default({}),
       })
       .strict(),
     z
@@ -54,7 +55,7 @@ const registrationSchema = z
             url.password === ""
           );
         }, "IDA MCP must use a local HTTP endpoint without URL credentials"),
-        headers: z.record(z.string(), z.string()).default({}),
+        headers: jsonRecordSchema(z.string()).default({}),
       })
       .strict(),
   ])
@@ -66,9 +67,40 @@ const registrationSchema = z
 /** An upstream MCP registration plus REA's database lifecycle selection. */
 export type IdaConfiguration = z.infer<typeof registrationSchema>;
 
-/** Select a protocol without changing existing attached/headless registrations. */
-export const idaProtocol = (config: IdaConfiguration) =>
-  config.protocol ?? (config.mode === "attached" ? "legacy" : "modern");
+/** Resolved compatibility facts; persisted identities and diagnostics intentionally differ. */
+export const IDA_COMPATIBILITY_PROFILES = {
+  legacy: {
+    protocol: "legacy",
+    mode: "attached",
+    identity: "legacy-1.4",
+    diagnosticIdentity: "legacy-1.4",
+    diagnosticLabel: "attached",
+  },
+  modern: {
+    protocol: "modern",
+    mode: "headless",
+    identity: "database-supervisor",
+    diagnosticIdentity: "database-supervisor",
+    diagnosticLabel: "headless",
+  },
+  native: {
+    protocol: "native",
+    mode: "attached",
+    identity: "native-ida-mcp",
+    diagnosticIdentity: "native",
+    diagnosticLabel: "native attached",
+  },
+} as const;
+export type IdaCompatibilityProfile =
+  (typeof IDA_COMPATIBILITY_PROFILES)[keyof typeof IDA_COMPATIBILITY_PROFILES];
+
+/** Preserve existing attached/headless registrations when protocol is omitted. */
+export const idaCompatibilityProfile = (
+  config: IdaConfiguration,
+): IdaCompatibilityProfile =>
+  IDA_COMPATIBILITY_PROFILES[
+    config.protocol ?? (config.mode === "attached" ? "legacy" : "modern")
+  ];
 
 /** Read one explicit registration without starting or installing a provider. */
 export const readIdaConfiguration = (

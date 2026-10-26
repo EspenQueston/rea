@@ -179,3 +179,17 @@ it.each([
       .success,
   ).toBe(true);
 });
+
+it.each([
+  { offset: 0, count: 1, total: 2, nextOffset: null, truncated: false },
+  { offset: 1, count: 2, total: 2, nextOffset: null, truncated: false },
+  { offset: 0, count: 2, total: 2, nextOffset: 2, truncated: true },
+])("rejects inconsistent terminal page coverage: %j", (page) => {
+  expect(binaryNinjaPageSchema.safeParse(page).success).toBe(false);
+});
+it.each([
+  { offset: 0, count: 0, total: 0, nextOffset: null, truncated: false },
+  { offset: 1, count: 1, total: 2, nextOffset: null, truncated: false },
+])("accepts exact terminal coverage: %j", (page) => {
+  expect(binaryNinjaPageSchema.safeParse(page).success).toBe(true);
+});

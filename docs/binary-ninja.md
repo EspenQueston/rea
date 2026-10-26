@@ -94,9 +94,11 @@ The [official Binary Ninja MCP guide](https://docs.binary.ninja/guide/mcp.html) 
 
 Complete body ranges, typed reference edges, comments, referenced strings and names, basic blocks, and source locals are unavailable; empty dossier facets mean **unknown**, not observed absence. `provider.version` identifies the REA adapter; the Binary Ninja build is not reported by the MCP server, and `serverInfo` is recorded separately. Results are live and never replayed from snapshots. Binary Ninja MCP does not yet forward cancellation, so a cancelled REA request stops waiting without interrupting work Binary Ninja already started.
 
+String reads use chunks of at most 64 KiB. Before reading string bytes, REA checks the complete inventory's estimated buffer, decoded text, retained replies, and serialized Evidence against current heap and process memory headroom. Insufficient capacity returns a typed memory error rather than omitting strings or allocating their declared size. Free memory or increase REA's Node.js heap allowance before retrying; `maxInputBytes` only controls Raw-view identity hashing.
+
 ## Verification
 
-Adapter tests replay the protocol of Binary Ninja 6.0's GUI MCP server through a recording fixture and a loopback HTTP server, including authorization, protocol negotiation, pagination, escaping, identity mismatch, view switching, and selection restore. They do not establish real engine behavior.
+Adapter tests replay the protocol of Binary Ninja 6.0's GUI MCP server through a recording fixture and a loopback HTTP server, including authorization, protocol negotiation, pagination, escaping, identity mismatch, view switching, and selection restore. They also cover caller cancellation causes, startup retries after a lost selection reply, incomplete terminal pages, and aggregate string-memory admission. They do not establish real engine behavior.
 
 `npm run verify:binary-ninja -- --target /absolute/path/to/program --procedure NAME` runs the production CLI and MCP server against a running Binary Ninja with the target open. It checks CLI/MCP parity for the function dossier, inventories, search, Pseudo C, assembly, instructions, callers, callees and xrefs, contract-valid results, invalid input, close, restoration of a previously selected view, and that the input is unchanged. Add `--second-procedure NAME --second-marker TEXT` to verify function switching, `--expected-string TEXT` and `--expected-xref 0xSOURCE` for independent string and reference oracles, and `--report PATH` for private local diagnostics.
 

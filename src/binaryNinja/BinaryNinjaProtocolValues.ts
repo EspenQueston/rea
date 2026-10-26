@@ -79,6 +79,15 @@ export const binaryNinjaPageSchema = z
   })
   .passthrough()
   .superRefine((page, context) => {
+    const end = page.offset + page.count;
+    if (
+      end > page.total ||
+      (page.nextOffset === null ? end !== page.total : end >= page.total)
+    )
+      context.addIssue({
+        code: "custom",
+        message: "page coverage disagrees with total",
+      });
     if (page.truncated !== (page.nextOffset !== null))
       context.addIssue({
         code: "custom",

@@ -138,19 +138,25 @@ export const createBinaryNinjaMcpConnection = (
   const transport = new StreamableHTTPClientTransport(new URL(config.url), {
     requestInit: { headers: config.headers, redirect: "error" },
   });
+  const throwIfCancelled = (
+    operation: string,
+    signal: AbortSignal | undefined,
+  ): void => {
+    if (signal?.aborted === true)
+      throw new AnalysisCancelledError(operation, { cause: signal.reason });
+  };
   const failure = (
     cause: unknown,
     operation: string,
     signal: AbortSignal | undefined,
   ): never => {
+    throwIfCancelled(operation, signal);
     const reason = redact(
       cause instanceof Error
         ? cause.message
         : "Unknown Binary Ninja MCP failure",
     );
     const retained = new Error(reason);
-    if (signal?.aborted === true)
-      throw new AnalysisCancelledError(operation, { cause: retained });
     if (cause instanceof SdkError && cause.code === SdkErrorCode.RequestTimeout)
       throw new AnalysisTimeoutError(operation, config.timeoutMs, {
         cause: retained,
@@ -173,6 +179,7 @@ export const createBinaryNinjaMcpConnection = (
   let connected = false;
   return {
     async connect(signal) {
+      throwIfCancelled("binary_ninja_mcp_connect", signal);
       // A failed target binding may be retried on the same initialized session.
       if (!connected) {
         await client
@@ -207,6 +214,7 @@ export const createBinaryNinjaMcpConnection = (
       return names;
     },
     async call(name, args, signal) {
+      throwIfCancelled(name, signal);
       const result = await client
         .callTool({ name, arguments: { ...args } }, options(signal))
         .catch((cause: unknown) => failure(cause, name, signal));
