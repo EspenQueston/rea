@@ -61,6 +61,7 @@ const savingResponse = (
         startOrigin: input.startOrigin,
         timeout,
         secrets: input.secrets,
+        signal: input.signal,
       });
 
 /** Execute one admitted declarative action; a request step sends one declared request through the page's own fetch, and no action runs caller-supplied code. */

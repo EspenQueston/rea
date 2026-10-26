@@ -160,6 +160,10 @@ const headerValue = async (
   if (value.source === "basic_credentials") {
     const [username, password] = value.parts;
     const user = await credentialPart(step, username!, `${label}.username`);
+    if (user.includes(":"))
+      throw new ScenarioRequestError(
+        `Request step ${stepId} has a Basic username with a colon, which the server would read as the end of the username.`,
+      );
     const pass = await credentialPart(step, password!, `${label}.password`);
     const encoded = Buffer.from(`${user}:${pass}`).toString("base64");
     secrets.admitCredential(label, encoded);
@@ -205,6 +209,9 @@ interface PageRequest {
 
 /** The largest response text a request step saves values from. */
 const MAX_SAVED_RESPONSE_CHARACTERS = 4_000_000;
+
+/** The most UTF-8 bytes text within that limit can take: three per UTF-16 code unit. */
+const MAX_SAVED_RESPONSE_BYTES = 3 * MAX_SAVED_RESPONSE_CHARACTERS;
 
 /** Send the request with the page's own fetch, from the page's main world, and read the whole answer. */
 const sendFromPage = (
@@ -404,15 +411,30 @@ export const performScenarioRequest = async (input: {
     saveValues(action.step_id, response.body, action.save, secrets);
 };
 
-/** A path or URL with its `placeholder`s filled, each value percent-encoded; a request path's are spelled as written. */
+/** A path or URL with its `placeholder`s filled, each value percent-encoded; a request path's are spelled as written. A value a URL path would drop as a dot segment fails the step. */
 export const withSavedPlaceholders = (
   text: string,
   secrets: BrowserScenarioSecrets,
   placeholder: RegExp = SAVED_PLACEHOLDER,
-): string =>
-  text.replace(placeholder, (_placeholder, name: string) =>
-    encodeURIComponent(String(secrets.savedValue(name))),
+): string => {
+  const pathEnd = text.search(/[?#]/u);
+  return text.replace(
+    placeholder,
+    (match: string, name: string, offset: number) => {
+      const encoded = encodeURIComponent(String(secrets.savedValue(name)));
+      const end = offset + match.length;
+      const segment =
+        (pathEnd < 0 || end <= pathEnd) &&
+        (offset === 0 || text[offset - 1] === "/") &&
+        (end === text.length || "/?#".includes(text[end]!));
+      if (segment && (encoded === "." || encoded === ".."))
+        throw new Error(
+          `Saved value ${name} is a dot segment, which a URL path drops, so the step cannot send it.`,
+        );
+      return encoded;
+    },
   );
+};
 
 /** Whether a request a UI step triggered is the one its `save_response` names: method, start origin, and path with `{*}` matching one segment. */
 /** A `save_response` path's segments as a browser spells a URL path, percent-encoded as its URL parser would, `{*}` kept. */
@@ -442,6 +464,51 @@ const namesResponse = (
   );
 };
 
+/** Settle as the work does, or fail the step once its deadline passes or it is cancelled, so late work saves nothing. */
+const beforeStepEnds = <T>(
+  work: Promise<T>,
+  stepId: string,
+  deadline: number | undefined,
+  signal: AbortSignal | undefined,
+): Promise<T> =>
+  new Promise<T>((resolve, reject) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const settle = (): void => {
+      if (timer !== undefined) clearTimeout(timer);
+      signal?.removeEventListener("abort", end);
+    };
+    const end = (): void => {
+      settle();
+      reject(
+        new ScenarioRequestError(
+          `Step ${stepId} ended before its saved response was read, so nothing was saved.`,
+        ),
+      );
+    };
+    work.catch(() => undefined);
+    const remaining =
+      deadline === undefined ? undefined : deadline - Date.now();
+    if (
+      signal?.aborted === true ||
+      (remaining !== undefined && remaining <= 0)
+    ) {
+      end();
+      return;
+    }
+    if (remaining !== undefined) timer = setTimeout(end, remaining);
+    signal?.addEventListener("abort", end, { once: true });
+    work.then(
+      (value) => {
+        settle();
+        resolve(value);
+      },
+      (cause: unknown) => {
+        settle();
+        reject(cause);
+      },
+    );
+  });
+
 /** A UI step's wait for the response its `save_response` names: `saved` waits and saves, `stop` stops watching requests. */
 export interface SavedResponseWait {
   readonly saved: () => Promise<void>;
@@ -461,9 +528,11 @@ export const awaitSavedResponse = (
     readonly startOrigin: string;
     readonly timeout: number | undefined;
     readonly secrets: BrowserScenarioSecrets;
+    readonly signal?: AbortSignal | undefined;
   },
 ): SavedResponseWait => {
-  const { stepId, spec, startOrigin, timeout, secrets } = step;
+  const { stepId, spec, startOrigin, timeout, secrets, signal } = step;
+  const deadline = timeout === undefined ? undefined : Date.now() + timeout;
   const pattern = pathPattern(spec.path);
   const started = new Set<Request>();
   const watch = (request: Request): void => {
@@ -485,7 +554,7 @@ export const awaitSavedResponse = (
   const saved = async (): Promise<void> => {
     let response: Awaited<typeof waiting>;
     try {
-      response = await waiting;
+      response = await beforeStepEnds(waiting, stepId, deadline, signal);
     } catch {
       throw new ScenarioRequestError(
         `Step ${stepId}: no ${spec.method} ${spec.path} response arrived before the step's timeout, so nothing was saved.`,
@@ -495,13 +564,24 @@ export const awaitSavedResponse = (
       throw new ScenarioRequestError(
         `Step ${stepId}: the ${spec.method} ${spec.path} response answered ${String(response.status())}; values are saved only from a 2xx response.`,
       );
-    // Playwright reads a body whole, so the size the browser received decides before it is read.
-    const { responseBodySize } = await response.request().sizes();
-    if (responseBodySize > MAX_SAVED_RESPONSE_CHARACTERS)
+    // Playwright reads a body whole, so the size the browser received decides before it is read; its text is then held to the character limit.
+    const { responseBodySize } = await beforeStepEnds(
+      response.request().sizes(),
+      stepId,
+      deadline,
+      signal,
+    );
+    if (responseBodySize > MAX_SAVED_RESPONSE_BYTES)
       throw new ScenarioRequestError(
         `Step ${stepId}: the response is too large to save values from.`,
       );
-    saveValues(stepId, await response.text(), spec.save, secrets);
+    const body = await beforeStepEnds(
+      response.text(),
+      stepId,
+      deadline,
+      signal,
+    );
+    saveValues(stepId, body, spec.save, secrets);
   };
   return { saved, stop: () => page.off("request", watch) };
 };

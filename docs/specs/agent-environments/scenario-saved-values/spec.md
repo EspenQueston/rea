@@ -20,22 +20,25 @@ values.
 
 - A `request` step saves `[{name, json_pointer, secret}]` from its own JSON
   response. A `click` or `press` step's `save_response: {method, path, save}`
-  saves from the first response that matches its method and a path on the
-  start origin (`{*}` matches one segment; the query is ignored), which must
-  be 2xx JSON. The wait starts before the step acts, and
-  the step fails if no such response arrives before its timeout.
+  saves from the first response that matches its method and a path on the start
+  origin (`{*}` matches one segment; the query is ignored), which must be 2xx
+  JSON. The wait starts before the step acts, and the step fails, saving
+  nothing, unless such a response arrives and is read before its timeout or
+  cancellation.
 - A pointer that names no string or number, a response that is not JSON or is
-  larger than 4,000,000 characters, and a non-2xx `save_response` fail the step.
-- `{saved:name}` sends a saved value, percent-encoded, in a request path and
-  its query and in a goto URL, and in a request's JSON body: a string that is
-  only the placeholder becomes the saved value with its JSON type, and a
-  placeholder inside a longer string is filled as text. Header values and
-  Basic credential parts send `{source: "saved", name}`. Other braces are sent
-  as written.
-- `basic_credentials` sends the base64 of `username:password` from
-  `parts: [username, password]`, each a literal, declared secret, saved value,
-  cookie or local storage entry. The encoded value and parts read from the page
-  are redacted as page values are.
+  larger than 4,000,000 characters (a UI step reads none received as more than
+  12,000,000 bytes, three per character), and a non-2xx `save_response` fail the
+  step.
+- `{saved:name}` sends a saved value, percent-encoded, in a request path and its
+  query and in a goto URL, and in a request's JSON body: a string that is only
+  the placeholder becomes the saved value with its JSON type, and a placeholder
+  inside a longer string is filled as text. Header values and Basic credential
+  parts send `{source: "saved", name}`. Other braces are sent as written. A
+  saved `.` or `..` that fills a whole path segment fails the step.
+- `basic_credentials` sends the base64 of `username:password` from `parts:
+  [username, password]`, each a literal, declared secret, saved value, cookie or
+  local storage entry. The encoded value and parts read from the page are
+  redacted as page values are. A username with a colon fails the step.
 - Validation refuses a saved value no earlier step saves.
 - A value saved with `secret: true` is redacted from records made after it is
   saved. The environment build warns about saved values named like credentials
@@ -51,7 +54,8 @@ values.
 - A UI-made create must be served as faithfully as one made through the API:
   - a string composed from a generated id and another field, such as Grafana's
     folder address, is learned as composed, not as a template around the id;
-  - a slug learns how the application spells `&` from the call that shows it;
+  - a slug learns how the application spells `&` from the call that shows it,
+    and held entities that spell it both ways leave no slug rule;
   - an id that equals the title's slug is told apart by the entities the type
     holds, or by a later create;
   - a template a later create answers otherwise is withheld, as a composed

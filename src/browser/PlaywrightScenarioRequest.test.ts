@@ -196,12 +196,14 @@ const perform = async (
   page: Page,
   action: BrowserScenarioAction,
   secrets: BrowserScenarioSecrets,
+  signal?: AbortSignal,
 ) =>
   performPlaywrightScenarioAction({
     page,
     action,
     secrets,
     startOrigin: ORIGIN,
+    signal,
   });
 
 const resolved = (parsed: ReturnType<typeof scenario>, environment = {}) => {
@@ -955,6 +957,92 @@ describe("saved value credentials and limits", () => {
   });
 });
 
+describe("values a URL path or Basic header cannot carry", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("fails a Basic header whose username holds a colon, before sending it", async () => {
+    const calls = stubFetch(200, ["{}"]);
+    const parsed = scenario(
+      [
+        requestStep({
+          headers: [
+            {
+              name: "Authorization",
+              value: {
+                source: "basic_credentials",
+                parts: [
+                  { source: "secret", secret_id: "user" },
+                  { source: "secret", secret_id: "password" },
+                ],
+              },
+            },
+          ],
+        }),
+      ],
+      [
+        { secret_id: "user", environment_variable: "APP_USER" },
+        { secret_id: "password", environment_variable: "APP_PASSWORD" },
+      ],
+    );
+    const secrets = resolved(parsed, {
+      APP_USER: "ops:admin",
+      APP_PASSWORD: "b",
+    });
+    await expect(
+      perform(fakePage({}), parsed.actions[0]!, secrets),
+    ).rejects.toThrow("Basic username with a colon");
+    expect(calls).toHaveLength(0);
+  });
+
+  it.each([".", ".."])(
+    "fails a step whose saved %s fills a whole path segment, which the URL would drop",
+    async (dots) => {
+      const parsed = scenario([
+        requestStep({ save: [{ name: "item", json_pointer: "/id" }] }),
+        {
+          step_id: "open",
+          action: "goto",
+          destination: { url: `${ORIGIN}/items/{saved:item}/edit` },
+          wait_until: "load",
+        },
+        requestStep({ step_id: "edit", path: "/api/items/{saved:item}" }),
+      ]);
+      const secrets = resolved(parsed);
+      secrets.save("create.item", "item", dots, false);
+      const goto = vi.fn(async () => null);
+      await expect(
+        perform({ goto } as unknown as Page, parsed.actions[1]!, secrets),
+      ).rejects.toThrow("dot segment");
+      expect(goto).not.toHaveBeenCalled();
+      await expect(
+        perform(fakePage({}), parsed.actions[2]!, secrets),
+      ).rejects.toThrow("dot segment");
+    },
+  );
+
+  it("sends dots that are part of a segment or of the query", async () => {
+    const parsed = scenario([
+      requestStep({ save: [{ name: "item", json_pointer: "/id" }] }),
+      {
+        step_id: "open",
+        action: "goto",
+        destination: { url: `${ORIGIN}/items/v{saved:item}?at={saved:item}` },
+        wait_until: "load",
+      },
+    ]);
+    const secrets = resolved(parsed);
+    secrets.save("create.item", "item", "..", false);
+    const goto = vi.fn(async () => null);
+    await perform({ goto } as unknown as Page, parsed.actions[1]!, secrets);
+    expect(goto).toHaveBeenCalledWith(
+      `${ORIGIN}/items/v..?at=..`,
+      expect.anything(),
+    );
+  });
+});
+
 describe("goto placeholders", () => {
   it("fills a goto destination's placeholders, percent-encoded", async () => {
     const parsed = scenario([
@@ -1014,6 +1102,8 @@ interface FakeResponse {
   readonly earlier?: boolean;
   /** The body size the browser received, when it differs from the body's. */
   readonly size?: number;
+  /** A body still arriving: the text resolves with it. */
+  readonly late?: Promise<string>;
 }
 
 /**
@@ -1045,7 +1135,7 @@ const uiPage = (responses: readonly FakeResponse[], clickFails = false) => {
         status: () => response.status,
         text: async () => {
           reads.count += 1;
-          return response.body;
+          return response.late ?? response.body;
         },
       },
     };
@@ -1160,7 +1250,7 @@ describe("saving from a UI step's response", () => {
         url: `${ORIGIN}/api/items`,
         status: 201,
         body: '{"id":"x"}',
-        size: 5_000_000,
+        size: 12_000_001,
       },
     ]);
     await expect(
@@ -1201,5 +1291,112 @@ describe("saving from a UI step's response", () => {
     ).rejects.toThrow(
       "answered 422; values are saved only from a 2xx response",
     );
+  });
+});
+
+describe("saved response limits and deadlines", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const lateBody = () => {
+    let arrive: (body: string) => void = () => undefined;
+    const late = new Promise<string>((resolve) => {
+      arrive = resolve;
+    });
+    return { late, arrive };
+  };
+
+  it("saves nothing from a body still arriving when the step's time runs out", async () => {
+    vi.useFakeTimers();
+    const parsed = clickSaving("/api/items");
+    const secrets = resolved(parsed);
+    const { late, arrive } = lateBody();
+    const { page, listeners } = uiPage([
+      {
+        method: "POST",
+        url: `${ORIGIN}/api/items`,
+        status: 201,
+        body: "",
+        late,
+      },
+    ]);
+    const outcome = perform(page, parsed.actions[0]!, secrets).then(
+      () => "saved",
+      (cause: Error) => cause.message,
+    );
+    await vi.advanceTimersByTimeAsync(5001);
+    arrive('{"id":"item-late"}');
+    await expect(outcome).resolves.toContain(
+      "ended before its saved response was read",
+    );
+    expect(() => secrets.savedValue("item")).toThrow("No earlier step saved");
+    expect(listeners.size).toBe(0);
+  });
+
+  it("saves nothing from a body still arriving when the step is cancelled", async () => {
+    const parsed = clickSaving("/api/items");
+    const secrets = resolved(parsed);
+    const { late, arrive } = lateBody();
+    const { page, listeners } = uiPage([
+      {
+        method: "POST",
+        url: `${ORIGIN}/api/items`,
+        status: 201,
+        body: "",
+        late,
+      },
+    ]);
+    const cancel = new AbortController();
+    const outcome = perform(
+      page,
+      parsed.actions[0]!,
+      secrets,
+      cancel.signal,
+    ).then(
+      () => "saved",
+      (cause: Error) => cause.message,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    cancel.abort();
+    arrive('{"id":"item-late"}');
+    await expect(outcome).resolves.toContain(
+      "ended before its saved response was read",
+    );
+    expect(() => secrets.savedValue("item")).toThrow("No earlier step saved");
+    expect(listeners.size).toBe(0);
+  });
+
+  it("reads a response whose received bytes exceed the character limit but whose text is within it", async () => {
+    const parsed = clickSaving("/api/items");
+    const secrets = resolved(parsed);
+    const { page } = uiPage([
+      {
+        method: "POST",
+        url: `${ORIGIN}/api/items`,
+        status: 201,
+        body: '{"id":"item-9"}',
+        // Two million three-byte characters, as CJK text spells them in UTF-8.
+        size: 6_000_000,
+      },
+    ]);
+    await perform(page, parsed.actions[0]!, secrets);
+    expect(secrets.savedValue("item")).toBe("item-9");
+  });
+
+  it("fails a response whose text is longer than the character limit", async () => {
+    const parsed = clickSaving("/api/items");
+    const { page, reads } = uiPage([
+      {
+        method: "POST",
+        url: `${ORIGIN}/api/items`,
+        status: 201,
+        body: `{"id":"${"x".repeat(4_000_000)}"}`,
+      },
+    ]);
+    await expect(
+      perform(page, parsed.actions[0]!, resolved(parsed)),
+    ).rejects.toThrow("too large to save values from");
+    expect(reads.count).toBe(1);
   });
 });

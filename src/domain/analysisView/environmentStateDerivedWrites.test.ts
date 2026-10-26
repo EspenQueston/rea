@@ -636,7 +636,9 @@ describe("slug spellings across creates", () => {
     });
     expect(plan.served).toBe(false);
   });
+});
 
+describe("slug spellings the held entities show", () => {
   it("spells & as the held entities do when the creates slug none", () => {
     const rows = folderCreates(
       [
@@ -681,6 +683,25 @@ describe("slug spellings across creates", () => {
       planOf(tagRows("Salt & Pepper", "Tide & Wind", "tide-wind"), "post_tags")
         .rules,
     ).not.toContainEqual(
+      expect.objectContaining({ field: "slug", rule: "slug" }),
+    );
+  });
+
+  it("learns no slug rule from held tags that spell & both ways", () => {
+    const held = [
+      { id: 1, name: "Salt & Pepper", slug: "salt-and-pepper" },
+      { id: 3, name: "Fish & Chips", slug: "fish-chips" },
+    ];
+    const tag = { id: 2, name: "Harbour Notes", slug: "harbour-notes" };
+    const rows: TimedCaptureRow[] = [
+      ["GET", "/api/tags", held],
+      ["GET", "/api/tags/1", held[0]!],
+      ["GET", "/api/tags/3", held[1]!],
+      ["POST", "/api/tags", tag, 201, { name: tag.name }],
+      ["GET", "/api/tags/2", tag],
+      ["GET", "/api/tags", [...held, tag]],
+    ];
+    expect(planOf(rows, "post_tags").rules).not.toContainEqual(
       expect.objectContaining({ field: "slug", rule: "slug" }),
     );
   });
