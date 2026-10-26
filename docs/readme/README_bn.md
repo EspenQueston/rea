@@ -1,6 +1,6 @@
 <div align="center">
 
-[English](../../README.md) · [简体中文](README_zh.md) · [繁體中文](README_zh-TW.md) · [日本語](README_ja.md) · [한국어](README_ko.md) · [Türkçe](README_tr.md) · [Русский](README_ru.md) · [Tiếng Việt](README_vi.md) · [ไทย](README_th.md) · [Deutsch](README_de.md) · [Español](README_es.md) · [Français](README_fr.md) · [Українська](README_uk.md) · [Polski](README_pl.md) · [Português (Brasil)](README_pt-BR.md) · [العربية](README_ar.md) · [فارسی](README_fa.md) · [Bahasa Indonesia](README_id.md) · [Italiano](README_it.md) · [Ελληνικά](README_el.md) · [മലയാളം](README_ml.md) · [Roman Urdu](README_ur-Latn.md) · **বাংলা**
+[English](../../README.md) · [简体中文](README_zh.md) · [繁體中文](README_zh-TW.md) · [日本語](README_ja.md) · [한국어](README_ko.md) · [Türkçe](README_tr.md) · [Русский](README_ru.md) · [Tiếng Việt](README_vi.md) · [ไทย](README_th.md) · [Deutsch](README_de.md) · [Español](README_es.md) · [Français](README_fr.md) · [Українська](README_uk.md) · [Polski](README_pl.md) · [Português (Brasil)](README_pt-BR.md) · [العربية](README_ar.md) · [فارسی](README_fa.md) · [Bahasa Indonesia](README_id.md) · [Italiano](README_it.md) · [Ελληνικά](README_el.md) · [മലയാളം](README_ml.md) · [Roman Urdu](README_ur-Latn.md) · [Română](README_ro.md) · **বাংলা**
 
 # REA: Reverse Engineer Anything
 
@@ -19,7 +19,7 @@
 
 **[ওয়েবসাইট](https://rea.tools/bn/) · [গাইড](https://rea.tools/bn/guides/) · [শোকেস](https://rea.tools/bn/showcase/)**
 
-[দ্রুত শুরু](#দ্রুত-শুরু) · [REA কীভাবে কাজ করে](#rea-কীভাবে-কাজ-করে) · [কী কী বিশ্লেষণ করা যায়](#কী-কী-বিশ্লেষণ-করা-যায়) · [শোকেস](#শোকেস) · [সাধারণ প্রশ্নোত্তর](#সাধারণ-প্রশ্নোত্তর-faq) · [GNU objdump ও Rizin টুল](../reverse-engineering-tools.md) · [ডকুমেন্টেশন](#ডকুমেন্টেশন)
+[দ্রুত শুরু](#দ্রুত-শুরু) · [REA কীভাবে কাজ করে](#rea-কীভাবে-কাজ-করে) · [কী কী বিশ্লেষণ করা যায়](#কী-কী-বিশ্লেষণ-করা-যায়) · [শোকেস](#শোকেস) · [RL এনভায়রনমেন্ট তৈরি করুন](#rl-এনভায়রনমেন্ট-তৈরি-করুন) · [সাধারণ প্রশ্নোত্তর](#সাধারণ-প্রশ্নোত্তর-faq) · [GNU objdump ও Rizin টুল](../reverse-engineering-tools.md) · [ডকুমেন্টেশন](#ডকুমেন্টেশন)
 
 <code>npx rea-agents setup</code>
 
@@ -262,6 +262,41 @@ Renderer-এর clipboard API খুঁজে বের করুন, preload �
 [issue](https://github.com/morluto/rea/issues) বা
 [pull request](https://github.com/morluto/rea/pulls)-এ আপনার অভিজ্ঞতা শেয়ার করুন —
 টার্গেট, আপনার প্রশ্ন, REA কীভাবে সাহায্য করেছে এবং আপনি কী পেয়েছেন তা সহ।
+
+## RL এনভায়রনমেন্ট তৈরি করুন
+
+একটি AI agent-কে মূল অ্যাপ না চালিয়েই কোনো issue খুঁজে বের করা বা ফোল্ডার তৈরি করার মতো কাজ অনুশীলনের জন্য একটি লোকাল এনভায়রনমেন্ট দিন। এটি reinforcement learning (RL)-এর জন্য, অথবা একটি agent কতটা ভালোভাবে কাজ সম্পন্ন করে তা পরীক্ষা করতে ব্যবহার করুন।
+
+REA রেকর্ড করা API request ও response-কে এমন tool-এ রূপান্তর করে যা agent কল করতে পারে। এনভায়রনমেন্টটি রেকর্ড করা ডেটা ব্যবহার করে এবং কেবল তখনই পরিবর্তন সমর্থন করে যখন রেকর্ডিং তাদের প্রভাব নিশ্চিত করে।
+
+আপনার agent-এ REA সেট আপ থাকলে, নিচের উদাহরণের URL ও ফোল্ডার-সংক্রান্ত কাজগুলো নিজের কাজ দিয়ে বদলে নিন:
+
+```text
+Use REA to build an RL environment from my test web app at
+http://127.0.0.1:3000.
+Cover listing, creating, renaming, and deleting folders. You may create and
+remove test folders. Leave existing data unchanged.
+Save it in a folder named my-env. Check which operations work and tell me
+how to run it.
+```
+
+<details>
+<summary>এর বদলে কমান্ড লাইন ব্যবহার করুন</summary>
+
+অ্যাপের রেকর্ড করা browser request ও response-সহ একটি ফাইল আগে থেকেই থাকলে এই কমান্ডগুলো ব্যবহার করুন। ফলাফল চালাতে AgentEnv এবং Docker-ও লাগবে।
+
+```sh
+rea environment-build ./session.har ./my-env --name my-env --json
+agent-env run ./my-env
+```
+
+</details>
+
+REA একটি চালানোযোগ্য এনভায়রনমেন্ট export করে, সঙ্গে একটি সাধারণ test থাকে যা যাচাই করে এটি চালু হয় এবং সাড়া দেয়। আপনার RL framework-এর সঙ্গে এটি ব্যবহার করে task-এর লক্ষ্য নির্ধারণ করুন, reward check যোগ করুন এবং training চালান।
+
+[এনভায়রনমেন্ট তৈরির গাইড](https://rea.tools/guides/rl-environments/) ·
+[এনভায়রনমেন্ট রেফারেন্স](../agent-environments.md) ·
+[X-এ ডেমো দেখুন](https://x.com/reatools/status/2112574822584918075?s=20)
 
 ## সাধারণ প্রশ্নোত্তর (FAQ)
 
