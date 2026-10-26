@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -69,6 +69,11 @@ describe("parseUserConfig", () => {
     expect(parsed.ok).toBe(false);
   });
 
+  it("rejects empty-string values so a saved empty setting cannot block startup", () => {
+    const parsed = parseUserConfig({ GHIDRA_INSTALL_DIR: "" });
+    expect(parsed.ok).toBe(false);
+  });
+
   it("rejects non-object documents", () => {
     expect(parseUserConfig(["not", "an object"]).ok).toBe(false);
     expect(parseUserConfig(null).ok).toBe(false);
@@ -130,10 +135,7 @@ describe("readUserConfig end to end", () => {
   });
 
   it("returns undefined when no config file exists", async () => {
-    const contents = await readUserConfig(
-      { HOME: await mkdtemp(join(tmpdir(), "rea-empty-")) },
-      "darwin",
-    );
+    const contents = await readUserConfig({ HOME: tempHome() }, "darwin");
     expect(contents).toBeUndefined();
   });
 });
@@ -208,6 +210,38 @@ describe("writeUserConfig / unsetUserConfig", () => {
       "darwin",
     );
     expect(removed).toEqual([]);
+  });
+
+  it("replaces the file atomically without leaving staging files behind", async () => {
+    const { writeUserConfig, unsetUserConfig } =
+      await import("../../src/config/userConfig.js");
+    const root = tempHome();
+    const configDir = join(root, ".config", "rea");
+    await writeUserConfig(
+      { HOME: root },
+      { GHIDRA_INSTALL_DIR: "/opt/ghidra" },
+      "darwin",
+    );
+    await unsetUserConfig({ HOME: root }, ["GHIDRA_INSTALL_DIR"], "darwin");
+    const entries = await readdir(configDir);
+    expect(entries).toEqual(["rea.json"]);
+    expect(
+      JSON.parse(await readFile(join(configDir, "rea.json"), "utf8")),
+    ).toEqual({});
+  });
+});
+
+describe("environmentWithUserConfig", () => {
+  it("reports an unreadable config file as a configuration error, not a crash", async () => {
+    const { environmentWithUserConfig } = await import("../../src/cli.js");
+    const root = tempHome();
+    await mkdir(join(root, ".config", "rea", "rea.json"), { recursive: true });
+    const result = await environmentWithUserConfig({ HOME: root });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toContain("rea.json");
+      expect(result.error).toContain("could not be read");
+    }
   });
 });
 

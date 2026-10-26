@@ -5,7 +5,11 @@ import { registerSignalCommands } from "./cli/signalCommands.js";
 import { registerWasmCommands } from "./cli/wasmCommands.js";
 import { registerApkSignatureCommands } from "./cli/apkSignatureCommands.js";
 import { snapshotEnvironment } from "./process/snapshotEnvironment.js";
-import { mergeUserConfig, readUserConfig } from "./config/userConfig.js";
+import {
+  mergeUserConfig,
+  readUserConfig,
+  userConfigFilePath,
+} from "./config/userConfig.js";
 import { projectAnalysisError } from "./domain/analysisErrorProjection.js";
 import { createDirectAnalysis } from "./composition/directAnalysis.js";
 import { registerEvmCommands } from "./cli/evmCommands.js";
@@ -82,7 +86,20 @@ export const environmentWithUserConfig = async (
   | { ok: true; environment: Readonly<NodeJS.ProcessEnv> }
   | { ok: false; error: string }
 > => {
-  const contents = await readUserConfig(selectedEnvironment);
+  let contents: string | undefined;
+  try {
+    contents = await readUserConfig(selectedEnvironment);
+  } catch (cause: unknown) {
+    // An unreadable file (permissions, a directory at the path) must gate the
+    // CLI like a malformed one, not escape as a raw filesystem error.
+    const detail = cause instanceof Error ? cause.message : String(cause);
+    return {
+      ok: false,
+      error:
+        `REA user config file ${userConfigFilePath(selectedEnvironment, process.platform)} could not be read (${detail}); ` +
+        "fix its permissions or remove it",
+    };
+  }
   const merged = mergeUserConfig(
     snapshotEnvironment(selectedEnvironment),
     contents,

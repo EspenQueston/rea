@@ -117,6 +117,15 @@ if (!(await compiledRuntimeExists(runtimeFiles))) {
   // Incur can exit from the callback below before this function returns.
   // That callback owns the status, including a closed-pipe exit of 141.
   let exiting = false;
+  // Doctor still runs on a broken config file; surface the file error beside
+  // its report so readiness is not silently evaluated against a fallback.
+  if (
+    !userConfig.ok &&
+    !isShellCompletion &&
+    builtinArguments.splitIncurBuiltinArguments(cliArgs).command[0] === "doctor"
+  ) {
+    process.stderr.write(`${configurationError}\n`);
+  }
   try {
     // Doctor is the readiness report for this failure. Other commands still stop
     // here so they do not run with an unusable log level.

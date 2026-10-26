@@ -86,11 +86,29 @@ const httpRuntimeDependencies = (
   };
 };
 
+/**
+ * Whether the selected environment pins a config root of its own. Injected
+ * runtimes that carry no home or XDG variables must stay isolated from the
+ * host account's real `rea.json`, which the home fallback would otherwise
+ * reach.
+ */
+const environmentHasConfigRoot = (
+  environment: Readonly<Record<string, string | undefined>>,
+): boolean =>
+  [environment.XDG_CONFIG_HOME, environment.HOME, environment.USERPROFILE]
+    .some((value) => value !== undefined && value.length > 0) ||
+  (environment.HOMEDRIVE !== undefined &&
+    environment.HOMEDRIVE.length > 0 &&
+    environment.HOMEPATH !== undefined &&
+    environment.HOMEPATH.length > 0);
+
 /** Start discovery without constructing unused analysis validators. */
 export const run = async (
   dependencies: RuntimeDependencies = runtimeDependencies(),
 ): Promise<number> => {
-  const userConfig = await readUserConfig(dependencies.env);
+  const userConfig = environmentHasConfigRoot(dependencies.env)
+    ? await readUserConfig(dependencies.env)
+    : undefined;
   const userConfigMerge = mergeUserConfig(
     snapshotEnvironment(dependencies.env),
     userConfig,

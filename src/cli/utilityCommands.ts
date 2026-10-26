@@ -10,12 +10,13 @@ import { projectReferenceSourceImportError } from "../application/ReferenceSourc
 import type { AnalysisCleanupObservation } from "../domain/analysisErrorBase.js";
 import {
   PERSISTED_SETTINGS,
-  readUserConfig,
   unsetUserConfig,
+  userConfigFilePath,
   writeUserConfig,
   type PersistedSetting,
 } from "../config/userConfig.js";
 import { parseConfig } from "../config/parseConfig.js";
+import { ConfigurationError } from "../domain/configurationErrors.js";
 import { projectAnalysisError } from "../domain/analysisErrorProjection.js";
 import { AnalysisInputError } from "../domain/analysisErrorCore.js";
 import { projectInputIssues } from "../domain/inputIssueProjection.js";
@@ -481,85 +482,94 @@ const registerConfigCommand = (
         .optional()
         .describe("Print the effective value and source for one setting"),
     }),
-    run: async ({ options }) => {
-      const mergedEnv = { ...environment };
-      const result: Record<string, { value: string; source: string }> = {};
-      const persistable = PERSISTED_SETTINGS as readonly string[];
-      // The injected environment is already merged (env > config file), so
-      // the raw ambient process environment decides which side won.
-      const rawEnvironment = process.env as Record<string, string | undefined>;
-      for (const name of persistable) {
-        const effective = mergedEnv[name];
-        if (effective === undefined || effective.length === 0) continue;
-        const source = rawEnvironment[name] !== undefined ? "env" : "config";
-        result[name] = { value: effective, source };
-      }
-      if (options.get !== undefined) {
-        const entry = result[options.get];
-        if (entry === undefined) {
-          process.stdout.write(`${options.get}: not set (auto-detect)\n`);
-          return;
+    run: async ({ options }) =>
+      logCliCommand(logger, CLI_COMMANDS.config, async () => {
+        const persistable = PERSISTED_SETTINGS as readonly string[];
+        const supported = `is not a persistable REA setting; supported: ${persistable.join(", ")}`;
+        const rejectSetting = (setting: string, constraint: string): never => {
+          throw new ConfigurationError("Invalid rea config request", {
+            settings: [{ setting, constraint }],
+          });
+        };
+        if (
+          options.get !== undefined &&
+          (options.set.length > 0 || options.unset.length > 0)
+        ) {
+          rejectSetting("--get", "cannot be combined with --set or --unset");
         }
-        process.stdout.write(
-          `${options.get}: ${entry.value} (${entry.source})\n`,
-        );
-        return;
-      }
-      if (options.set.length > 0) {
-        const settings: Partial<Record<PersistedSetting, string>> = {};
-        for (const pair of options.set) {
-          const eq = pair.indexOf("=");
-          if (eq <= 0) {
-            process.stderr.write(`--set expects NAME=VALUE, got: ${pair}\n`);
-            process.exitCode = 1;
-            return;
+        // The injected environment is already merged (env > config file), so
+        // the raw ambient process environment decides which side won.
+        const rawEnvironment = process.env as Record<
+          string,
+          string | undefined
+        >;
+        const effectiveSettings = (): Record<
+          string,
+          { value: string; source: string }
+        > => {
+          const result: Record<string, { value: string; source: string }> = {};
+          for (const name of persistable) {
+            const effective = environment[name];
+            if (effective === undefined || effective.length === 0) continue;
+            const source =
+              rawEnvironment[name] !== undefined ? "env" : "config";
+            result[name] = { value: effective, source };
           }
-          const name = pair.slice(0, eq);
-          if (!persistable.includes(name)) {
-            process.stderr.write(
-              `${name} is not a persistable setting; supported: ${persistable.join(", ")}\n`,
-            );
-            process.exitCode = 1;
-            return;
+          return result;
+        };
+        if (options.get !== undefined) {
+          if (!persistable.includes(options.get)) {
+            rejectSetting(options.get, supported);
           }
-          settings[name as PersistedSetting] = pair.slice(eq + 1);
+          const entry = effectiveSettings()[options.get];
+          return entry === undefined
+            ? { setting: options.get, value: null, source: "auto-detect" }
+            : { setting: options.get, ...entry };
         }
-        await writeUserConfig(
-          environment as Readonly<NodeJS.ProcessEnv>,
-          settings,
-        );
-        process.stdout.write(
-          `Saved ${Object.keys(settings).join(", ")} to the user config file\n`,
-        );
-      }
-      if (options.unset.length > 0) {
-        const removed = await unsetUserConfig(
-          environment as Readonly<NodeJS.ProcessEnv>,
-          options.unset.filter((name) =>
-            persistable.includes(name),
-          ) as readonly PersistedSetting[],
-        );
-        process.stdout.write(
-          removed.length > 0
-            ? `Removed ${removed.join(", ")} from the user config file\n`
-            : "Nothing to remove; the config file has no matching settings\n",
-        );
-      }
-      if (
-        options.set.length === 0 &&
-        options.unset.length === 0 &&
-        options.get === undefined
-      ) {
-        if (Object.keys(result).length === 0) {
-          process.stdout.write(
-            "No provider settings configured; see rea config --help\n",
+        if (options.set.length > 0 || options.unset.length > 0) {
+          const settings: Partial<Record<PersistedSetting, string>> = {};
+          for (const pair of options.set) {
+            const eq = pair.indexOf("=");
+            if (eq <= 0) {
+              rejectSetting(pair, "--set expects NAME=VALUE");
+            }
+            const name = pair.slice(0, eq);
+            if (!persistable.includes(name)) {
+              rejectSetting(name, supported);
+            }
+            const value = pair.slice(eq + 1);
+            if (value.length === 0) {
+              rejectSetting(name, "must be a non-empty string");
+            }
+            settings[name as PersistedSetting] = value;
+          }
+          for (const name of options.unset) {
+            if (!persistable.includes(name)) {
+              rejectSetting(name, supported);
+            }
+          }
+          const path = userConfigFilePath(
+            environment as Readonly<NodeJS.ProcessEnv>,
+            process.platform,
           );
-          return;
+          let saved: readonly string[] = [];
+          let removed: readonly string[] = [];
+          if (options.set.length > 0) {
+            await writeUserConfig(
+              environment as Readonly<NodeJS.ProcessEnv>,
+              settings,
+            );
+            saved = Object.keys(settings);
+          }
+          if (options.unset.length > 0) {
+            removed = await unsetUserConfig(
+              environment as Readonly<NodeJS.ProcessEnv>,
+              options.unset as readonly PersistedSetting[],
+            );
+          }
+          return { path, saved, removed };
         }
-        for (const [name, entry] of Object.entries(result)) {
-          process.stdout.write(`${name}: ${entry.value} (${entry.source})\n`);
-        }
-      }
-    },
+        return { settings: effectiveSettings() };
+      }),
   });
 };

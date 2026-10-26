@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join } from "node:path";
 
 import { ConfigurationError } from "../domain/configurationErrors.js";
@@ -157,23 +157,15 @@ export const readUserConfig = async (
 /**
  * Persist one or more settings to the user config file, creating parent
  * directories as needed. The file is rewritten in full, sorted for stable
- * diffs, with a trailing newline.
+ * diffs, with a trailing newline. The new content is staged next to the file
+ * and moved into place with rename, so an interrupted write never leaves a
+ * partial JSON document behind.
  */
 export const writeUserConfig = async (
   environment: Readonly<NodeJS.ProcessEnv>,
   settings: Partial<Record<PersistedSetting, string>>,
   platform: NodeJS.Platform = process.platform,
-  io: {
-    readFile: typeof readFile;
-    writeFile: (path: string, data: string, encoding: "utf8") => Promise<void>;
-    mkdir: (path: string) => Promise<void>;
-  } = {
-    readFile,
-    writeFile: (path, data, encoding) =>
-      writeFile(path, data, encoding).then(() => undefined),
-    mkdir: (path) =>
-      mkdir(dirname(path), { recursive: true }).then(() => undefined),
-  },
+  io: ConfigFileIo = defaultConfigFileIo(),
 ): Promise<Partial<Record<PersistedSetting, string>>> => {
   const existing = await readUserConfig(environment, platform, io.readFile);
   let current: Partial<Record<PersistedSetting, string>> = {};
@@ -183,13 +175,7 @@ export const writeUserConfig = async (
     current = parsed.value;
   }
   const next = { ...current, ...settings };
-  const path = userConfigFilePath(environment, platform);
-  await io.mkdir(path);
-  await io.writeFile(
-    path,
-    JSON.stringify(sortedSettings(next), null, 2) + "\n",
-    "utf8",
-  );
+  await persistUserConfig(environment, next, platform, io);
   return next;
 };
 
@@ -198,13 +184,7 @@ export const unsetUserConfig = async (
   environment: Readonly<NodeJS.ProcessEnv>,
   keys: readonly PersistedSetting[],
   platform: NodeJS.Platform = process.platform,
-  io: Parameters<typeof writeUserConfig>[3] = {
-    readFile,
-    writeFile: (path, data, encoding) =>
-      writeFile(path, data, encoding).then(() => undefined),
-    mkdir: (path) =>
-      mkdir(dirname(path), { recursive: true }).then(() => undefined),
-  },
+  io: ConfigFileIo = defaultConfigFileIo(),
 ): Promise<readonly PersistedSetting[]> => {
   const existing = await readUserConfig(environment, platform, io.readFile);
   if (existing === undefined) return [];
@@ -216,17 +196,50 @@ export const unsetUserConfig = async (
     if (!keys.includes(key as PersistedSetting))
       (next as Record<string, string>)[key] = value;
   }
-  const path = userConfigFilePath(environment, platform);
-  await io.mkdir(path);
-  await io.writeFile(
-    path,
-    JSON.stringify(sortedSettings(next), null, 2) + "\n",
-    "utf8",
-  );
+  await persistUserConfig(environment, next, platform, io);
   const removed = [...before].filter((key) =>
     keys.includes(key as PersistedSetting),
   );
   return removed as PersistedSetting[];
+};
+
+/** Injectable file operations for persisting the user config. */
+interface ConfigFileIo {
+  readFile: typeof readFile;
+  writeFile: (path: string, data: string, encoding: "utf8") => Promise<void>;
+  mkdir: (path: string) => Promise<void>;
+  rename: (from: string, to: string) => Promise<void>;
+}
+
+const defaultConfigFileIo = (): ConfigFileIo => ({
+  readFile,
+  writeFile: (path, data, encoding) =>
+    writeFile(path, data, encoding).then(() => undefined),
+  mkdir: (path) =>
+    mkdir(dirname(path), { recursive: true }).then(() => undefined),
+  rename: (from, to) => rename(from, to).then(() => undefined),
+});
+
+/**
+ * The single read/change/write tail shared by every mutation: stage the
+ * document beside the real file, then rename it into place. Rename is
+ * atomic, so readers never observe a half-written file.
+ */
+const persistUserConfig = async (
+  environment: Readonly<NodeJS.ProcessEnv>,
+  settings: Partial<Record<PersistedSetting, string>>,
+  platform: NodeJS.Platform,
+  io: ConfigFileIo,
+): Promise<void> => {
+  const path = userConfigFilePath(environment, platform);
+  const staged = `${path}.tmp`;
+  await io.mkdir(path);
+  await io.writeFile(
+    staged,
+    JSON.stringify(sortedSettings(settings), null, 2) + "\n",
+    "utf8",
+  );
+  await io.rename(staged, path);
 };
 
 const sortedSettings = (
