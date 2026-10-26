@@ -1,17 +1,21 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { readClientRegistrationStatuses } from "../../../src/application/ClientRegistrationStatus.js";
 import { parseClientConfiguration } from "../../../src/application/ClientConfigurationDocument.js";
+import { npxRegistrationCommand } from "../../../src/application/ClientRegistrationIdentity.js";
 import {
   configureClientConfiguration,
   inspectClientConfiguration,
 } from "../../../src/application/SetupClientConfiguration.js";
 import { detectClients } from "../../../src/application/SetupHost.js";
 import { supportedClients } from "../../../src/application/SupportedClients.js";
-import { systemUninstallHost } from "../../../src/application/Uninstall.js";
+import {
+  runUninstall,
+  systemUninstallHost,
+} from "../../../src/application/Uninstall.js";
 import { createTestTempDirectory } from "../../fixtures/temporaryDirectory.js";
 import {
   clearClientLocationEnvironment,
@@ -329,5 +333,383 @@ describe("Pi strict JSON parsing", () => {
     expect(() => parseClientConfiguration(jsonc, "pi")).toThrow();
     expect(() => parseClientConfiguration("", "pi")).toThrow();
     expect(() => parseClientConfiguration("\uFEFF", "pi")).toThrow();
+  });
+});
+
+describe("Pi project-scoped discovery and overrides", () => {
+  it("discovers project-scoped registration and reports scope: project", async () => {
+    const home = await createTestTempDirectory("rea-pi-project-home-");
+    const projectDir = await createTestTempDirectory("rea-pi-project-cwd-");
+    vi.spyOn(process, "cwd").mockReturnValue(projectDir);
+
+    const projectConfigDir = join(projectDir, ".pi");
+    await mkdir(projectConfigDir, { recursive: true });
+    const projectConfigPath = resolve(projectConfigDir, "mcp.json");
+    const command = npxRegistrationCommand(process.platform);
+    await writeFile(
+      projectConfigPath,
+      JSON.stringify({
+        mcpServers: {
+          rea: {
+            command: command[0],
+            args: command.slice(1),
+          },
+        },
+      }),
+    );
+
+    const statuses = await readClientRegistrationStatuses(home, undefined, {
+      environment: {},
+    });
+    const piStatus = statuses.find(({ client }) => client === "pi");
+    expect(piStatus).toMatchObject({
+      client: "pi",
+      state: "aligned",
+      scope: "project",
+      config_path: projectConfigPath,
+      remediation: null,
+    });
+  });
+
+  it("evaluates a project full replacement over a user registration", async () => {
+    const { home, client } = await piClient();
+    const projectDir = await createTestTempDirectory("rea-pi-project-cwd-");
+    vi.spyOn(process, "cwd").mockReturnValue(projectDir);
+
+    await writeFile(
+      client.configPath,
+      JSON.stringify({
+        mcpServers: {
+          rea: {
+            command: "npx",
+            args: ["-y", "rea-agents@1.0.0", "mcp"],
+          },
+        },
+      }),
+    );
+
+    const projectConfigDir = join(projectDir, ".pi");
+    await mkdir(projectConfigDir, { recursive: true });
+    const projectConfigPath = resolve(projectConfigDir, "mcp.json");
+    const command = npxRegistrationCommand(process.platform);
+    await writeFile(
+      projectConfigPath,
+      JSON.stringify({
+        mcpServers: {
+          rea: {
+            command: command[0],
+            args: command.slice(1),
+          },
+        },
+      }),
+    );
+
+    const statuses = await readClientRegistrationStatuses(home, undefined, {
+      environment: {},
+    });
+    const piStatus = statuses.find(({ client }) => client === "pi");
+    expect(piStatus).toMatchObject({
+      client: "pi",
+      state: "aligned",
+      scope: "project",
+      config_path: projectConfigPath,
+    });
+  });
+
+  it("evaluates a project full replacement even when the shadowed user row has invalid REA environment", async () => {
+    const { home, client } = await piClient();
+    const projectDir = await createTestTempDirectory(
+      "rea-pi-invalid-user-env-",
+    );
+    vi.spyOn(process, "cwd").mockReturnValue(projectDir);
+
+    await writeFile(
+      client.configPath,
+      JSON.stringify({
+        mcpServers: {
+          rea: {
+            command: "npx",
+            args: ["-y", "rea-agents@1.0.0", "mcp"],
+            env: {
+              REA_GHIDRA_STARTUP_TIMEOUT_MS: "bad",
+            },
+          },
+        },
+      }),
+    );
+
+    const projectConfigDir = join(projectDir, ".pi");
+    await mkdir(projectConfigDir, { recursive: true });
+    const projectConfigPath = resolve(projectConfigDir, "mcp.json");
+    const command = npxRegistrationCommand(process.platform);
+    await writeFile(
+      projectConfigPath,
+      JSON.stringify({
+        mcpServers: {
+          rea: {
+            command: command[0],
+            args: command.slice(1),
+          },
+        },
+      }),
+    );
+
+    const statuses = await readClientRegistrationStatuses(home, undefined, {
+      environment: {},
+    });
+    const piStatus = statuses.find(({ client: c }) => c === "pi");
+    expect(piStatus).toMatchObject({
+      client: "pi",
+      state: "aligned",
+      scope: "project",
+      config_path: projectConfigPath,
+    });
+  });
+});
+
+describe("Pi project-scoped partial overrides", () => {
+  it("applies a partial project override onto a user registration and directs remediation to the project file", async () => {
+    const { home, client } = await piClient();
+    const projectDir = await createTestTempDirectory("rea-pi-project-cwd-");
+    vi.spyOn(process, "cwd").mockReturnValue(projectDir);
+
+    const command = npxRegistrationCommand(process.platform);
+    await writeFile(
+      client.configPath,
+      JSON.stringify({
+        mcpServers: {
+          rea: {
+            command: command[0],
+            args: command.slice(1),
+          },
+        },
+      }),
+    );
+
+    const projectConfigDir = join(projectDir, ".pi");
+    await mkdir(projectConfigDir, { recursive: true });
+    const projectConfigPath = resolve(projectConfigDir, "mcp.json");
+    await writeFile(
+      projectConfigPath,
+      JSON.stringify({
+        mcpServers: {
+          rea: {
+            enabled: false,
+          },
+        },
+      }),
+    );
+
+    const statuses = await readClientRegistrationStatuses(home, undefined, {
+      environment: {},
+    });
+    const piStatus = statuses.find(({ client }) => client === "pi");
+    expect(piStatus).toMatchObject({
+      client: "pi",
+      state: "stale",
+      scope: "project",
+      config_path: projectConfigPath,
+    });
+    expect(piStatus?.remediation).toContain(
+      "REA setup writes only user-level client configuration and does not modify project-scoped configuration",
+    );
+    expect(piStatus?.remediation).not.toContain("Run rea setup");
+  });
+
+  it("reports invalid with project-scoped remediation for a standalone partial override without a user registration", async () => {
+    const home = await createTestTempDirectory("rea-pi-project-home-");
+    const projectDir = await createTestTempDirectory("rea-pi-project-cwd-");
+    vi.spyOn(process, "cwd").mockReturnValue(projectDir);
+
+    const projectConfigDir = join(projectDir, ".pi");
+    await mkdir(projectConfigDir, { recursive: true });
+    const projectConfigPath = resolve(projectConfigDir, "mcp.json");
+    await writeFile(
+      projectConfigPath,
+      JSON.stringify({
+        mcpServers: {
+          rea: {
+            enabled: true,
+          },
+        },
+      }),
+    );
+
+    const statuses = await readClientRegistrationStatuses(home, undefined, {
+      environment: {},
+    });
+    const piStatus = statuses.find(({ client }) => client === "pi");
+    expect(piStatus).toMatchObject({
+      client: "pi",
+      state: "invalid",
+      scope: "project",
+      config_path: projectConfigPath,
+    });
+    expect(piStatus?.remediation).toContain(
+      "REA setup writes only user-level configuration and does not modify project-scoped configuration",
+    );
+  });
+});
+
+describe("Pi project-scoped launcher provenance and fallback", () => {
+  it("keeps user launcher provenance when project only sets flags and advises user setup for version drift", async () => {
+    const { home, client } = await piClient();
+    const projectDir = await createTestTempDirectory("rea-pi-stale-user-");
+    vi.spyOn(process, "cwd").mockReturnValue(projectDir);
+
+    const alignedCommand = npxRegistrationCommand(process.platform);
+    const staleCommand = [
+      ...alignedCommand.slice(0, -2),
+      "rea-agents@1.0.0",
+      "mcp",
+    ];
+
+    await writeFile(
+      client.configPath,
+      JSON.stringify({
+        mcpServers: {
+          rea: {
+            command: staleCommand[0],
+            args: staleCommand.slice(1),
+          },
+        },
+      }),
+    );
+
+    const projectConfigDir = join(projectDir, ".pi");
+    await mkdir(projectConfigDir, { recursive: true });
+    const projectConfigPath = resolve(projectConfigDir, "mcp.json");
+    await writeFile(
+      projectConfigPath,
+      JSON.stringify({
+        mcpServers: {
+          rea: {
+            enabled: true,
+          },
+        },
+      }),
+    );
+
+    const statuses = await readClientRegistrationStatuses(home, undefined, {
+      environment: {},
+    });
+    const piStatus = statuses.find(({ client }) => client === "pi");
+    expect(piStatus).toMatchObject({
+      client: "pi",
+      state: "stale",
+      scope: "project",
+      launcher_scope: "user",
+      config_path: projectConfigPath,
+    });
+    expect(piStatus?.remediation).toContain("rea setup --client pi");
+    expect(piStatus?.remediation).not.toContain(projectConfigPath);
+  });
+
+  it("falls back to user missing when project file only has sibling servers", async () => {
+    const home = await createTestTempDirectory("rea-pi-sibling-only-home-");
+    const projectDir = await createTestTempDirectory(
+      "rea-pi-sibling-only-cwd-",
+    );
+    vi.spyOn(process, "cwd").mockReturnValue(projectDir);
+
+    const projectConfigDir = join(projectDir, ".pi");
+    await mkdir(projectConfigDir, { recursive: true });
+    const projectConfigPath = resolve(projectConfigDir, "mcp.json");
+    await writeFile(
+      projectConfigPath,
+      JSON.stringify({
+        mcpServers: {
+          other: { command: "other-cmd" },
+        },
+      }),
+    );
+
+    const statuses = await readClientRegistrationStatuses(home, undefined, {
+      environment: {},
+    });
+    const piStatus = statuses.find(({ client }) => client === "pi");
+    const client = supportedClients(home).find(({ name }) => name === "pi");
+    expect(piStatus).toMatchObject({
+      client: "pi",
+      state: "missing",
+      scope: "user",
+      config_path: client?.configPath,
+    });
+    expect(piStatus?.remediation).toContain(
+      "Run rea setup to refresh this registration",
+    );
+  });
+});
+
+describe("Pi project-scoped uninstall", () => {
+  it("uninstalls REA-owned project registrations with a backup and preserves manual partial overrides", async () => {
+    const { home } = await piClient();
+    const projectDir = await createTestTempDirectory("rea-pi-project-cwd-");
+    vi.spyOn(process, "cwd").mockReturnValue(projectDir);
+
+    const projectConfigDir = join(projectDir, ".pi");
+    await mkdir(projectConfigDir, { recursive: true });
+    const projectConfigPath = resolve(projectConfigDir, "mcp.json");
+    const command = npxRegistrationCommand(process.platform);
+    await writeFile(
+      projectConfigPath,
+      JSON.stringify({
+        mcpServers: {
+          other: { command: "other-server" },
+          rea: {
+            command: command[0],
+            args: command.slice(1),
+          },
+        },
+      }),
+    );
+
+    const clientWithProject = piPath(home, process.platform, {});
+    if (clientWithProject === undefined) throw new Error("missing Pi client");
+    expect(clientWithProject.projectConfigPaths).toEqual([projectConfigPath]);
+
+    const host = systemUninstallHost(home);
+    const clients = await host.clients();
+    const piClients = clients.filter(({ name }) => name === "pi");
+    expect(piClients.map((c) => c.configPath)).toContain(projectConfigPath);
+
+    const projectClient = piClients.find(
+      (c) => c.configPath === projectConfigPath,
+    );
+    if (projectClient === undefined) throw new Error("missing project client");
+
+    const result = await host.removeClient(projectClient);
+    expect(result).toMatchObject({
+      name: "pi",
+      status: "removed",
+    });
+
+    const projectContent = JSON.parse(
+      await readFile(projectConfigPath, "utf8"),
+    );
+    expect(projectContent).toEqual({
+      mcpServers: {
+        other: { command: "other-server" },
+      },
+    });
+    expect(
+      await readFile(`${projectConfigPath}.rea.backup`, "utf8"),
+    ).toBeDefined();
+
+    // Now test retention of manual partial override
+    await writeFile(
+      projectConfigPath,
+      JSON.stringify({
+        mcpServers: {
+          rea: { enabled: false },
+        },
+      }),
+    );
+    const retainedResult = await host.removeClient(projectClient);
+    expect(retainedResult).toMatchObject({
+      name: "pi",
+      status: "retained",
+      detail: expect.stringContaining("not REA-owned"),
+    });
   });
 });

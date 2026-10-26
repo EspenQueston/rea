@@ -620,6 +620,7 @@ export const systemUninstallHost = (
 const uninstallConfigPaths = (client: SetupClient): readonly string[] => [
   ...new Set([
     ...(client.configPaths ?? [client.configPath]),
+    ...(client.projectConfigPaths ?? []),
     ...(client.msixPackage === undefined
       ? []
       : [
@@ -1026,8 +1027,27 @@ const resolveUninstallConfigPath = async (
   );
 };
 
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
 /** Ownership rule for persistent MCP registrations created by REA setup. */
 const isOwnedRegistration = (value: unknown, client: SetupClient): boolean => {
+  if (
+    isRecord(value) &&
+    Array.isArray(value.command) &&
+    value.command.length > 0
+  ) {
+    const [command, ...args] = value.command;
+    if (
+      typeof command === "string" &&
+      args.every((arg) => typeof arg === "string") &&
+      classifyClientRegistrationCommand(
+        [command, ...args],
+        CURRENT_ENTRYPOINT_PATH,
+      ) === "owned"
+    )
+      return true;
+  }
   const parsed = parseClientRegistrationLauncher(value, client);
   if (!parsed.ok) return false;
   const { command, args } = parsed.value;
