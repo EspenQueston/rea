@@ -190,6 +190,7 @@
     "verify:legacy-simulator": "npm run build:cached && node scripts/verify/apple/legacy-simulator.mjs",
     "verify:node-sea": "npm run build:cached && node scripts/verify-node-sea.mjs",
     "verify:architecture-guards": "node scripts/verify/architecture-guards.mjs",
+    "verify:repository-integrity": "node scripts/verify-repository-integrity.mjs",
     "verify:apktool": "npm run build:cached && node scripts/verify-apktool.mjs",
     "verify:pcap": "npm run build:cached && node scripts/verify-pcap.mjs",
     "verify:pe:load-config": "npm run build:cached && node scripts/verify-pe-load-config.mjs",
