@@ -1,6 +1,10 @@
 import * as t from "@babel/types";
 import { unwrapJavaScriptExpression } from "./javascriptAstValues.js";
-import { semanticRuntimeExportValueSources } from "./javascriptModuleDeclaration.js";
+import {
+  isTypeOnlyExportDeclaration,
+  isUnmodeledJavaScriptRuntimeScope,
+  semanticRuntimeExportValueSources,
+} from "./javascriptModuleDeclaration.js";
 import { semanticBindingAtRead } from "./javascriptSemanticMutationInitializers.js";
 import {
   semanticStableInitializer,
@@ -85,14 +89,33 @@ const initializedBeforeEnclosingFunction = (
 
 /**
  * ESM exports are not escapes in the shared mutation index, and an importer
- * can reach an object through an exported alias, container or function. Keep
- * nested-function reads unknown in any module that exports a runtime local
- * value; erased type-only exports publish nothing.
+ * can reach an object through an exported alias, container, function,
+ * namespace or import alias. Keep nested-function reads unknown in any module
+ * that exports a runtime local value; erased type-only exports publish nothing.
  */
-const exportsLocalBindings = (program: t.Program): boolean =>
+const exportsLocalBindings = (program: t.Program): boolean => {
+  let exported = localExportPrograms.get(program);
+  if (exported === undefined) {
+    exported = programExportsLocalBindings(program);
+    localExportPrograms.set(program, exported);
+  }
+  return exported;
+};
+
+const localExportPrograms = new WeakMap<t.Program, boolean>();
+
+const programExportsLocalBindings = (program: t.Program): boolean =>
   program.body.some(
     (statement) =>
       semanticRuntimeExportValueSources(statement).length > 0 ||
+      // Runtime namespaces, enums and `export import` aliases publish
+      // values that the shared export helper does not list.
+      (t.isExportNamedDeclaration(statement) &&
+        statement.declaration != null &&
+        !isTypeOnlyExportDeclaration(statement) &&
+        (isUnmodeledJavaScriptRuntimeScope(statement.declaration) ||
+          (t.isTSImportEqualsDeclaration(statement.declaration) &&
+            statement.declaration.importKind !== "type"))) ||
       t.isTSExportAssignment(statement),
   );
 

@@ -297,6 +297,10 @@ describe("Electron nested-function constants and module exports", () => {
     "const preferences = { nodeIntegration: true }; export function get() { return preferences; }",
     // Exporting only the window factory still exports local bindings.
     "const preferences = { nodeIntegration: true }; export { create };",
+    "const preferences = { nodeIntegration: true }; export namespace box { export const shared = preferences; }",
+    "const preferences = { nodeIntegration: true }; export namespace a.b { export const shared = preferences; }",
+    "const preferences = { nodeIntegration: true }; namespace N { export const shared = preferences; } export import Q = N.shared;",
+    "const preferences = { nodeIntegration: true }; export enum Mode { Integrated = 1 }",
   ])(
     "keeps ES module constants unknown because importers may reach them: %s",
     (declaration) => {
@@ -317,6 +321,7 @@ describe("Electron nested-function constants and module exports", () => {
     "type Config = string; export type { Config };",
     "type Config = string; export { type Config };",
     "export declare const version: string;",
+    "export declare namespace box { const shared: number; }",
     "export {};",
   ])(
     "resolves when an ES module exports only erased types: %s",

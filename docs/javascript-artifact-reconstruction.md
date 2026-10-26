@@ -518,7 +518,8 @@ object has no relevant write or escape anywhere other than the constructor
 argument itself. CommonJS exports are tracked as escapes; an ES module that
 exports any runtime local value keeps these reads unknown (erased type-only
 exports do not count), because importers can
-reach the object through an exported alias, container or function. The shared
+reach the object through an exported alias, container, function, namespace or
+import alias. The shared
 lexical and mutation index checks the selected `webPreferences` path, so an
 unrelated `options.icon` write does not discard these facts. Reassignment,
 relevant writes, prior escapes, ambiguous initialization, and unresolved
