@@ -24,8 +24,13 @@ the agent recordings.
   for `null` takes its item read; an update answer spelling an empty list `[]` is unchanged; a later create storing a
   derived field otherwise is withheld at the create and later deletes stay confirmed.
 - Serving: a label created from its name alone stores the empty members as sent and is inserted by name, and one
-  without the required name is refused; renamed labels and folders move to where their new names sort; a created tag's
-  id appears in the list envelope's `all` in list order.
+  without the required name is refused; renamed labels and folders move to where their new names sort, and a bulk
+  rename of two labels moves each; a created tag's id appears in the list envelope's `all` in list order; a note sent
+  `null` as one recording did is accepted after a later call taught `""` as its default, which a note left out takes;
+  a created and an updated task answer `assignees: []` as their recordings did while reads show `null`.
+- Review cases: a member's recorded empty value stays accepted once a default is learned; a rename teaches title order
+  where the creates fit both id and title order; moving written entities in turn sorts `[a, b, c, d]` with `b→h` and
+  `c→i` as `[a, d, h, i]`. The plan and serving tests for these fail on the branch's first head `0ceff6fa`.
 
 ## Write plans over recorded captures
 

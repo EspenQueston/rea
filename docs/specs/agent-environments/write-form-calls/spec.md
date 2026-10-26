@@ -23,18 +23,20 @@ natural-language tasks ask for, or withheld them:
 - **Blank members.** A create member a recorded call sent empty is not required. A call that leaves it out is applied
   as sending that value (`body.blank`), so the entity, the answer and every rule reading the member come out as for
   the recorded call. A member a later call left out takes the default it showed instead. A call may send a member as
-  any recorded call sent it empty, such as `null` where another stored a string, and one leaving it out is applied as
-  the earliest did. Updates are unchanged.
+  any recorded call sent it empty, such as `null` where another stored a string, even once a default is learned, and
+  one leaving it out without a default is applied as the earliest did. Updates are unchanged.
 - **Listed ids.** A list view names top-level envelope members that list two or more listed entities' identity values
   in list order (`listed_ids`). A rendered list sets them to its own entities' values, unless it is a page of more
   matches, which keeps the recorded value as a partial page's total does.
 - **Sorted collections.** An update that writes the field its type's creates are sorted by moves its entity to where
-  the new value sorts, in replay and serving, and its plan carries that `insert`. When a read listing the whole
-  collection fails after an update and no create of the type was placed by a sort, replay tries the collection sorted
-  by a field the update writes; on a match, the type's creates and updates take that order.
+  the new value sorts, in replay and serving (a bulk update moving each entity in turn), and its plan carries that
+  `insert`. When a read listing the whole collection fails after an update and the type's creates are not sorted by a
+  field the update writes, replay tries the collection sorted by such a field, unless a create was placed by a sort
+  that excludes it; on a match, the type's creates and updates take that order.
 - **Unloaded answers.** A create's later item read is taken as its observation when it differs from the answer only in
   values the answer had not loaded: empty, zero, `false` or Go's zero time, or objects whose members are each the same
-  or loaded so. An unsent update field that changes only between `null`, `[]` and `{}` is unchanged.
+  or loaded so. An unsent update field that changes only between `null`, `[]` and `{}` is unchanged. Write answers
+  spell empty lists and maps as their recorded answers did.
 - **Unruled fields.** A later create that stored a field no rule writes otherwise than the plan keeps it is
   `unexplained-change` at the create, so its recorded entity is held and later reads check other writes as before.
 - **Skill.** The two scratch creates differ in what they send, the second only what a person must give, however they

@@ -306,48 +306,18 @@ export class EnvironmentStateStore {
     return ok(undefined);
   }
 
-  /** Replace a held entity's values, in place or at `index` of its collection's other entities, unless the state would outgrow what `data/add` loads. */
-  update(
-    entity: StateEntity,
-    index?: number,
-  ): Result<void, AnalysisResourceConstraintError> {
-    const held = this.#entities.get(
-      compositeKey([entity.type, entity.collection, entity.id]),
-    );
-    if (index === undefined || held === undefined)
-      return this.updateAll([entity]);
-    const entities = this.#content.entities.filter(
-      (candidate) => candidate !== held,
-    );
-    const members = entities.filter(
-      (candidate) =>
-        candidate.type === entity.type &&
-        candidate.collection === entity.collection,
-    );
-    if (members.length === 0) return this.updateAll([entity]);
-    const bytes = this.#grown(jsonByteLength(entity) - jsonByteLength(held));
-    if (!bytes.ok) return bytes;
-    const anchor =
-      index < members.length
-        ? entities.indexOf(members[index]!)
-        : entities.indexOf(members.at(-1)!) + 1;
-    this.#install(
-      {
-        ...this.#content,
-        entities: [
-          ...entities.slice(0, anchor),
-          entity,
-          ...entities.slice(anchor),
-        ],
-      },
-      bytes.value,
-    );
-    return ok(undefined);
+  /** Replace a held entity's values in place, unless the state would outgrow what `data/add` loads. */
+  update(entity: StateEntity): Result<void, AnalysisResourceConstraintError> {
+    return this.updateAll([entity]);
   }
 
-  /** Replace held entities in one step, unless the state would outgrow what `data/add` loads; a refusal changes nothing. */
+  /**
+   * Replace held entities in one step, unless the state would outgrow what `data/add` loads; a refusal changes nothing.
+   * `order` puts held entities, the replacements among them, in that order in the places they hold.
+   */
   updateAll(
     entities: readonly StateEntity[],
+    order: readonly StateEntity[] = [],
   ): Result<void, AnalysisResourceConstraintError> {
     const replaced = new Map<StateEntity, StateEntity>();
     for (const entity of entities) {
@@ -363,11 +333,17 @@ export class EnvironmentStateStore {
       delta += jsonByteLength(entity) - jsonByteLength(held);
     const bytes = this.#grown(delta);
     if (!bytes.ok) return bytes;
+    const key = (entity: StateEntity) =>
+      compositeKey([entity.type, entity.collection, entity.id]);
+    const placed = new Set(order.map(key));
+    let next = 0;
     this.#install(
       {
         ...this.#content,
-        entities: this.#content.entities.map(
-          (candidate) => replaced.get(candidate) ?? candidate,
+        entities: this.#content.entities.map((candidate) =>
+          placed.has(key(candidate))
+            ? order[next++]!
+            : (replaced.get(candidate) ?? candidate),
         ),
       },
       bytes.value,

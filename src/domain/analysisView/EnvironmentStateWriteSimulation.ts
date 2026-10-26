@@ -789,15 +789,15 @@ export class EnvironmentStateWriteSimulation {
 
   /**
    * The successful check with the collection sorted by a field an update the read exercised writes, when the read
-   * lists the whole collection in that order and no create of the type was placed otherwise; the type's creates then
-   * insert by it, and its updates move their entity by it.
+   * lists the whole collection in that order and no create of the type was placed by a sort that excludes it; the
+   * type's creates then insert by it, and its updates move their entity by it. A sort the creates chose by a field the
+   * update did not write does not stop this, since both may have fit every earlier read.
    */
   #retrySort(
     view: Extract<StateView, { shape: "list" }>,
     record: StateRecordFacts,
     exercised: ReadonlySet<string>,
   ): CheckOutcome | undefined {
-    if (this.#sortOf(view.type) !== undefined) return undefined;
     const line = this.#line(view, record);
     const idField = this.#types.get(view.type)?.id_field;
     if (line === undefined || idField === undefined) return undefined;
@@ -814,6 +814,10 @@ export class EnvironmentStateWriteSimulation {
           : [];
       }),
     );
+    // A sort by a field the update wrote has moved its entity already; one by another field may be a guess both fit.
+    const current = this.#sortOf(view.type);
+    if (current?.rule === "sorted" && written.has(current.field))
+      return undefined;
     const creates = [...this.#drafts.values()].filter(
       (draft) =>
         draft.plan.effect === "create" &&
@@ -841,7 +845,9 @@ export class EnvironmentStateWriteSimulation {
         ),
       );
     });
-    for (const rule of rules) {
+    for (const rule of rules.filter(
+      (candidate) => current === undefined || !same(candidate, current),
+    )) {
       // A create placed by another sort shows the collection is not kept in this order.
       if (
         creates.some(

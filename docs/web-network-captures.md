@@ -757,8 +757,10 @@ no longer confirms the create; one that disagrees or omits an answer field its
 item view renders still checks it. Clock agreement uses the coarser recorded
 precision, including microseconds. A list read
 only adds fields the answer lacks and still checks it. Serving answers a create
-in its answer's shape and clock precision and stores the fields of both with
-the item read-back's clock precision. A `reference` is an object holding fields of the
+in its answer's shape and clock precision, with empty lists and maps spelled
+(`null`, `[]` or `{}`) as its answer spelled them, and stores the fields of both with
+the item read-back's clock precision. Updates answer empty lists and maps as
+their answers spelled them too. A `reference` is an object holding fields of the
 entity a sent member names, as the state holds it (a parent beside `parentId`):
 the member is accepted with any value, serving looks the entity up and refuses a
 call naming one the environment does not hold or holds in more than one
@@ -774,9 +776,10 @@ required, and an echoed member a call left out takes the value that call stored
 (`body.defaults`). A member a create sent empty (`""`, `null`, `false`, `[]` or
 `{}`), as a form sends a field left as it was, is not required: a call that
 leaves it out is applied as sending that value (`body.blank`), unless a call
-that left it out showed a default. A call may send it as any recorded call sent
-it empty, and one leaving it out is applied as the earliest did, as when one
-create sent `false` and another `null`. A clock rule widens to `trimmed` only when no held entity or
+that left it out showed a default, which it then keeps. A call may send it as any
+recorded call sent it empty, even after a default is learned, and one leaving it
+out is applied as the earliest did, as when one create sent `false` and another
+`null`. A clock rule widens to `trimmed` only when no held entity or
 earlier call showed that clock at a fixed width. A later create that disagrees
 leaves the plan as it was. A create whose observed reference differs from the
 entity the plan rebuilds, whether or not it sent the reference member, is
@@ -846,11 +849,13 @@ contradicted it; otherwise its `reason` is the first of its build reason
 entities (sorted by a field the collection's recorded order shows, else last),
 and `write_clock` is the end of the last timed record, to the next second. An
 update that writes the field its type's creates are sorted by moves its entity
-to where the new value sorts (its own `insert`). When a read listing the whole
-collection fails after an update and no create of the type was placed by a
-sort, the view tries the collection sorted by a field that update writes; on a
-match, the type's creates and updates take that order, as Grafana keeps
-folders by title though no earlier read could tell that from creation order.
+to where the new value sorts (its own `insert`); a bulk update moves each entity
+it writes in turn, as replay applies them. When a read listing the whole
+collection fails after an update and the type's creates are not sorted by a field
+that update writes, the view tries the collection sorted by such a field, unless
+a create was placed by a sort that excludes it; on a match, the type's creates
+and updates take that order, as Grafana keeps folders by title though no earlier
+read could tell that from creation order, or from id order where both ascend.
 
 Values in the state are recorded data, so the view refuses the same parents as
 the manifest, including those inspected with `sensitive_values`, and a

@@ -12,6 +12,7 @@ import {
 } from "../../domain/analysisView/environmentStateWriteApply.js";
 import {
   insertIndex,
+  resortedMembers,
   nextInteger,
 } from "../../domain/analysisView/environmentStateWriteExplain.js";
 import { callRenewal } from "../../domain/analysisView/environmentStateWriteGenerated.js";
@@ -42,7 +43,6 @@ import {
   collectionMatch,
   decodedSegment,
   isObject,
-  same,
   scalarText,
   type JsonObject,
   type StateEntity,
@@ -602,38 +602,31 @@ const answerUpdate = (
     },
   );
   if (!answer.ok) return answer;
-  const updated = serving.store.update(
-    updatedEntity(entity, written.value),
-    resortedIndex(serving, plan, { entity, fields: written.value }),
+  const after = updatedEntity(entity, written.value);
+  const updated = serving.store.updateAll(
+    [after],
+    sortedOrder(serving, plan, [{ before: entity, after }]),
   );
   if (!updated.ok) return updated;
   serving.store.commitWrite(values.taken);
   return answer;
 };
 
-/** Where an update moves its entity among the others of a collection sorted by a field it changed; undefined to keep it in place. */
-export const resortedIndex = (
+/** The collection's members in the order a sorted collection holds them after these writes; empty when the plan keeps them in place. */
+export const sortedOrder = (
   serving: StateServing,
   plan: StateWritePlan,
-  written: { readonly entity: StateEntity; readonly fields: JsonObject },
-): number | undefined => {
-  const { insert } = plan;
-  const { entity, fields } = written;
-  if (
-    insert?.rule !== "sorted" ||
-    same(
-      ownMember(entity.fields, insert.field),
-      ownMember(fields, insert.field),
-    )
-  )
-    return undefined;
-  return insertIndex(
-    insert,
-    serving.store
-      .inCollection(entity.type, entity.collection)
-      .filter((member) => member.id !== entity.id)
-      .map((member) => member.fields),
-    fields,
+  writes: readonly {
+    readonly before: StateEntity;
+    readonly after: StateEntity;
+  }[],
+): StateEntity[] => {
+  const [first] = writes;
+  if (plan.insert?.rule !== "sorted" || first === undefined) return [];
+  return resortedMembers(
+    plan.insert,
+    serving.store.inCollection(first.before.type, first.before.collection),
+    writes,
   );
 };
 

@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  BULK_RENAMED_LABEL_ROWS,
   formLabelRows,
   LISTED_ID_ROWS,
+  NOTE_DEFAULT_ROWS,
   RENAMED_LABEL_ROWS,
   TITLE_ORDER_ROWS,
+  UNLOADED_ANSWER_ROWS,
 } from "../../../tests/fixtures/environmentStateFormWrites.js";
 import { servedFrom } from "../../../tests/fixtures/environmentStateServing.js";
 import type { JsonValue } from "../../domain/jsonValue.js";
@@ -64,6 +67,60 @@ describe("served creates and updates modelled on form recordings", () => {
       "Archive",
       "Harbour Ops",
     ]);
+  });
+
+  it("moves every entity a bulk rename writes to where its new name sorts", () => {
+    const labels = servedFrom(BULK_RENAMED_LABEL_ROWS);
+    const created = (name: string) => {
+      const body = labels.answer("post_labels", { body: { name } }).body;
+      if (typeof body !== "object" || body === null || Array.isArray(body))
+        throw new Error("Expected an object body");
+      return body["id"]!;
+    };
+    created("Attic");
+    const garden = created("Garden");
+    expect(field(labels.answer("get_labels").body, "name")).toEqual([
+      "Attic",
+      "Garden",
+      "Kitchen",
+      "Tools",
+    ]);
+    labels.answer("patch_labels", {
+      body: [
+        { id: garden, name: "Vane" },
+        { id: 1, name: "Wharf" },
+      ],
+    });
+    expect(field(labels.answer("get_labels").body, "name")).toEqual([
+      "Attic",
+      "Tools",
+      "Vane",
+      "Wharf",
+    ]);
+  });
+
+  it("accepts a member sent empty as one recording did, and stores the default for one left out", () => {
+    const notes = servedFrom(NOTE_DEFAULT_ROWS);
+    expect(
+      notes.answer("post_notes", { body: { name: "Blank", note: null } }).body,
+    ).toMatchObject({ name: "Blank", note: null });
+    expect(
+      notes.answer("post_notes", { body: { name: "Left out" } }).body,
+    ).toMatchObject({ name: "Left out", note: "" });
+  });
+
+  it("answers writes with empty lists spelled as their recorded answers spelled them", () => {
+    const tasks = servedFrom(UNLOADED_ANSWER_ROWS);
+    expect(
+      tasks.answer("post_tasks", { body: { title: "Coil the ropes" } }).body,
+    ).toMatchObject({ title: "Coil the ropes", assignees: [] });
+    expect(
+      tasks.answer("patch_tasks_by_id", { id: "1", body: { done: true } }).body,
+    ).toMatchObject({ done: true, assignees: [] });
+    expect(tasks.answer("get_tasks_by_id", { id: "1" }).body).toMatchObject({
+      done: true,
+      assignees: null,
+    });
   });
 
   it("lists a created tag's id in the list envelope's ids, in list order", () => {

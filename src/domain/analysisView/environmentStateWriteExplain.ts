@@ -680,6 +680,41 @@ export const insertIndex = (
   return index < 0 ? members.length : index;
 };
 
+/**
+ * A sorted collection's members after writes move each entity whose sorted field changed to where its new value sorts,
+ * one after another, as replay applies them; other written entities keep their places.
+ */
+export const resortedMembers = <
+  Entity extends { readonly id: string; readonly fields: JsonObject },
+>(
+  rule: Extract<InsertRule, { rule: "sorted" }>,
+  members: readonly Entity[],
+  writes: readonly { readonly before: Entity; readonly after: Entity }[],
+): Entity[] => {
+  const order = [...members];
+  for (const { before, after } of writes) {
+    const at = order.findIndex((member) => member.id === before.id);
+    if (at < 0) continue;
+    order.splice(at, 1);
+    const moved = !same(
+      ownMember(before.fields, rule.field),
+      ownMember(after.fields, rule.field),
+    );
+    order.splice(
+      moved
+        ? insertIndex(
+            rule,
+            order.map((member) => member.fields),
+            after.fields,
+          )
+        : at,
+      0,
+      after,
+    );
+  }
+  return order;
+};
+
 /** The object in a document value, at the root or in one member, that holds most of a body's members. */
 export const documentPointerOf = (
   value: JsonValue,

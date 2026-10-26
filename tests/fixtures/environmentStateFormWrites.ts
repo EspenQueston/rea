@@ -256,3 +256,68 @@ export const MINIMAL_CONTACT_ROWS: readonly TimedCaptureRow[] = (() => {
     ["GET", "/api/contacts", [seed, full, minimal]],
   ];
 })();
+
+/** The form label creates, then a bulk rename naming each label and its new name in an array, read back. */
+export const BULK_RENAMED_LABEL_ROWS: readonly TimedCaptureRow[] = (() => {
+  const rows = formLabelRows();
+  const [attic, garden] = [
+    label(4, "Attic", { color: "#00aa44" }),
+    label(3, "Garden", { description: "Seeds" }),
+  ];
+  const zinc = { ...KITCHEN, name: "Zinc" };
+  return [
+    ...rows,
+    ["PATCH", "/api/labels", [zinc], 200, [{ id: 1, name: "Zinc" }]],
+    ["GET", "/api/labels/1", zinc],
+    ["GET", "/api/labels", [attic, garden, TOOLS, zinc]],
+  ];
+})();
+
+/** Notes created with text, then sent `null`, then left out and stored `""`, each read back. */
+export const NOTE_DEFAULT_ROWS: readonly TimedCaptureRow[] = (() => {
+  const note = (id: number, name: string, text: string | null) => ({
+    id,
+    name,
+    note: text,
+  });
+  const seed = note(1, "Seed", "kept");
+  const first = note(2, "First", "text");
+  const second = note(3, "Second", null);
+  const third = note(4, "Third", "");
+  return [
+    ["GET", "/api/notes", [seed]],
+    ["GET", "/api/notes/1", seed],
+    ["POST", "/api/notes", first, 201, { name: "First", note: "text" }],
+    ["GET", "/api/notes/2", first],
+    ["GET", "/api/notes", [seed, first]],
+    ["POST", "/api/notes", second, 201, { name: "Second", note: null }],
+    ["GET", "/api/notes/3", second],
+    ["GET", "/api/notes", [seed, first, second]],
+    ["POST", "/api/notes", third, 201, { name: "Third" }],
+    ["GET", "/api/notes/4", third],
+    ["GET", "/api/notes", [seed, first, second, third]],
+  ];
+})();
+
+/**
+ * Two seeded folders and two creates whose ids and titles both ascend, so either could be the order kept, then a
+ * rename that sorts first by title.
+ */
+export const ID_OR_TITLE_ROWS: readonly TimedCaptureRow[] = (() => {
+  const [alpha, bravo] = [folder(1, "Alpha"), folder(2, "Bravo")];
+  const [charlie, delta] = [folder(3, "Charlie"), folder(4, "Delta")];
+  const renamed = folder(4, "Aardvark", 2);
+  return [
+    ["GET", "/api/folders", [alpha, bravo]],
+    ["GET", "/api/folders/1", alpha],
+    ["POST", "/api/folders", charlie, 200, { title: "Charlie" }],
+    ["GET", "/api/folders/3", charlie],
+    ["GET", "/api/folders", [alpha, bravo, charlie]],
+    ["POST", "/api/folders", delta, 200, { title: "Delta" }],
+    ["GET", "/api/folders/4", delta],
+    ["GET", "/api/folders", [alpha, bravo, charlie, delta]],
+    ["PUT", "/api/folders/4", renamed, 200, { title: "Aardvark", version: 1 }],
+    ["GET", "/api/folders/4", renamed],
+    ["GET", "/api/folders", [renamed, alpha, bravo, charlie]],
+  ];
+})();

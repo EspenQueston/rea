@@ -192,11 +192,6 @@ export const mergedCreatePlan = (
       ? undefined
       : joinedDefaults(plan.body.defaults ?? [], defaults);
   if (body === undefined || joined === undefined) return undefined;
-  // A member a call left out stores its default, which a value sent empty elsewhere does not override.
-  const { blank: sentBlank = [], ...rest } = body;
-  const blank = sentBlank.filter(
-    ({ member }) => !joined.some((entry) => entry.member === member),
-  );
   // The plan's rules keep their order; rules the later call adds follow.
   return {
     rules: [
@@ -206,38 +201,22 @@ export const mergedCreatePlan = (
       }),
       ...[...merged.values()].filter((rule) => !held.has(rule.field)),
     ],
-    body: {
-      ...rest,
-      ...(joined.length === 0 ? {} : { defaults: joined }),
-      ...(blank.length === 0 ? {} : { blank }),
-    },
+    body: joined.length === 0 ? body : { ...body, defaults: joined },
   };
 };
 
-/**
- * Members both calls sent and either sent empty, with each empty value sent, the earliest first; a member only one call
- * sent takes its default from the call that left it out instead.
- */
+/** Every empty value recorded calls sent a member, the earliest first. */
 const joinedBlanks = (
   held: readonly Blank[],
   added: readonly Blank[],
-  calls: {
-    readonly sentBefore: ReadonlySet<string>;
-    readonly later: JsonObject;
-  },
 ): Blank[] => {
-  const blank: Blank[] = [];
-  const members = new Set(held.map(({ member }) => member));
-  for (const member of members) {
-    if (!Object.hasOwn(calls.later, member)) continue;
-    const entries = held.filter((entry) => entry.member === member);
-    const sent = calls.later[member]!;
-    if (isBlankValue(sent) && !entries.some((entry) => same(entry.sent, sent)))
-      entries.push({ member, sent });
-    blank.push(...entries);
-  }
+  const blank = [...held];
   for (const entry of added)
-    if (calls.sentBefore.has(entry.member) && !members.has(entry.member))
+    if (
+      !blank.some(
+        ({ member, sent }) => member === entry.member && same(sent, entry.sent),
+      )
+    )
       blank.push(entry);
   return blank;
 };
@@ -267,13 +246,9 @@ const mergedBody = (
   const added = contract.accepted.filter(
     (member) => !body.accepted.includes(member),
   );
-  const blank = joinedBlanks(body.blank ?? [], contract.blank ?? [], {
-    sentBefore: new Set([...body.accepted, ...fixed.keys()]),
-    later: later.body,
-  });
-  const { blank: _blank, ...rest } = body;
+  const blank = joinedBlanks(body.blank ?? [], contract.blank ?? []);
   return {
-    ...rest,
+    ...body,
     accepted: [...body.accepted, ...added],
     fixed: [
       ...body.fixed,

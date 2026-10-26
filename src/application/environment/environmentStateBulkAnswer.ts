@@ -32,7 +32,7 @@ import {
   generator,
   observedEntity,
   pathValues,
-  resortedIndex,
+  sortedOrder,
   unloadable,
   heldEntity,
   updateTarget,
@@ -184,19 +184,18 @@ export const answerBulk = (
   );
   if (!answer.ok) return answer;
   if (update) {
-    const updated = serving.store.updateAll(written.value);
+    const updated = serving.store.updateAll(
+      written.value,
+      sortedOrder(
+        serving,
+        plan,
+        written.value.map((after, index) => ({
+          before: targets.value[index]!.entity,
+          after,
+        })),
+      ),
+    );
     if (!updated.ok) return updated;
-    // In a sorted collection each entity whose sorted field changed moves, one after another.
-    for (const [index, entity] of written.value.entries()) {
-      const at = resortedIndex(serving, plan, {
-        entity: targets.value[index]!.entity,
-        fields: entity.fields,
-      });
-      if (at !== undefined) {
-        const moved = serving.store.update(entity, at);
-        if (!moved.ok) return moved;
-      }
-    }
   } else serving.store.removeAll(written.value);
   serving.store.commitWrite(values.taken);
   return answer;
