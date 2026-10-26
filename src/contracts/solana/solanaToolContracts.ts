@@ -1,6 +1,8 @@
 import {
   analyzeSolanaProgramInputSchema,
+  analyzeSolanaProgramsInputSchema,
   solanaProgramAnalysisSchema,
+  solanaProgramBatchSchema,
 } from "../../domain/solana/solanaProgram.js";
 import type { ToolContract } from "../toolContractTypes.js";
 import { toolContractMetadata } from "../toolEffects.js";
@@ -31,7 +33,41 @@ export const ANALYZE_SOLANA_PROGRAM_CONTRACT = {
   ],
 } as const satisfies ToolContract;
 
+export const ANALYZE_SOLANA_PROGRAMS_CONTRACT = {
+  name: "analyze_solana_programs",
+  ...toolContractMetadata("analyze_solana_programs"),
+  kind: "artifact-provider",
+  requiresActiveTarget: true,
+  description:
+    "Analyze a batch of Solana sBPF programs in one run: items mix local ELF paths and program ids fetched read-only through Solana JSON-RPC, and each item is analyzed by the same single-program workflow into <out_dir>/<name>/ with its own solana-analysis.json and disassembly.txt. Bounded concurrency (default 4, cap 8); items are isolated — one bad item yields an error entry and never sinks the batch. Writes <out_dir>/index.json and returns it as the batch Evidence: per item, the source, artifact SHA-256, slot when fetched, handler-candidate count, dispatch coverage summary, per-item analysis path, and status or error. Programmatic per-item detail lives in each item's solana-analysis.json.",
+  inputSchema: analyzeSolanaProgramsInputSchema,
+  outputSchema: evidenceResultOf(solanaProgramBatchSchema),
+  examples: [
+    {
+      title: "Analyze two captured program ELFs as a batch",
+      input: {
+        items: [
+          { path: "/artifacts/pump.so" },
+          { path: "/artifacts/pump_amm.so" },
+        ],
+        out_dir: "/artifacts/batch",
+      },
+    },
+    {
+      title: "Fetch and analyze two deployed programs",
+      input: {
+        items: [
+          { program_id: "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA" },
+          { program_id: "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P" },
+        ],
+        out_dir: "/artifacts/batch",
+      },
+    },
+  ],
+} as const satisfies ToolContract;
+
 /** Preserve the default catalog's exact operation and ordering. */
 export const SOLANA_TOOL_CONTRACTS = [
   ANALYZE_SOLANA_PROGRAM_CONTRACT,
+  ANALYZE_SOLANA_PROGRAMS_CONTRACT,
 ] as const satisfies readonly ToolContract[];

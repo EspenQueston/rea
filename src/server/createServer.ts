@@ -73,6 +73,7 @@ import { registerDesktopApplicationTool } from "./registerDesktopApplicationTool
 import { createGoBinaryService } from "../composition/go.js";
 import { createSolanaProgramService } from "../composition/solana.js";
 import type { SolanaProgramService } from "../application/solana/SolanaProgramService.js";
+import { SolanaProgramBatchService } from "../application/solana/SolanaProgramBatchService.js";
 import { registerSolanaTools } from "./registerSolanaTools.js";
 import { createModelArtifactService } from "../composition/model.js";
 import { registerModelArtifactTools } from "./registerModelArtifactTools.js";
@@ -1061,6 +1062,7 @@ const registerConfiguredAnalysisTools = (
     recordEvidence,
     withAdmittedAnalysis,
     evidenceById,
+    new SolanaProgramBatchService(solanaProgram),
   );
   registerIl2cppTools(
     server,

@@ -1,15 +1,19 @@
 import type { EvidenceMcpServer } from "./EvidenceMcpServer.js";
 
 import type { SolanaProgramService } from "../application/solana/SolanaProgramService.js";
+import type { SolanaProgramBatchService } from "../application/solana/SolanaProgramBatchService.js";
 import type { EvidenceWriter } from "../application/investigation/InvestigationRecordPort.js";
 import type { EvidenceLookup } from "../application/EvidenceInputResolver.js";
-import { solanaProgramModule } from "../composition/solana.js";
+import {
+  solanaProgramBatchModule,
+  solanaProgramModule,
+} from "../composition/solana.js";
 import type { Logger } from "pino";
 import type { WithAdmittedAnalysis } from "./analysisAdmission.js";
 import { createEvidenceToolHandler } from "./contractToolHandler.js";
 import { applicationToolRegistrationOptions } from "./toolRegistrationOptions.js";
 
-/** Bind the named Solana contract to shared validation and session Evidence recording. */
+/** Bind the named Solana contracts to shared validation and session Evidence recording. */
 export const registerSolanaTools = (
   server: EvidenceMcpServer,
   service: SolanaProgramService,
@@ -17,6 +21,7 @@ export const registerSolanaTools = (
   recordEvidence?: EvidenceWriter["recordEvidence"],
   withAdmittedAnalysis?: WithAdmittedAnalysis,
   evidenceById?: EvidenceLookup,
+  batchService?: SolanaProgramBatchService,
 ): void => {
   const contract = solanaProgramModule.contract;
   const handler = createEvidenceToolHandler(
@@ -31,4 +36,19 @@ export const registerSolanaTools = (
     applicationToolRegistrationOptions(contract),
     handler(contract),
   );
+  if (batchService !== undefined) {
+    const batchContract = solanaProgramBatchModule.contract;
+    const batchHandler = createEvidenceToolHandler(
+      server,
+      (input, options) => batchService.inspectBatch(input, options),
+      logger,
+      recordEvidence,
+      withAdmittedAnalysis,
+    );
+    server.registerTool(
+      batchContract.name,
+      applicationToolRegistrationOptions(batchContract),
+      batchHandler(batchContract),
+    );
+  }
 };

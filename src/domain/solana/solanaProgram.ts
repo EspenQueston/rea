@@ -221,3 +221,92 @@ export type AnalyzeSolanaProgramInput = z.infer<
   typeof analyzeSolanaProgramInputSchema
 >;
 export type SolanaProgramAnalysis = z.infer<typeof solanaProgramAnalysisSchema>;
+
+/** One batch item: the same source selection as the single-program input. */
+const solanaProgramBatchItemSchema = z
+  .strictObject({
+    path: absoluteLocalPathStringSchema
+      .optional()
+      .describe("Absolute path to a caller-selected local sBPF ELF"),
+    program_id: solanaPublicKeySchema
+      .optional()
+      .describe("Base58 program id to fetch through Solana JSON-RPC"),
+    rpc_url: z
+      .url()
+      .optional()
+      .describe("Solana JSON-RPC endpoint for this item's program-id intake"),
+  })
+  .superRefine((value, context) => {
+    const hasPath = value.path !== undefined;
+    const hasProgram = value.program_id !== undefined;
+    if (hasPath === hasProgram)
+      context.addIssue({
+        code: "custom",
+        path: ["path"],
+        message:
+          "Select exactly one program source per item: a local ELF path or a program id.",
+      });
+    if (hasPath && value.rpc_url !== undefined)
+      context.addIssue({
+        code: "custom",
+        path: ["rpc_url"],
+        message: "rpc_url applies only to program-id intake.",
+      });
+  });
+
+/**
+ * Batch analysis over the single-program workflow: every item is analyzed
+ * in its own `<out_dir>/<name>/` directory with the single mode's
+ * artifacts, and the batch writes one `index.json` summarizing all items.
+ * Items are isolated — one bad item yields an error entry, never a failed
+ * batch.
+ */
+export const analyzeSolanaProgramsInputSchema = z.strictObject({
+  items: z
+    .array(solanaProgramBatchItemSchema)
+    .min(1)
+    .max(64)
+    .describe("Programs to analyze; local ELF paths and program ids may mix"),
+  out_dir: absoluteLocalPathStringSchema.describe(
+    "Directory receiving one subdirectory per item plus index.json",
+  ),
+  concurrency: z
+    .int()
+    .min(1)
+    .max(8)
+    .optional()
+    .describe("Maximum items analyzed at once (default 4, cap 8)"),
+});
+
+export type AnalyzeSolanaProgramsInput = z.infer<
+  typeof analyzeSolanaProgramsInputSchema
+>;
+export type SolanaProgramBatchItem = z.infer<
+  typeof solanaProgramBatchItemSchema
+>;
+
+/** The batch index: one entry per item, mirroring `<out_dir>/index.json`. */
+export const solanaProgramBatchSchema = z.strictObject({
+  out_dir: localPathStringSchema,
+  index_path: localPathStringSchema,
+  total: z.int().nonnegative(),
+  succeeded: z.int().nonnegative(),
+  failed: z.int().nonnegative(),
+  entries: z.array(
+    z.strictObject({
+      /** Item directory name under out_dir (derived from the source). */
+      name: z.string(),
+      /** The caller's source selection: the ELF path or the program id. */
+      source: z.string(),
+      status: z.enum(["ok", "error"]),
+      sha256: digestSchema.nullable(),
+      slot: byteOffset.nullable(),
+      handler_candidates: z.int().nonnegative().nullable(),
+      dispatch: solanaProgramAnalysisSchema.shape.dispatch.nullable(),
+      analysis_path: localPathStringSchema.nullable(),
+      error: z.string().nullable(),
+    }),
+  ),
+});
+
+export type SolanaProgramBatch = z.infer<typeof solanaProgramBatchSchema>;

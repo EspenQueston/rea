@@ -9,7 +9,19 @@ signs, or broadcasts a transaction.
 ```sh
 rea analyze-solana-program --elf ./pump_amm.so --json
 rea analyze-solana-program --program pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA --out ./pump_amm --json
+rea analyze-solana-programs --elf ./pump.so --elf ./pump_amm.so --out ./batch --json
+rea analyze-solana-programs --dir ./captures --out ./batch --json
 ```
+
+`analyze_solana_programs` / `analyze-solana-programs` runs the same
+single-program workflow over a mixed list of local ELFs and program ids
+(CLI: repeatable `--elf` / `--program`, or `--dir` for a directory of
+`.so` files) with bounded concurrency (default 4, cap 8). Each item lands
+in `<out_dir>/<name>/` with the single mode's artifacts; one bad item
+yields an error entry and never sinks the batch. `<out_dir>/index.json`
+records, per item: source, artifact SHA-256, slot when fetched,
+handler-candidate count, dispatch coverage, per-item analysis path, and
+status or error.
 
 ```json
 {

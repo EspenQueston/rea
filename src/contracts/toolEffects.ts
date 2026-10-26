@@ -176,6 +176,11 @@ export const TOOL_EFFECTS: Readonly<Record<string, ToolEffects>> = {
     writesFilesystem: true,
     accessesNetwork: true,
   }),
+  analyze_solana_programs: effects({
+    mutatesSession: true,
+    writesFilesystem: true,
+    accessesNetwork: true,
+  }),
   inspect_web_network_capture: effects({
     mutatesSession: true,
     writesFilesystem: true,
