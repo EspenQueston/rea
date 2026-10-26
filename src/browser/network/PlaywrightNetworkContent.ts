@@ -42,7 +42,7 @@ export type NetworkBodyPreflight = (input: {
   readonly observedBytes: number;
   readonly allocationBytes: number;
   readonly mediaType: string | undefined;
-}) => BrowserScenarioEventAdmission;
+}) => BrowserScenarioEventAdmission | Promise<BrowserScenarioEventAdmission>;
 
 const credentialHeaders = new Set([
   "authorization",
@@ -121,6 +121,7 @@ export const captureNetworkBody = async (
   secrets: BrowserScenarioSecrets,
   options: NetworkReadOptions,
   preflight?: NetworkBodyPreflight,
+  protection?: { readonly request: object; readonly retainBody: boolean },
 ): Promise<NetworkBodyCapture> => {
   try {
     const observed = await withPlaywrightExecutionBoundary(
@@ -140,6 +141,10 @@ export const captureNetworkBody = async (
         limit_bytes: maxBodyBytes,
         observed_bytes: observed.length,
       };
+    if (protection !== undefined) {
+      secrets.admitResponseSecrets(protection.request, observed);
+      if (!protection.retainBody) return { state: "not_requested" };
+    }
     const bodyAllocationCost = secrets.redactionAllocationCost(observed.length);
     const base64AllocationCost = Math.ceil(observed.length / 3) * 4 * 8 + 2;
     const maxBodyAllocationBytes = options.maxBodyAllocationBytes;
@@ -172,7 +177,7 @@ export const captureNetworkBody = async (
           contentType.length,
         ),
       };
-    const admission = preflight?.({
+    const admission = await preflight?.({
       observedBytes: observed.length,
       allocationBytes: observedBodyAllocationBytes,
       mediaType: contentType,

@@ -1,3 +1,4 @@
+import { heldAmpersandSpellings } from "./environmentStateWriteCreateCalls.js";
 import type { JsonValue } from "../jsonValue.js";
 import { compareUnicodeCodePoints as compare } from "../unicodeCodePointOrder.js";
 import {
@@ -26,7 +27,6 @@ import {
   isUuid,
   readClock,
   sequenceNumber,
-  slugOf,
   slugSpellings,
   sortedStrings,
   type ClockFormat,
@@ -319,17 +319,7 @@ const heldSlugRule = (
   held: readonly JsonObject[],
 ): FieldRule | undefined => {
   if (rule?.rule !== "slug") return rule;
-  const shown = new Set(
-    held.flatMap((entity) => {
-      const from = ownMember(entity, rule.from);
-      const value = ownMember(entity, rule.field);
-      if (typeof from !== "string" || !from.includes("&")) return [];
-      if (value === slugOf(from)) return ["dropped"];
-      if (value === slugOf(from, "and")) return ["and"];
-      // A slug neither spelling gives leaves how the application spells `&` unknown.
-      return value === undefined ? [] : ["unknown"];
-    }),
-  );
+  const shown = heldAmpersandSpellings(rule, held);
   const source = ownMember(sent, rule.from);
   if (typeof source === "string" && source.includes("&"))
     return shown.has("unknown") ||
@@ -508,6 +498,7 @@ export const explainUpdate = (
   readonly unstamped: string[];
 } => {
   const { body } = evidence.call;
+  const knownEntities = [evidence.before, ...evidence.others];
   const rules: FieldRule[] = [];
   const echoed = new Set<string>();
   const unexplained: string[] = [];
@@ -533,7 +524,15 @@ export const explainUpdate = (
       continue;
     }
     if (!Object.hasOwn(evidence.after, member)) continue;
-    const rule = sentRule(evidence, member, held);
+    const rule = heldSlugRule(
+      sentRule(evidence, member, held),
+      body,
+      knownEntities,
+    );
+    if (rule === undefined) {
+      unexplained.push(member);
+      continue;
+    }
     rules.push(rule);
     if (rule.rule === "echo") echoed.add(member);
     else if (rule.rule !== "constant") generated.add(member);
@@ -561,7 +560,11 @@ export const explainUpdate = (
       if (kept !== undefined) rules.push(kept);
       continue;
     }
-    const rule = changeRule(evidence, field, slugs);
+    const rule = heldSlugRule(
+      changeRule(evidence, field, slugs),
+      body,
+      knownEntities,
+    );
     if (rule === undefined) unexplained.push(field);
     else rules.push(rule);
   }

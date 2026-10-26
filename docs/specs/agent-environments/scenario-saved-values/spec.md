@@ -44,8 +44,8 @@ values.
 - A scenario keeps at most 4,000,000 characters of saved values at once, counting
   the redaction spellings of values saved as secret; a save past that fails its
   step before the value is kept.
-- A value saved with `secret: true` is redacted from records made after it is
-  saved. The environment build warns about saved values named like credentials
+- A value saved with `secret: true` is redacted from the selected source response
+  before retention and from subsequent records. The environment build warns about saved values named like credentials
   that are not marked secret (`credential-named-saved-values`).
 - A scenario that saves nothing records the same Evidence parameters and
   `scenario_sha256` as before: an empty `save` is left out of the recorded
@@ -70,6 +70,5 @@ values.
 - No general value transforms, string templates or script steps: the value
   kinds are fixed.
 - No saved values in `fill` or `select_option` values.
-- No redaction of a saved secret from the response it was saved from, whose
-  body the recorder reads on its own schedule.
+- No retroactive redaction of earlier unrelated records.
 - No multi-factor sign-in.

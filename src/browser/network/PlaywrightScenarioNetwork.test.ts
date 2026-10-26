@@ -18,6 +18,7 @@ class RequestFixture implements ScenarioNetworkRequest {
   headerReads = 0;
   bodyReads = 0;
   predecessor: ScenarioNetworkRequest | null = null;
+  responseSize = 64;
   constructor(readonly marker: string) {}
   method() {
     return "POST";
@@ -27,6 +28,9 @@ class RequestFixture implements ScenarioNetworkRequest {
   }
   resourceType() {
     return "fetch";
+  }
+  async sizes() {
+    return { responseBodySize: this.responseSize };
   }
   headers(): Record<string, string> {
     return {
@@ -72,7 +76,7 @@ class ResponseFixture implements ScenarioNetworkResponse {
   status() {
     return 200;
   }
-  headers() {
+  headers(): Record<string, string> {
     return {
       "content-type": "application/octet-stream",
       "set-cookie": "session=transport-secret",
@@ -169,6 +173,123 @@ const bodyText = (event: BrowserScenarioEvent) => {
 };
 
 afterEach(() => vi.useRealTimers());
+
+it.each([true, false])(
+  "protects source body and headers before the binding is saved (body selected: %s)",
+  async (responseBody) => {
+    const { collector, events, secrets } = harness({
+      request_body: false,
+      response_body: responseBody,
+      header_values: true,
+    });
+    const request = new RequestFixture("marked");
+    const secret = "source-token-729d";
+    const response = new ResponseFixture(
+      request,
+      JSON.stringify({ token: secret, public: "kept" }),
+    );
+    vi.spyOn(response, "headers").mockReturnValue({
+      "content-type": "application/json",
+      "x-derived-token": secret,
+    });
+    vi.spyOn(response, "headersArray").mockResolvedValue([
+      { name: "X-Derived-Token", value: secret },
+    ]);
+    secrets.responseProtector("login", [
+      { name: "token", json_pointer: "/token", secret: true },
+    ])?.(request);
+    collector.request(request);
+    collector.response(response);
+    collector.finished(request);
+    await collector.finish();
+    const content = events.find(
+      (event) => event.kind === "network-content" && event.phase === "response",
+    );
+    if (content?.kind !== "network-content")
+      throw new Error("Missing response content");
+    expect(JSON.stringify(content.headers)).not.toContain(secret);
+    expect(content.headers.state).toBe("captured");
+    if (responseBody)
+      expect(JSON.parse(bodyText(content))).toEqual({
+        token: "[REDACTED:page:login.token]",
+        public: "kept",
+      });
+    else expect(content.body.state).toBe("not_requested");
+    expect(() => secrets.savedValue("token")).toThrow("No earlier step saved");
+    secrets.save("login.token", "token", secret, true);
+    expect(secrets.redact(secret)).toBe("[REDACTED:page:login.token]");
+    expect(response.bodyReads).toBe(1);
+  },
+);
+
+it("associates sensitive fields by request identity while keeping same-URL unmarked values", async () => {
+  const { collector, events, secrets } = harness({
+    request_body: false,
+    response_body: true,
+    header_values: false,
+  });
+  const marked = new RequestFixture("marked");
+  const unmarked = new RequestFixture("unmarked");
+  secrets.responseProtector("login", [
+    { name: "token", json_pointer: "/token", secret: true },
+  ])?.(marked);
+  for (const [request, token] of [
+    [marked, "private-token-729d"],
+    [unmarked, "public-unmarked-token"],
+  ] as const) {
+    collector.request(request);
+    collector.response(new ResponseFixture(request, JSON.stringify({ token })));
+    collector.finished(request);
+  }
+  await collector.finish();
+  const bodies = events
+    .filter(
+      (event) => event.kind === "network-content" && event.phase === "response",
+    )
+    .map((event) => JSON.parse(bodyText(event)));
+  expect(bodies).toEqual(
+    expect.arrayContaining([
+      { token: "[REDACTED:page:login.token]" },
+      { token: "public-unmarked-token" },
+    ]),
+  );
+});
+
+it.each(["gzip", "cache"])(
+  "withholds marked response content when decoded bounds are unknown: %s",
+  async (kind) => {
+    const { collector, events, secrets } = harness();
+    const request = new RequestFixture("marked");
+    if (kind === "cache") request.responseSize = 0;
+    const secret = "private-source-token";
+    const response = new ResponseFixture(
+      request,
+      JSON.stringify({ token: secret }),
+    );
+    if (kind === "gzip")
+      vi.spyOn(response, "headers").mockReturnValue({
+        "content-type": "application/json",
+        "content-encoding": "gzip",
+      });
+    secrets.responseProtector("login", [
+      { name: "token", json_pointer: "/token", secret: true },
+    ])?.(request);
+    collector.request(request);
+    collector.response(response);
+    collector.finished(request);
+    await collector.finish();
+    const content = events.find(
+      (event) => event.kind === "network-content" && event.phase === "response",
+    );
+    if (content?.kind !== "network-content")
+      throw new Error("Missing response content");
+    expect(content.body.state).toBe("unavailable");
+    expect(content.headers.state).toBe("unavailable");
+    expect(response.bodyReads).toBe(0);
+    expect(response.headerReads).toBe(0);
+    expect(JSON.stringify(events)).not.toContain(secret);
+  },
+);
 
 it("keeps observed completion independent of rejected completion metadata", async () => {
   const { secrets, limits } = harness();

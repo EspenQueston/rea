@@ -497,9 +497,11 @@ id the application assigns:
   being read when the step times out or is cancelled saves nothing. A pointer
   that names no string or number fails the step, so later steps never send a
   missing value, as does a response over 4,000,000 characters: a request step
-  stops reading it there, and a UI step does not read one whose received size is
-  over 12,000,000 bytes, three per character, and fails one whose text is
-  longer.
+  stops reading and aborts its fetch there. A UI step reads a body only when
+  its positive received size is known, at most 12,000,000 bytes, and its
+  Content-Encoding is absent or identity. Compressed responses and unknown or
+  zero cache sizes are refused before materializing the body; decoded text
+  over the character limit also fails. The UI action may already have applied.
 - `{saved:name}` sends a saved value in a request step's `path`, including its
   query, and in a `goto` destination's `url`, percent-encoded; a destination's
   structured `query` values are sent as declared. A saved value that makes a
@@ -515,16 +517,21 @@ id the application assigns:
 - Validation refuses a saved value that no earlier step saves. A later save of
   the same name replaces the value. An integer past 2^53, which JSON parsing
   would round to another number, and a number that is not finite, such as
-  `1e400`, fail the step that saves it.
+  `1e400`, or a value that underflows to zero, such as `1e-400`, fail the step
+  that saves it.
 - A scenario keeps at most 4,000,000 characters of saved values at once,
-  counting the redaction spellings of values saved as secret, and a save past
-  that fails its step before the value is kept.
+  counting distinct retained redaction spellings, including trimmed variants,
+  of values saved as secret. Replacing a binding releases its live value
+  charge, while secret spellings remain protected for the scenario lifetime.
+  A save past the budget fails before changing the binding.
 - A value saved with `secret: true` is redacted however short, as a declared
-  secret is, as `[REDACTED:page:<step_id>.<name>]`, from records made after it
-  is saved. The
-  recorder reads response bodies on their own schedule, so the response it was
-  saved from may keep it, as a login response may keep a token a later step
-  reads from the page. Other saved values, such as ids, stay visible, since
+  secret is, as `[REDACTED:page:<step_id>.<name>]`. The selected source
+  response is protected before retaining its body or header values, including
+  when only headers were requested. If that body cannot be read safely, its
+  body and header values remain unavailable. Subsequent records use the same
+  redaction spellings; earlier unrelated records are not rewritten. A token
+  read later from local storage may therefore remain in its earlier login
+  response. Other saved values, such as ids, stay visible, since
   environments model them. The environment build warns about saved values
   named like credentials that are not marked secret
   (`credential-named-saved-values`).

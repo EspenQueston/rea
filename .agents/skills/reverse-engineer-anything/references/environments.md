@@ -168,7 +168,9 @@ About `request` steps:
 - `save: [{name, json_pointer, secret}]` keeps a string or number from the
   step's JSON response, such as the created object's `/id`, for later steps;
   `secret: true` redacts it, as for a token the API returns, so mark every
-  saved token, key or session value secret. On a `click` or `press`,
+  saved token, key or session value secret. This also protects the selected
+  source response before its body or headers are retained. Compressed or
+  unknown-size UI responses cannot supply saved values. On a `click` or `press`,
   `save_response: {method, path, save}` keeps values from the response to the
   request the step triggers (`{*}` in `path` matches one segment); the step
   fails unless a 2xx JSON response arrives before its `timeout_ms`. Later

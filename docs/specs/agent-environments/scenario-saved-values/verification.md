@@ -1,5 +1,11 @@
 # Verification
 
+This is Edgar Arakelyan's historical verification record from upstream PR #7162
+(head `d39f386d202fe8e98592fb2d9d26e43d8d0fb94f`), retained with attribution.
+These multi-application and model evaluations were not rerun during integration.
+The independent integration measurements and their limits are recorded in
+[saved-values integration verification](../../../verification/browser-saved-values-2026-10-26.md).
+
 Executed on macOS with Node v24.22.1 at `feat/recorder-saved-values` e42362c9 (on main 2b84efe0), and on Ubuntu 24.04
 VMs with snap Chromium for the agent recordings.
 

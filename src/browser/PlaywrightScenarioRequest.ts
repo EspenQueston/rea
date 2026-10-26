@@ -1,3 +1,10 @@
+import {
+  MAX_SAVED_RESPONSE_CHARACTERS,
+  MAX_SAVED_RESPONSE_BYTES,
+  responsePointerValue,
+  readResponseValues,
+  readBoundedResponseBody,
+} from "./BrowserScenarioResponseValues.js";
 import type { Page, Request, Route } from "playwright-core";
 
 import {
@@ -35,31 +42,9 @@ const originOf = (url: string): string | undefined => {
 
 /** The string or number at a JSON pointer, as text. */
 const pointerText = (value: unknown, pointer: string): string | undefined => {
-  const found = pointerValue(value, pointer);
-  return found === undefined ? undefined : String(found);
-};
-
-/** The string or number at a JSON pointer. */
-const pointerValue = (
-  value: unknown,
-  pointer: string,
-): string | number | undefined => {
-  let current = value;
-  if (pointer !== "")
-    for (const token of pointer.slice(1).split("/")) {
-      const key = token.replaceAll("~1", "/").replaceAll("~0", "~");
-      if (Array.isArray(current) && /^(?:0|[1-9][0-9]*)$/u.test(key))
-        current = current[Number(key)];
-      else if (
-        typeof current === "object" &&
-        current !== null &&
-        Object.hasOwn(current, key)
-      )
-        current = (current as Record<string, unknown>)[key];
-      else return undefined;
-    }
-  return typeof current === "string" || typeof current === "number"
-    ? current
+  const found = responsePointerValue(value, pointer);
+  return typeof found === "string" || typeof found === "number"
+    ? String(found)
     : undefined;
 };
 
@@ -207,12 +192,6 @@ interface PageRequest {
   readonly readLimit: number | undefined;
 }
 
-/** The largest response text a request step saves values from. */
-const MAX_SAVED_RESPONSE_CHARACTERS = 4_000_000;
-
-/** The most UTF-8 bytes text within that limit can take: three per UTF-16 code unit. */
-const MAX_SAVED_RESPONSE_BYTES = 3 * MAX_SAVED_RESPONSE_CHARACTERS;
-
 /** Send the request with the page's own fetch, from the page's main world, and read the whole answer. */
 const sendFromPage = (
   page: Page,
@@ -259,7 +238,10 @@ const sendFromPage = (
         // Keep the text only up to the limit, so a large answer is never held whole.
         const reader = answer.body?.getReader();
         if (reader === undefined) return { status: answer.status, body: "" };
-        const decoder = new TextDecoder();
+        const decoder = new TextDecoder("utf-8", {
+          fatal: true,
+          ignoreBOM: true,
+        });
         let text = "";
         try {
           for (;;) {
@@ -287,6 +269,7 @@ const sendFromPage = (
         }
       return { status: answer.status };
     } catch (cause: unknown) {
+      controller.abort();
       return {
         error: cause instanceof Error ? cause.message : String(cause),
       };
@@ -365,12 +348,20 @@ export const performScenarioRequest = async (input: {
   const dispatchUrl = new URL(target);
   dispatchUrl.hash = "";
   const matches = (url: URL): boolean => url.href === dispatchUrl.href;
+  const protectResponse = secrets.responseProtector(
+    action.step_id,
+    action.save,
+  );
+  const matchesRequest = (sent: Request): boolean =>
+    sent.method() === request.method &&
+    sent.postData() === (request.body ?? null);
+  const watch = (sent: Request): void => {
+    if (sent.url() === dispatchUrl.href && matchesRequest(sent))
+      protectResponse?.(sent);
+  };
   const gate = async (route: Route): Promise<void> => {
     const sent = route.request();
-    if (
-      sent.method() !== request.method ||
-      sent.postData() !== (request.body ?? null)
-    ) {
+    if (!matchesRequest(sent)) {
       await route.fallback();
       return;
     }
@@ -379,13 +370,17 @@ export const performScenarioRequest = async (input: {
       (deadline !== undefined && Date.now() >= deadline)
     )
       await route.abort("aborted");
-    else await route.fallback();
+    else {
+      await route.fallback();
+    }
   };
   await page.route(matches, gate);
+  if (protectResponse !== undefined) page.on("request", watch);
   let response: PageResponse;
   try {
     response = await sendFromPage(page, request);
   } finally {
+    if (protectResponse !== undefined) page.off("request", watch);
     await page.unroute(matches, gate);
   }
   if ("error" in response)
@@ -536,14 +531,17 @@ export const awaitSavedResponse = (
   const deadline = timeout === undefined ? undefined : Date.now() + timeout;
   const pattern = pathPattern(spec.path);
   const started = new Set<Request>();
+  const protectResponse = secrets.responseProtector(stepId, spec.save);
   const watch = (request: Request): void => {
     if (
       namesResponse(spec, pattern, startOrigin, {
         method: request.method(),
         url: request.url(),
       })
-    )
+    ) {
       started.add(request);
+      protectResponse?.(request);
+    }
   };
   page.on("request", watch);
   const waiting = page.waitForResponse(
@@ -565,24 +563,15 @@ export const awaitSavedResponse = (
       throw new ScenarioRequestError(
         `Step ${stepId}: the ${spec.method} ${spec.path} response answered ${String(response.status())}; values are saved only from a 2xx response.`,
       );
-    // Playwright reads a body whole, so the size the browser received decides before it is read; its text is then held to the character limit.
-    const { responseBodySize } = await beforeStepEnds(
-      response.request().sizes(),
-      stepId,
-      deadline,
-      signal,
-    );
-    if (responseBodySize > MAX_SAVED_RESPONSE_BYTES)
-      throw new ScenarioRequestError(
-        `Step ${stepId}: the response is too large to save values from.`,
-      );
     const body = await beforeStepEnds(
-      response.text(),
+      readBoundedResponseBody(response, MAX_SAVED_RESPONSE_BYTES),
       stepId,
       deadline,
       signal,
     );
-    saveValues(stepId, body, spec.save, secrets);
+    if (!body.ok)
+      throw new ScenarioRequestError(`Step ${stepId}: ${body.error.message}`);
+    saveValues(stepId, body.value, spec.save, secrets);
   };
   return { saved, stop: () => page.off("request", watch) };
 };
@@ -618,38 +607,17 @@ const withSavedJson = (
 /** Save the values a step names from a JSON response, for later steps. */
 const saveValues = (
   stepId: string,
-  body: string | undefined,
+  body: string | Uint8Array | undefined,
   entries: readonly BrowserScenarioSaveEntry[],
   secrets: BrowserScenarioSecrets,
 ): void => {
-  if (body === undefined || body.length > MAX_SAVED_RESPONSE_CHARACTERS)
-    throw new ScenarioRequestError(
-      `Step ${stepId}: the response is too large to save values from.`,
-    );
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(body);
-  } catch {
-    throw new ScenarioRequestError(
-      `Step ${stepId}: the response is not JSON, so no value can be saved from it.`,
-    );
-  }
-  for (const { name, json_pointer, secret } of entries) {
-    const value = pointerValue(parsed, json_pointer);
-    if (value === undefined)
-      throw new ScenarioRequestError(
-        `Step ${stepId}: the response has no string or number at ${json_pointer} to save as ${name}.`,
-      );
-    // A number past what JSON spells back, such as 1e400, would be sent as null or Infinity.
-    if (typeof value === "number" && !Number.isFinite(value))
-      throw new ScenarioRequestError(
-        `Step ${stepId}: the number at ${json_pointer} is not finite, so ${name} cannot be saved from it.`,
-      );
-    // JSON parsing rounds an integer past 2^53, so a later step would name another object.
-    if (Number.isInteger(value) && !Number.isSafeInteger(value))
-      throw new ScenarioRequestError(
-        `Step ${stepId}: the number at ${json_pointer} is too large to keep exactly, so ${name} cannot be saved from it.`,
-      );
+  const selected = readResponseValues(body, entries, "fail");
+  if (!selected.ok)
+    throw new ScenarioRequestError(`Step ${stepId}: ${selected.error.message}`);
+  for (const {
+    entry: { name, secret },
+    value,
+  } of selected.value) {
     try {
       secrets.save(`${stepId}.${name}`, name, value, secret);
     } catch (cause) {

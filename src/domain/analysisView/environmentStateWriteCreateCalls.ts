@@ -123,43 +123,60 @@ export const noteAmpersands = (
   }
 };
 
-/** Note how held entities whose slugged source holds `&` spelled each field the plan's rules slug. */
+/** Exact spelling observations in held entities; absence and contradictory spellings remain distinct. */
+export const heldAmpersandSpellings = (
+  rule: FieldRule,
+  held: readonly JsonObject[],
+): ReadonlySet<AmpersandSpelling> => {
+  const observed = new Set<AmpersandSpelling>();
+  if (slugSpelling(rule) === undefined) return observed;
+  const plain = unspelled(rule);
+  for (const entity of held) {
+    if (!showsAmpersand(rule, entity)) continue;
+    const stored = ownMember(entity, rule.field);
+    if (stored === undefined) continue;
+    const source =
+      rule.rule === "slug" ? ownMember(entity, rule.from) : undefined;
+    const spelled = (spelling: Ampersand | undefined): string | undefined =>
+      rule.rule === "slug"
+        ? typeof source === "string"
+          ? slugOf(source, spelling)
+          : undefined
+        : plain.rule === "composed"
+          ? composedValue(
+              plain.parts.map((part) =>
+                "as" in part && part.as === "slug" && spelling !== undefined
+                  ? { ...part, ampersand: spelling }
+                  : part,
+              ),
+              entity,
+            )
+          : undefined;
+    observed.add(
+      spelled(undefined) === stored
+        ? "dropped"
+        : spelled("and") === stored
+          ? "and"
+          : "unknown",
+    );
+  }
+  return observed;
+};
+
+/** Retain the constraints later rule refinement needs from the same owned observations. */
 export const noteHeldAmpersands = (
   ampersands: Map<string, AmpersandSpelling>,
   rules: readonly FieldRule[],
   held: readonly JsonObject[],
 ): void => {
   for (const rule of rules) {
-    if (slugSpelling(rule) === undefined) continue;
-    const plain = unspelled(rule);
-    for (const entity of held) {
-      if (!showsAmpersand(rule, entity)) continue;
-      const source =
-        rule.rule === "slug" ? ownMember(entity, rule.from) : undefined;
-      const stored = ownMember(entity, rule.field);
-      const spelled = (spelling: Ampersand | undefined): string | undefined =>
-        rule.rule === "slug"
-          ? typeof source === "string"
-            ? slugOf(source, spelling)
-            : undefined
-          : plain.rule === "composed"
-            ? composedValue(
-                plain.parts.map((part) =>
-                  "as" in part && part.as === "slug" && spelling !== undefined
-                    ? { ...part, ampersand: spelling }
-                    : part,
-                ),
-                entity,
-              )
-            : undefined;
-      // Dropping `&` outranks a spelling neither way gives, which outranks the word.
-      const known = ampersands.get(rule.field);
-      if (spelled(undefined) === stored) ampersands.set(rule.field, "dropped");
-      else if (stored !== undefined && spelled("and") !== stored) {
-        if (known !== "dropped") ampersands.set(rule.field, "unknown");
-      } else if (stored !== undefined && known === undefined)
-        ampersands.set(rule.field, "and");
-    }
+    const observed = heldAmpersandSpellings(rule, held);
+    const known = ampersands.get(rule.field);
+    if (observed.has("dropped")) ampersands.set(rule.field, "dropped");
+    else if (observed.has("unknown") && known !== "dropped")
+      ampersands.set(rule.field, "unknown");
+    else if (observed.has("and") && known === undefined)
+      ampersands.set(rule.field, "and");
   }
 };
 

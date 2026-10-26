@@ -7,7 +7,9 @@ import type {
   BrowserScenarioUrl,
   BrowserScenarioRequestValue,
   BrowserScenarioValue,
+  BrowserScenarioSaveEntry,
 } from "../domain/browserScenarioValues.js";
+import { readResponseValues } from "./BrowserScenarioResponseValues.js";
 import {
   sanitizeBrowserUrl,
   type SanitizedBrowserUrl,
@@ -295,15 +297,26 @@ export class BrowserScenarioSecrets {
   }
 
   private admit(label: string, value: string, shortest: number): void {
-    // fetch sends a header value without surrounding spaces and tabs, so that is the spelling records hold.
+    this.retainValues(label, this.valuesToAdmit(value, shortest));
+  }
+
+  /** Fetch trims surrounding header whitespace; both source and sent spellings remain owned here. */
+  private valuesToAdmit(value: string, shortest: number): readonly string[] {
     const sent = value.replace(/^[\t ]+|[\t ]+$/gu, "");
-    if (sent !== value) this.admit(label, sent, shortest);
-    if (value.length < shortest) return;
-    for (const held of this.values.values()) if (held === value) return;
-    let id = `page:${label}`;
-    for (let suffix = 2; this.values.has(id); suffix += 1)
-      id = `page:${label}~${String(suffix)}`;
-    this.values.set(id, value);
+    const held = new Set(this.values.values());
+    return [...new Set([sent, value])].filter(
+      (candidate) => candidate.length >= shortest && !held.has(candidate),
+    );
+  }
+
+  private retainValues(label: string, values: readonly string[]): void {
+    if (values.length === 0) return;
+    for (const value of values) {
+      let id = `page:${label}`;
+      for (let suffix = 2; this.values.has(id); suffix += 1)
+        id = `page:${label}~${String(suffix)}`;
+      this.values.set(id, value);
+    }
     this.compile();
   }
 
@@ -349,6 +362,69 @@ export class BrowserScenarioSecrets {
   private savedUnits = 0;
   private secretSpellingUnits = 0;
 
+  /** Policies are attached before dispatch to the browser's exact request identity. */
+  private readonly responseSecrets = new WeakMap<
+    object,
+    {
+      readonly stepId: string;
+      readonly entries: readonly BrowserScenarioSaveEntry[];
+    }
+  >();
+
+  responseProtector(
+    stepId: string,
+    entries: readonly BrowserScenarioSaveEntry[],
+  ): ((request: object) => void) | undefined {
+    const sensitive = entries.filter((entry) => entry.secret);
+    if (sensitive.length === 0) return undefined;
+    const policy = { stepId, entries: sensitive };
+    return (request) => {
+      this.responseSecrets.set(request, policy);
+    };
+  }
+
+  hasResponseProtection(request: object): boolean {
+    return this.responseSecrets.has(request);
+  }
+
+  /** Redact the selected source fields before network Evidence can retain the body. */
+  admitResponseSecrets(request: object, body: Uint8Array): void {
+    const source = this.responseSecrets.get(request);
+    if (source === undefined) return;
+    const selected = readResponseValues(body, source.entries, "ignore");
+    if (!selected.ok)
+      throw new Error(`Step ${source.stepId}: ${selected.error.message}`);
+    for (const { entry, value } of selected.value) {
+      const additions = this.valuesToAdmit(String(value), 1);
+      this.retainSavedRedactions(
+        `${source.stepId}.${entry.name}`,
+        additions,
+        this.savedUnits,
+        entry.name,
+      );
+    }
+  }
+
+  private retainSavedRedactions(
+    label: string,
+    additions: readonly string[],
+    savedUnits: number,
+    name: string,
+  ): void {
+    const available =
+      MAX_RETAINED_SAVED_CHARACTERS - savedUnits - this.secretSpellingUnits;
+    const spellings = additions.reduce(
+      (units, value) => units + spellingUnits(value),
+      0,
+    );
+    if (available < 0 || spellings > available)
+      throw new Error(
+        `${name} cannot be saved: the scenario would keep more than ${String(MAX_RETAINED_SAVED_CHARACTERS)} characters of saved values.`,
+      );
+    this.secretSpellingUnits += spellings;
+    this.retainValues(label, additions);
+  }
+
   /** Keep a value a step saved from a JSON response; a secret one is redacted from everything recorded after it. Refused before it is kept when the scenario would hold more than {@link MAX_RETAINED_SAVED_CHARACTERS}. */
   save(
     label: string,
@@ -362,18 +438,13 @@ export class BrowserScenarioSecrets {
       this.savedUnits -
       (replaced === undefined ? 0 : String(replaced).length) +
       text.length;
-    let kept = savedUnits + this.secretSpellingUnits;
-    const spellings =
-      secret && kept <= MAX_RETAINED_SAVED_CHARACTERS ? spellingUnits(text) : 0;
-    kept += spellings;
-    if (kept > MAX_RETAINED_SAVED_CHARACTERS)
-      throw new Error(
-        `${name} cannot be saved: the scenario would keep more than ${String(MAX_RETAINED_SAVED_CHARACTERS)} characters of saved values.`,
-      );
+    const available =
+      MAX_RETAINED_SAVED_CHARACTERS - savedUnits - this.secretSpellingUnits;
+    const additions =
+      secret && available >= 0 ? this.valuesToAdmit(text, 1) : [];
+    this.retainSavedRedactions(label, additions, savedUnits, name);
     this.saved.set(name, value);
     this.savedUnits = savedUnits;
-    this.secretSpellingUnits += spellings;
-    if (secret) this.admitCredential(label, text);
   }
 
   /** A saved value with the JSON type it was saved with. */

@@ -721,6 +721,66 @@ const renameRows = (
 
 describe("slug spellings across updates", () => {
   it.each(["PATCH", "PUT"] as const)(
+    "applies held spelling to the initial %s rule without needing a later update",
+    (method) => {
+      for (const held of [
+        [category(1, "Salt & Pepper", "salt-and-pepper")],
+        [
+          category(1, "Lamp Oil", "lamp-oil"),
+          category(2, "Salt & Pepper", "salt-and-pepper"),
+        ],
+      ]) {
+        const plan = planOf(
+          renameRows(method, held, [
+            category(1, "Harbour Notes", "harbour-notes"),
+          ]),
+          `${method.toLowerCase()}_categories_by_id`,
+        );
+        expect(plan).toMatchObject({
+          served: true,
+          rules: expect.arrayContaining([
+            { field: "slug", rule: "slug", from: "name", ampersand: "and" },
+          ]),
+        });
+      }
+    },
+  );
+
+  it.each(["PATCH", "PUT"] as const)(
+    "withholds an initial %s that contradicts held slug spelling",
+    (method) => {
+      const plan = planOf(
+        renameRows(
+          method,
+          [category(1, "Salt & Pepper", "salt-and-pepper")],
+          [category(1, "Tide & Wind", "tide-wind")],
+        ),
+        `${method.toLowerCase()}_categories_by_id`,
+      );
+      expect(plan.served).toBe(false);
+    },
+  );
+
+  it.each(["PATCH", "PUT"] as const)(
+    "withholds an initial %s with contradictory held slug conventions",
+    (method) => {
+      const plan = planOf(
+        renameRows(
+          method,
+          [
+            category(1, "Lamp Oil", "lamp-oil"),
+            category(2, "Salt & Pepper", "salt-and-pepper"),
+            category(3, "Tide & Wind", "tide-wind"),
+          ],
+          [category(1, "Harbour Notes", "harbour-notes")],
+        ),
+        `${method.toLowerCase()}_categories_by_id`,
+      );
+      expect(plan.served).toBe(false);
+    },
+  );
+
+  it.each(["PATCH", "PUT"] as const)(
     "learns that an update's slug spells & as the word from a later %s that renames to one",
     (method) => {
       const rows = renameRows(

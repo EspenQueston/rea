@@ -158,6 +158,8 @@ const fakePage = (options: {
     origin: options.sendingOrigin ?? new URL(url).origin,
   });
   return {
+    on: vi.fn(),
+    off: vi.fn(),
     route: async () => {},
     unroute: async () => {},
     url: () => url,
@@ -855,7 +857,7 @@ describe("saved value credentials and limits", () => {
     const secrets = resolved(parsed);
     await expect(
       perform(fakePage({}), parsed.actions[0]!, secrets),
-    ).rejects.toThrow("too large to keep exactly");
+    ).rejects.toThrow("cannot be saved exactly");
     expect(() => secrets.savedValue("folder")).toThrow();
   });
 
@@ -958,6 +960,51 @@ describe("saved value credentials and limits", () => {
 });
 
 describe("saved numbers JSON cannot spell back", () => {
+  it.each([
+    ["0", 0],
+    ["0.0", 0],
+    ["-0", -0],
+    ["1.5", 1.5],
+    ["12.50", 12.5],
+    ["1E2", 100],
+    ["0.1", 0.1],
+  ])(
+    "preserves an equivalent JSON decimal spelling (%s)",
+    async (number, kept) => {
+      stubFetch(201, [`{"id":${number}}`]);
+      const parsed = scenario([
+        requestStep({ save: [{ name: "item", json_pointer: "/id" }] }),
+      ]);
+      const secrets = resolved(parsed);
+      await perform(fakePage({}), parsed.actions[0]!, secrets);
+      expect(secrets.savedValue("item")).toBe(kept);
+    },
+  );
+  it.each(["1e-400", "-1e-400", "1.0000000000000000001"])(
+    "refuses a saved numeric identity that loses precision during parsing: %s",
+    async (number) => {
+      stubFetch(201, [`{"id":${number}}`]);
+      const parsed = scenario([
+        requestStep({ save: [{ name: "item", json_pointer: "/id" }] }),
+      ]);
+      const secrets = resolved(parsed);
+      await expect(
+        perform(fakePage({}), parsed.actions[0]!, secrets),
+      ).rejects.toThrow("cannot be saved exactly");
+      expect(() => secrets.savedValue("item")).toThrow("No earlier step saved");
+    },
+  );
+
+  it("keeps an exact saved field when an unrelated response number is inexact", async () => {
+    stubFetch(201, ['{"id":"record-7","unrelated":1e-400}']);
+    const parsed = scenario([
+      requestStep({ save: [{ name: "item", json_pointer: "/id" }] }),
+    ]);
+    const secrets = resolved(parsed);
+    await perform(fakePage({}), parsed.actions[0]!, secrets);
+    expect(secrets.savedValue("item")).toBe("record-7");
+  });
+
   afterEach(() => {
     vi.unstubAllGlobals();
   });
@@ -1098,6 +1145,27 @@ describe("saved value retention", () => {
     vi.unstubAllGlobals();
   });
 
+  it("charges repeated identical secret saves only for retained values", () => {
+    const secrets = resolved(scenario([requestStep({})]));
+    const token = "s".repeat(1_000_000);
+    for (let index = 0; index < 8; index++)
+      secrets.save(`step${String(index)}.token`, "token", token, true);
+    expect(secrets.savedValue("token")).toBe(token);
+    expect(secrets.redact(token)).not.toContain(token);
+  });
+
+  it("charges trimmed secret spellings before changing either saved or redaction state", () => {
+    const secrets = resolved(scenario([requestStep({})]));
+    secrets.save("seed.fill", "fill", "x".repeat(3_999_000), false);
+    const trimmed = "a".repeat(198);
+    expect(() =>
+      secrets.save("step.padded", "padded", ` ${trimmed} `, true),
+    ).toThrow("more than 4000000 characters of saved values");
+    expect(() => secrets.savedValue("padded")).toThrow("No earlier step saved");
+    expect(secrets.redact(trimmed)).toBe(trimmed);
+    expect(String(secrets.savedValue("fill"))).toHaveLength(3_999_000);
+  });
+
   it("refuses a new saved name that would keep more than the limit, before keeping it", () => {
     const secrets = resolved(scenario([requestStep({})]));
     secrets.save("a.first", "first", "x".repeat(3_000_000), false);
@@ -1193,6 +1261,7 @@ interface FakeResponse {
   readonly earlier?: boolean;
   /** The body size the browser received, when it differs from the body's. */
   readonly size?: number;
+  readonly encoding?: string;
   /** A body still arriving: the text resolves with it. */
   readonly late?: Promise<string>;
 }
@@ -1224,9 +1293,13 @@ const uiPage = (responses: readonly FakeResponse[], clickFails = false) => {
         request: () => request,
         url: () => response.url,
         status: () => response.status,
-        text: async () => {
+        headers: () =>
+          response.encoding === undefined
+            ? {}
+            : { "content-encoding": response.encoding },
+        body: async () => {
           reads.count += 1;
-          return response.late ?? response.body;
+          return Buffer.from(await (response.late ?? response.body));
         },
       },
     };
@@ -1350,6 +1423,35 @@ describe("saving from a UI step's response", () => {
     expect(reads.count).toBe(0);
   });
 
+  it.each([
+    { encoding: "gzip", size: 32 },
+    { encoding: "br", size: 32 },
+    { encoding: "identity", size: 0 },
+    { size: -1 },
+    { size: Number.NaN },
+  ])(
+    "refuses unknown decoded UI response bounds before body allocation: %j",
+    async (bounds) => {
+      const parsed = clickSaving("/api/items");
+      const secrets = resolved(parsed);
+      const { page, reads, listeners } = uiPage([
+        {
+          method: "POST",
+          url: `${ORIGIN}/api/items`,
+          status: 201,
+          body: '{"id":"record-7"}',
+          ...bounds,
+        },
+      ]);
+      await expect(perform(page, parsed.actions[0]!, secrets)).rejects.toThrow(
+        "decoded response size",
+      );
+      expect(reads.count).toBe(0);
+      expect(listeners.size).toBe(0);
+      expect(() => secrets.savedValue("item")).toThrow("No earlier step saved");
+    },
+  );
+
   it("stops watching requests when the step fails before its response", async () => {
     const parsed = clickSaving("/api/items");
     const { page, listeners } = uiPage([], true);
@@ -1409,6 +1511,7 @@ describe("saved response limits and deadlines", () => {
         url: `${ORIGIN}/api/items`,
         status: 201,
         body: "",
+        size: Buffer.byteLength('{"id":"item-late"}'),
         late,
       },
     ]);
@@ -1435,6 +1538,7 @@ describe("saved response limits and deadlines", () => {
         url: `${ORIGIN}/api/items`,
         status: 201,
         body: "",
+        size: Buffer.byteLength('{"id":"item-late"}'),
         late,
       },
     ]);
