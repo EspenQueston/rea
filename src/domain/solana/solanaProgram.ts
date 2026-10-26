@@ -74,8 +74,9 @@ const sectionSchema = z.strictObject({
 
 /**
  * Observed ELF/RPC facts plus inferred Anchor dispatch candidates. Handler
- * rows are reconstruction leads recovered from the lddw-constant dispatch
- * idiom; they are not a verified instruction inventory.
+ * rows are reconstruction leads recovered from the dispatch idioms the
+ * analyzer verifies (lddw-constant compares, split 32-bit compares, and
+ * read-only jump tables); they are not a verified instruction inventory.
  */
 export const solanaProgramAnalysisSchema = z
   .strictObject({
@@ -113,16 +114,32 @@ export const solanaProgramAnalysisSchema = z
     }),
     handlers: z.array(
       z.strictObject({
-        discriminator: discriminatorSchema,
-        constant_address: byteOffset,
-        constant_file_offset: byteOffset,
-        comparison_address: byteOffset,
-        branch: z.enum(["jeq", "jne"]),
+        method: z.enum(["lddw-compare", "split-compare", "table-dispatch"]),
+        /** Anchor discriminator bytes; null for table rows, whose identity is the slot label. */
+        discriminator: discriminatorSchema.nullable(),
+        label: z.string().nullable(),
+        constant_address: byteOffset.nullable(),
+        constant_file_offset: byteOffset.nullable(),
+        comparison_address: byteOffset.nullable(),
+        comparison_addresses: z.array(byteOffset),
+        branch: z.enum(["jeq", "jne"]).nullable(),
         branch_target: byteOffset,
-        value_register: z.int().min(0).max(15),
-        constant_register: z.int().min(0).max(15),
+        value_register: z.int().min(0).max(15).nullable(),
+        constant_register: z.int().min(0).max(15).nullable(),
+        table_address: byteOffset.nullable(),
+        table_index: z.int().nonnegative().nullable(),
       }),
     ),
+    dispatch: z.strictObject({
+      total_candidates: z.int().nonnegative(),
+      by_method: z.strictObject({
+        "lddw-compare": z.int().nonnegative(),
+        "split-compare": z.int().nonnegative(),
+        "table-dispatch": z.int().nonnegative(),
+      }),
+      /** Register-indirect transfers matching no recovered table idiom. */
+      computed_jumps_unresolved: z.int().nonnegative(),
+    }),
     syscalls: z.strictObject({
       dynamic_symbols: z.array(z.string()),
       defined_symbols: z.int().nonnegative(),
@@ -159,21 +176,45 @@ export const solanaProgramAnalysisSchema = z
   })
   .superRefine((value, context) => {
     for (const [index, handler] of value.handlers.entries())
-      if (handler.constant_file_offset >= value.artifact.bytes)
+      if (
+        handler.constant_file_offset !== null &&
+        handler.constant_file_offset >= value.artifact.bytes
+      )
         context.addIssue({
           code: "custom",
           path: ["handlers", index, "constant_file_offset"],
           message: "Handler constant lies outside the analyzed artifact.",
         });
     const seen = new Set<string>();
-    for (const handler of value.handlers)
-      if (seen.has(handler.discriminator))
+    for (const handler of value.handlers) {
+      const key =
+        handler.discriminator ??
+        (handler.table_address === null
+          ? null
+          : `table:${String(handler.table_address)}:${String(handler.table_index)}`);
+      if (key === null) continue;
+      if (seen.has(key))
         context.addIssue({
           code: "custom",
           path: ["handlers"],
-          message: "Handler candidates must not repeat a discriminator.",
+          message:
+            "Handler candidates must not repeat a discriminator or table slot.",
         });
-      else seen.add(handler.discriminator);
+      else seen.add(key);
+    }
+    const methodTotal =
+      value.dispatch.by_method["lddw-compare"] +
+      value.dispatch.by_method["split-compare"] +
+      value.dispatch.by_method["table-dispatch"];
+    if (
+      methodTotal !== value.dispatch.total_candidates ||
+      value.dispatch.total_candidates !== value.handlers.length
+    )
+      context.addIssue({
+        code: "custom",
+        path: ["dispatch"],
+        message: "Dispatch coverage must account for every handler candidate.",
+      });
   });
 
 export type AnalyzeSolanaProgramInput = z.infer<

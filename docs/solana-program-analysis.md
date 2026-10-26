@@ -48,11 +48,26 @@ rea analyze-solana-program --program pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA
   symbols, and byte identity are observations. The record is nevertheless
   labeled `inferred`, because its headline output — the handler table — is
   inference.
-- Handler candidates come from one dispatch idiom: a 64-bit constant loaded
-  by `lddw` and consumed, before any overwrite, by a nearby register-register
-  `jeq`/`jne`. That is the shape Anchor/rustc emits for instruction dispatch.
-  Each candidate records the discriminator (the constant's little-endian
-  bytes), the constant and comparison addresses, and the branch target.
+- Handler candidates come from the dispatch idioms the analyzer can
+  verify, each labeled by `method`:
+  - `lddw-compare`: a 64-bit constant loaded by `lddw` and consumed, before
+    any overwrite, by a nearby register-register `jeq`/`jne`. That is the
+    shape Anchor/rustc emits for instruction dispatch. The candidate
+    records the discriminator (the constant's little-endian bytes), the
+    constant and comparison addresses, and the branch target.
+  - `split-compare`: the discriminator compared as two 32-bit halves —
+    loads from `[base + 0]` and `[base + 4]` checked against immediates
+    whose composed value is the discriminator, both guarding one handler
+    (both bail to one skip target, or the low half bails and the high half
+    branches in). Records both comparison addresses and the composed
+    discriminator.
+  - `table-dispatch`: a register-indirect transfer whose register was
+    loaded from a read-only table of `.text` addresses at a constant
+    base. Records the table address, the slot (`index:n` label), and the
+    entry target; discriminator is null.
+- The `dispatch` coverage block counts candidates by method and the
+  register-indirect transfers that matched no verified idiom
+  (`computed_jumps_unresolved`).
 - Syscall surface is the ELF's undefined dynamic symbols (`sol_*` names)
   plus per-call-site resolution. A `call` immediate resolves only when it
   verifies: an `R_BPF_64_32` relocation naming the site (captured ELFs carry
@@ -67,9 +82,10 @@ rea analyze-solana-program --program pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA
 
 ## Limitations
 
-- Table dispatch, split 32-bit discriminator compares, and computed jumps
-  are not recovered; an empty handler list does not prove a program has no
-  callable interface.
+- Dispatch idioms outside the three recovered shapes (and computed jumps
+  whose tables cannot be verified) stay unresolved and are counted, not
+  guessed; an empty handler list does not prove a program has no callable
+  interface.
 - A fetched program reflects the endpoint's finalized state at call time; it
   may differ from an earlier capture if the program was upgraded.
 - Discriminator candidates are reconstruction leads. Behavior parity with a

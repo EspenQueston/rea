@@ -86,7 +86,7 @@ it("recovers a dispatch candidate from the lddw plus register-compare idiom", ()
     0x1000,
     0x200,
   );
-  const candidates = scanSolanaDispatch(instructions);
+  const candidates = scanSolanaDispatch(instructions).candidates;
   expect(candidates).toHaveLength(1);
   expect(candidates[0]?.discriminator).toBe("c9cff3724b6f2fbd");
   expect(candidates[0]?.branch).toBe("jeq");
@@ -105,13 +105,13 @@ it("does not promote constants that are overwritten or compared as immediates", 
     0,
     0,
   );
-  expect(scanSolanaDispatch(overwritten)).toHaveLength(0);
+  expect(scanSolanaDispatch(overwritten).candidates).toHaveLength(0);
   const immediateCompare = disassembleSbpf(
     join(...splitWords(CREATE_CONFIG_LDDW), word(0x15, 3, 0, 5, 7)),
     0,
     0,
   );
-  expect(scanSolanaDispatch(immediateCompare)).toHaveLength(0);
+  expect(scanSolanaDispatch(immediateCompare).candidates).toHaveLength(0);
 });
 
 const splitWords = (bytes: Uint8Array): readonly Uint8Array[] => [

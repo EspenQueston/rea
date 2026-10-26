@@ -80,12 +80,15 @@ export class SolanaProgramService {
           limitations: value.limitations,
           locations: [
             { kind: "artifact-path", path: value.artifact.path },
-            ...value.handlers.map(
-              (handler) =>
-                ({
-                  kind: "file-offset",
-                  offset: handler.constant_file_offset,
-                }) as const,
+            ...value.handlers.flatMap((handler) =>
+              handler.constant_file_offset === null
+                ? []
+                : [
+                    {
+                      kind: "file-offset",
+                      offset: handler.constant_file_offset,
+                    } as const,
+                  ],
             ),
           ],
         },

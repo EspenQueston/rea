@@ -54,7 +54,7 @@ const MAX_RELEVANT_STRINGS = 64;
 const RELEVANT_STRING = /sol_|invoke|syscall|cpi/i;
 
 const BASE_LIMITATIONS: readonly string[] = [
-  "Handler candidates come only from the lddw-constant dispatch-comparison idiom Anchor/rustc emits; table dispatch, split 32-bit compares, and computed jumps are not recovered.",
+  "Handler candidates come from the dispatch idioms the analyzer can verify — lddw-constant register compares, split 32-bit half compares, and read-only jump tables. Register-indirect transfers matching none of these are counted as unresolved computed jumps, never guessed.",
   "Disassembly is a linear sweep by the bundled sBPF decoder, not a Ghidra/IDA-grade lift: no Rust source, types, control-flow recovery, or account layouts are produced.",
   "Discriminator candidates are reconstruction leads, never proof of behavior; parity with a deployed program is established only by differential tests against the captured original.",
 ];
@@ -285,7 +285,8 @@ const analyzeAcquired = (
           textSection.address,
           textSection.offset,
         );
-  const handlers = scanSolanaDispatch(instructions);
+  const dispatch = scanSolanaDispatch(instructions, image);
+  const handlers = dispatch.candidates;
   const callResolutions = resolveSolanaCallSites(instructions, image);
   const limitations = [...BASE_LIMITATIONS];
   if (textSection === undefined)
@@ -353,15 +354,35 @@ const analyzeAcquired = (
       coverage: textSection === undefined ? "no-text-section" : "complete",
     },
     handlers: handlers.map((handler) => ({
+      method: handler.method,
       discriminator: handler.discriminator,
+      label: handler.label,
       constant_address: handler.constantAddress,
       constant_file_offset: handler.constantFileOffset,
       comparison_address: handler.comparisonAddress,
+      comparison_addresses: [...handler.comparisonAddresses],
       branch: handler.branch,
       branch_target: handler.branchTarget,
       value_register: handler.valueRegister,
       constant_register: handler.constantRegister,
+      table_address: handler.tableAddress,
+      table_index: handler.tableIndex,
     })),
+    dispatch: {
+      total_candidates: handlers.length,
+      by_method: {
+        "lddw-compare": handlers.filter(
+          (handler) => handler.method === "lddw-compare",
+        ).length,
+        "split-compare": handlers.filter(
+          (handler) => handler.method === "split-compare",
+        ).length,
+        "table-dispatch": handlers.filter(
+          (handler) => handler.method === "table-dispatch",
+        ).length,
+      },
+      computed_jumps_unresolved: dispatch.computedJumpsUnresolved,
+    },
     syscalls: {
       dynamic_symbols: undefinedSymbols.map((symbol) => symbol.name).sort(),
       defined_symbols: definedSymbols,

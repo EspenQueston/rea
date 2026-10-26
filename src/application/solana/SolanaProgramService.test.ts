@@ -47,16 +47,26 @@ const report: SolanaProgramAnalysis = {
   },
   handlers: [
     {
+      method: "lddw-compare",
       discriminator: "c9cff3724b6f2fbd",
+      label: null,
       constant_address: 900392,
       constant_file_offset: 900396,
       comparison_address: 900408,
+      comparison_addresses: [900408],
       branch: "jeq",
       branch_target: 901944,
       value_register: 3,
       constant_register: 4,
+      table_address: null,
+      table_index: null,
     },
   ],
+  dispatch: {
+    total_candidates: 1,
+    by_method: { "lddw-compare": 1, "split-compare": 0, "table-dispatch": 0 },
+    computed_jumps_unresolved: 0,
+  },
   syscalls: {
     dynamic_symbols: ["sol_log_"],
     defined_symbols: 2,

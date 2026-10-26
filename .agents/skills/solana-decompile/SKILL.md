@@ -44,8 +44,11 @@ the deployed ELF. Do not use it for ordinary source-repository analysis.
 
 - The analyzer never executes the target, builds transactions, or touches a
   wallet. RPC intake is the only network step and is read-only.
-- Table dispatch, split 32-bit compares, and computed jumps are not
-  recovered; an empty handler table is an unknown, not a negative result.
+- Split 32-bit compares and read-only jump tables are recovered as
+  labeled candidates (`split-compare` / `table-dispatch`), with the
+  dispatch coverage block counting each method. Computed jumps matching
+  no verified idiom are counted as unresolved, never guessed; an empty
+  handler table is an unknown, not a negative result.
 - `call` immediates are resolved only when they verify: an ELF relocation
   naming the site, exactly one Murmur3-32 hash candidate (the hash the
   loader substitutes for a syscall name), or an exact defined-symbol
