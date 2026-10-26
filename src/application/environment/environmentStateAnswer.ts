@@ -2,7 +2,9 @@ import { hasRepeatedQueryArgument } from "./environmentTools.js";
 import { stateBodyJson } from "../../domain/analysisView/EnvironmentStateAccumulator.js";
 import {
   ownMember,
+  at,
   collectionMatch,
+  deletedFlag,
   collectionPathOf,
   decodedSegment,
   allLines,
@@ -241,18 +243,17 @@ const startedWithItem = (
     );
 };
 
-/** The entity an item call names, preferring verbatim collection spellings as replay does; the id is tried percent-decoded, then as written, unless it is literal. */
-export const namedEntity = (
-  store: EnvironmentStateStore,
-  type: string,
+/** The first entity `find` gives for a collection an item call names, preferring verbatim spellings as replay does; the id is tried percent-decoded, then as written, unless it is literal. */
+const callNamed = (
+  collections: readonly string[],
   call: ItemCall,
+  find: (collection: string, id: string) => StateEntity | undefined,
 ): StateEntity | undefined => {
   const ids =
     call.literal === true
       ? [call.id]
       : [...new Set([decodedSegment(call.id), call.id])];
-  const candidates = store
-    .collectionsOf(type)
+  const candidates = collections
     .flatMap((collection) => {
       const verbatim = collectionMatch(collection, call.segments);
       return verbatim === undefined ? [] : [{ collection, verbatim }];
@@ -260,10 +261,87 @@ export const namedEntity = (
     .sort((left, right) => right.verbatim - left.verbatim);
   for (const { collection } of candidates)
     for (const id of ids) {
-      const entity = store.entity(type, collection, id);
+      const entity = find(collection, id);
       if (entity !== undefined) return entity;
     }
   return undefined;
+};
+
+/** The entity an item call names. */
+export const namedEntity = (
+  store: EnvironmentStateStore,
+  type: string,
+  call: ItemCall,
+): StateEntity | undefined =>
+  callNamed(store.collectionsOf(type), call, (collection, id) =>
+    store.entity(type, collection, id),
+  );
+
+/** Per Evidence, the member each type's recorded item reads set `true` on a soft-deleted entity, or null for none. */
+const deletedFlags = new WeakMap<
+  EnvironmentSource,
+  Map<string, string | null>
+>();
+
+/** The member a type's recorded item reads set `true` on an entity the application soft-deleted, if they show one. */
+export const softDeleteFlag = (
+  serving: StateServing,
+  type: string,
+): string | undefined => {
+  let flags = deletedFlags.get(serving.source);
+  if (flags === undefined) {
+    flags = new Map();
+    deletedFlags.set(serving.source, flags);
+  }
+  if (!flags.has(type))
+    flags.set(type, recordedDeletedFlag(serving, type) ?? null);
+  return flags.get(type) ?? undefined;
+};
+
+const recordedDeletedFlag = (
+  serving: StateServing,
+  type: string,
+): string | undefined => {
+  for (const view of serving.store.state.views.values()) {
+    if (view.shape !== "item" || view.type !== type) continue;
+    const tool = serving.source.manifest.tools.find(
+      (candidate) => candidate.name === view.tool,
+    );
+    for (const ordinal of tool?.record_ordinals ?? []) {
+      const exchange = serving.source.exchanges.get(ordinal);
+      if (
+        exchange === undefined ||
+        exchange.status === null ||
+        exchange.status < 200 ||
+        exchange.status > 299
+      )
+        continue;
+      const body = recordedJson(exchange);
+      const flag =
+        body === undefined ? undefined : deletedFlag(at(body, view.pointer));
+      if (flag !== undefined) return flag;
+    }
+  }
+  return undefined;
+};
+
+/** An entity a served delete removed, as an application that soft-deletes answers for it by id: with its deleted flag set. */
+const deletedEntity = (
+  serving: StateServing,
+  type: string,
+  call: ItemCall,
+): StateEntity | undefined => {
+  const flag = softDeleteFlag(serving, type);
+  if (flag === undefined) return undefined;
+  const { store } = serving;
+  const entity = callNamed(
+    store.knownCollectionsOf(type),
+    call,
+    (collection, id) => store.deleted(type, collection, id),
+  );
+  return entity === undefined
+    ? undefined
+    : { ...entity, fields: { ...entity.fields, [flag]: true } };
 };
 
 /** The answer for an entity the state does not hold: the tool's latest recorded 400, 404 or 410, else a tool error. */
@@ -331,9 +409,14 @@ const answerItem = (
   const call = itemCall(tool, args);
   if (call === undefined)
     return err(refused(tool, `Tool ${tool.name} needs every path argument.`));
-  const entity = namedEntity(store, view.type, call);
+  const held = namedEntity(store, view.type, call);
   // A projection or another representation of an entity the state holds replays as the capture's reads did.
   const replayed = replayedCall(source, view, callQuery(tool, args));
+  const entity =
+    held ??
+    (replayed === undefined
+      ? deletedEntity(serving, view.type, call)
+      : undefined);
   if (entity === undefined) {
     // An item only a replayed line showed, which the state never held, answers with its own recording; a created
     // item may since have been deleted, so a type a served create added to keeps the missing answer.
