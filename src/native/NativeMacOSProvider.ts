@@ -11,6 +11,7 @@ import {
   resolveBundleResourcePlistSelection,
 } from "./NativePlistSource.js";
 import {
+  artifactFileCompletion,
   assertArtifactReadActive,
   bindArtifactFileCleanup,
   withArtifactRegularFile,
@@ -98,6 +99,7 @@ import {
 } from "../domain/propertyListKeys.js";
 import {
   demangleSwiftSchema,
+  inspectMachoSchema,
   inspectPlistSchema,
   inspectSignatureSchema,
   type InspectSignature,
@@ -1269,8 +1271,24 @@ class NativeMacOSClient implements AnalysisClient {
     } catch (cause: unknown) {
       // Only an unopenable target leaves the tool facts without a byte read;
       // cancellation, read and cleanup failures stay errors.
-      if (admitted || signal?.aborted === true || !isUnopenableTarget(cause))
-        return err(appleDispatchMetadataFailure(cause, path, "inspect_macho"));
+      if (admitted || signal?.aborted === true || !isUnopenableTarget(cause)) {
+        const failure = appleDispatchMetadataFailure(
+          cause,
+          path,
+          "inspect_macho",
+        );
+        // A report finished before close failed or was cancelled survives.
+        const completed = artifactFileCompletion(cause)?.value as
+          | Awaited<ReturnType<typeof inspect>>
+          | undefined;
+        const report =
+          completed?.ok === true
+            ? inspectMachoSchema.safeParse(completed.value.result)
+            : undefined;
+        if (report?.success === true)
+          failure.retainPartialObservation(report.data);
+        return err(failure);
+      }
       return inspect(() =>
         Promise.resolve({
           status: "unread",

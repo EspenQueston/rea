@@ -8,6 +8,8 @@ import {
 import { join } from "node:path";
 import { expect, it, onTestFinished, vi } from "vitest";
 import { machoImage } from "../../../../src/artifacts/apple/MachoImage.fixture.js";
+import type { AnalysisError } from "../../../../src/domain/analysisErrorBase.js";
+import { projectAnalysisError } from "../../../../src/domain/analysisErrorProjection.js";
 import { inspectMachoSchema } from "../../../../src/domain/native/nativeInspection.js";
 import { ProviderCleanupError } from "../../../../src/domain/providerCleanupError.js";
 import { NativeMacOSProvider } from "../../../../src/native/NativeMacOSProvider.js";
@@ -164,6 +166,15 @@ const failingClose = async (onClosed?: () => void) => {
   return state;
 };
 
+/** The finished report survives a failure that arrives after the read completed. */
+const expectRetainedReport = (error: AnalysisError) => {
+  const report = inspectMachoSchema.parse(error.partialObservation);
+  expect(report.encryption.items).toMatchObject([{ status: "encrypted" }]);
+  expect(projectAnalysisError(error).details?.partial_observation).toEqual(
+    error.partialObservation,
+  );
+};
+
 it("retains the target descriptor when close rejects and retries it on client close", async () => {
   const path = await writeTarget();
   const state = await failingClose();
@@ -174,6 +185,7 @@ it("retains the target descriptor when close rejects and retries it on client cl
   expect(result.error.cleanupIncomplete).toBe(true);
   expect(result.error.cleanupResources).toEqual([path]);
   expect(state.attempts).toBe(1);
+  expectRetainedReport(result.error);
 
   expect((await client.close()).ok).toBe(false);
   expect(state.attempts).toBe(2);
@@ -195,6 +207,7 @@ it("keeps the inspection failure primary when the descriptor close also rejects"
   expect(result.error.cleanupPrimary?._tag).toBe(
     "AnalysisArtifactChangedError",
   );
+  expect(result.error.partialObservation).toBeUndefined();
 
   state.failing = false;
   expect((await client.close()).ok).toBe(true);
@@ -225,4 +238,5 @@ it("reports cancellation that arrives during the final close without retaining t
     _tag: "AnalysisCancelledError",
     cleanupIncomplete: false,
   });
+  expectRetainedReport(result.error);
 });
