@@ -327,6 +327,19 @@ it("matches v1 signer serials as DER integers, including redundant sign octets",
       Uint8Array.of(0xff, 0xff),
     ),
   ).toBe(0);
+  for (const [canonical, padded] of [
+    [Uint8Array.of(0x12, 0x34), Uint8Array.of(0x00, 0x00, 0x12, 0x34)],
+    [Uint8Array.of(0xff), Uint8Array.of(0xff, 0xff, 0xff)],
+  ]) {
+    const canonicalCertificate = withSerial(
+      LEAF_CERTIFICATE,
+      tlv(0x02, canonical),
+    );
+    const paddedCertificate = withSerial(LEAF_CERTIFICATE, tlv(0x02, padded));
+    expect(identify(canonicalCertificate, padded)).toBe(0);
+    expect(identify(paddedCertificate, canonical)).toBe(0);
+    expect(identify(paddedCertificate, padded)).toBe(0);
+  }
   // 0x00 0x80 is +128; a bare 0x80 is -128. 0xff 0x7f is -129, not 0x7f.
   expect(
     identify(
