@@ -438,9 +438,11 @@ describe("Ghidra installation inspection", () => {
     ["12.1.2", "27", 27],
     ["12.1.2-2.1", "27", 27],
     ["12.1.0", "21.0.2", 21],
+    ["12.2", "27.0.1.0.3", 27],
+    ["12.2.1", "25.0.1", 25],
     [SUPPORTED_GHIDRA_VERSION, "25.0.1", 25],
   ])(
-    "accepts Ghidra %s with JDK %s on the verified release line",
+    "accepts Ghidra %s with JDK %s on an accepted release line",
     async (providerVersion, javaVersion, major) => {
       const result = await inspectGhidraInstallation(
         {
@@ -979,7 +981,7 @@ describe("Ghidra installation version admission", () => {
     },
     {
       name: "different Ghidra line",
-      readText: () => "application.version=12.2.0\napplication.java.min=21\n",
+      readText: () => "application.version=12.3.0\napplication.java.min=21\n",
       probeJava: () => javaProbeOk<GhidraJavaObservation>(JAVA),
       failed: "version",
       code: "unsupported_version",
@@ -1000,6 +1002,32 @@ describe("Ghidra installation version admission", () => {
       result.checks.find(({ status }) => status === "failed"),
     ).toMatchObject({ name: failed, code });
   });
+
+  it.each(["12.0.4", "12.3", "13.1.4"])(
+    "rejects Ghidra %s outside the accepted release lines",
+    async (providerVersion) => {
+      const result = await inspectGhidraInstallation(
+        {
+          resourceOwner: inspectionResources.owner,
+          environment: {},
+          installDir: INSTALL,
+          platform: "linux",
+          architecture: "x64",
+        },
+        host({
+          readText: () =>
+            `application.version=${providerVersion}\napplication.java.min=21\napplication.java.max=\n`,
+        }),
+      );
+      expect(result.status).toBe("unavailable");
+      expect(
+        result.checks.find(({ name }) => name === "version"),
+      ).toMatchObject({
+        status: "failed",
+        detail: expect.stringContaining("12.1.x or 12.2.x"),
+      });
+    },
+  );
 
   it("names the accepted Ghidra line and JDK range in failure remediation", async () => {
     const result = await inspectGhidraInstallation(
