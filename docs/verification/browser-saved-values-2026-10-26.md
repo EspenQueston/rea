@@ -1,10 +1,9 @@
 # Browser saved values: integration verification
 
 Executed on Linux x64, Node 24.22.1, Chromium through `/usr/bin/chromium`,
-with PocketBase 0.40.6 on an owned loopback instance. Measured runtime: `355e2dcb8` (same browser implementation as the measured
-uncommitted build). Baseline: `6d5532a204b338a6c770fcbae61e0d55bda70793`. The imported implementation is
+with PocketBase 0.40.6 on an owned loopback instance. Final measured runtime: `dd3085bf5a2511009116f2672d5aefa8e452537e`. Baseline: `6d5532a204b338a6c770fcbae61e0d55bda70793`. The imported implementation is
 Edgar Arakelyan's PR #7162, upstream head
-`d39f386d202fe8e98592fb2d9d26e43d8d0fb94f`; The subsequent upstream fixes through `81a275b130e85a40a227f6a61cfa2fe1162a217e`
+`d39f386d202fe8e98592fb2d9d26e43d8d0fb94f`; the subsequent upstream fixes through `81a275b130e85a40a227f6a61cfa2fe1162a217e`
 were compared during integration. Their numeric and slug semantics are retained
 through existing shared owners; positive decimal cases are preserved; negative zero is refused by the shared
 exact-number owner because serialization loses its sign. The
@@ -31,8 +30,8 @@ step must complete, and the selected authentication response must actually occur
 exactly once and contain a redacted token; absence would fail the oracle.
 
 - Public CLI: all eight steps completed, with eight retained JSON bodies; no
-  plaintext saved token or declared password. 4.881 s elapsed, 5.598 s CPU,
-  1,349,656,576 bytes sampled process-family peak RSS.
+  plaintext saved token or declared password. 7.553 s elapsed, 8.359 s CPU,
+  1,424,781,312 bytes sampled process-family peak RSS.
 - Public MCP: both first and subsequent tasks completed before and after. The
   baseline uses a retained event page to read the generated ID, then a second
   capture attached to the same browser. The candidate performs the same writes,
@@ -52,13 +51,13 @@ One run per condition establishes observations, not statistical speed claims.
 | Measurement                                        |                 Baseline |             Saved values |
 | -------------------------------------------------- | -----------------------: | -----------------------: |
 | Task calls, each completed task                    |                        3 |                        1 |
-| First task elapsed                                 |                  7.703 s |                  3.531 s |
-| Warm task elapsed                                  |                  1.390 s |                  1.605 s |
-| Entire verifier elapsed                            |                 14.990 s |                 17.198 s |
-| Entire verifier CPU                                |                 15.735 s |                 15.679 s |
-| Sampled process-family peak RSS                    |          2,080,378,880 B |          1,636,233,216 B |
-| Input catalog + arguments/text replies, both tasks |  34,899 estimated tokens |  25,897 estimated tokens |
-| Full SDK catalog + arguments/results, both tasks   | 368,578 estimated tokens | 351,482 estimated tokens |
+| First task elapsed                                 |                  5.145 s |                  1.621 s |
+| Warm task elapsed                                  |                  1.020 s |                  0.762 s |
+| Entire verifier elapsed                            |                 11.723 s |                  7.653 s |
+| Entire verifier CPU                                |                 13.444 s |                  8.683 s |
+| Sampled process-family peak RSS                    |          2,028,253,184 B |          1,638,350,848 B |
+| Input catalog + arguments/text replies, both tasks |  34,781 estimated tokens |  25,900 estimated tokens |
+| Full SDK catalog + arguments/results, both tasks   | 368,391 estimated tokens | 351,500 estimated tokens |
 
 `o200k_base` BPE estimates serialize compact JSON; they are not model billing.
 The model projection includes all 53 advertised tools' names, descriptions and
@@ -73,9 +72,12 @@ cleanup, and is deliberately distinct from timed analysis calls. The external
 PocketBase server's CPU and memory are **unmeasured**. The REA/Chromium family
 was restricted to two CPUs, a 3 GiB Node heap and an 8 GiB family RSS guard;
 RSS was summed every 100 ms, may double-count shared pages and miss short peaks.
-No guard stopped these completed runs. Warm latency and whole-verifier elapsed
-did not improve; these measurements support fewer round trips and less context,
-without establishing universal speed or memory improvements.
+No guard stopped these completed runs. An earlier pre-review pair at `355e2dcb8` gave 7.703→3.531 s first-task
+latency, 1.390→1.605 s warm latency, and 14.990→17.198 s whole elapsed, so
+the earlier warm and whole measurements did not improve. Its CPU was
+15.735→15.679 s, family peak 2,080,378,880→1,636,233,216 B and model projection
+34,899→25,897 estimated tokens. Both pairs remain observations; differences
+reinforce host/cache variance rather than establishing universal speedups.
 
 ## Reproducing
 
@@ -158,8 +160,8 @@ To reproduce that additional check, place these exact bytes in the owned static
 public directory as `escaped-values.json`, then run the existing verifier with
 `--mode after --source-only` and a new output directory:
 
-```json
-{ "token": "\u0073ource-token", "code": 1e3, "unknown": 1e-400 }
+```text
+{"token":"\u0073ource-token","code":1e3,"unknown":1e-400}
 ```
 
 UI matching is explicitly observational. Requests already running are excluded;
@@ -178,3 +180,16 @@ additional budget, late-ambiguity, escaped alias, empty-body and decoder-admissi
 coverage. Real Basic-auth server compatibility and real Grafana write inference
 were not rerun; their encoding/accounting and inference semantics are covered by
 source/boundary regressions and the attributed upstream evidence remains separate.
+
+## CI baseline controls
+
+The initial CI used synthetic merge `cbc8ba3379bc6dec457179ffdda7db033eae7dc2`
+with main parent `dd7a2da5bb0c2e91d300dbaebd3a7aca8379a965`. All three
+failing assertions were independently reproduced on that exact main parent:
+the prewarm runner's 100 ms startup deadline assertion, and two SAZ tests that
+expect no `partial_observation` although main retains source receipts. The SAZ
+control had 16 passes, two failures and one skip; the isolated prewarm control
+failed the same assertion. These source/control files are unchanged by this PR.
+The initial real-browser, agentenv, static, documentation, package build and
+Linux native baseline lanes passed. Cancelled shard coverage remains incomplete;
+final CI/review outcomes and any authorized bypass are recorded in the PR.
