@@ -20,6 +20,7 @@ import { registerBinaryDiagnosticsCommands } from "./cli/binaryDiagnosticsComman
 import { registerFridaCommands } from "./cli/fridaCommands.js";
 import type { FridaInstrumentationPort } from "./application/frida/FridaInstrumentationPort.js";
 import { Cli } from "incur";
+import { adaptCliOutputArgumentsForIncur } from "./cliBuiltinArguments.js";
 import { normalizeCliArguments } from "./cliOutput.js";
 
 import { createLogger } from "./logger.js";
@@ -177,7 +178,10 @@ export const createCli = (
       : serveStrict(
           normalizeCliArguments(arguments_),
           options ?? {},
-          (tokens, selected) => serveDeclared(tokens, selected, serve),
+          (tokens, selected) =>
+            serveDeclared(tokens, selected, (declared, declaredOptions) =>
+              serve(adaptCliOutputArgumentsForIncur(declared), declaredOptions),
+            ),
         );
   return cli;
 };

@@ -22,12 +22,113 @@
  */
 import { Formatter } from "incur";
 
+export class CliDelimitedOutputError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "CliDelimitedOutputError";
+  }
+}
+
+export interface CliDelimitedOutputOptions {
+  readonly fields: readonly string[];
+  readonly metadata: Readonly<Record<string, unknown>>;
+}
+
 /** Keep REA's Markdown layout compatible with Incur while owning table safety. */
 export const formatCliOutput = (
   value: unknown,
-  format: Formatter.Format,
-): string =>
-  format === "md" ? formatMarkdown(value) : Formatter.format(value, format);
+  format: Formatter.Format | "csv" | "tsv",
+  delimited?: CliDelimitedOutputOptions,
+): string => {
+  if (format === "csv" || format === "tsv") {
+    if (delimited === undefined)
+      throw new CliDelimitedOutputError(
+        "CSV/TSV output requires a selected row collection and explicit fields.",
+      );
+    return formatDelimitedRows(value, format, delimited);
+  }
+  return format === "md"
+    ? formatMarkdown(value)
+    : Formatter.format(value, format);
+};
+
+/** Render selected scalar cells, preceded by a versioned metadata record. */
+export const formatDelimitedRows = (
+  rows: unknown,
+  format: "csv" | "tsv",
+  options: CliDelimitedOutputOptions,
+): string => [...formatDelimitedOutputParts(rows, format, options)].join("");
+
+/** Validate the complete selected page before yielding its first output byte. */
+export function* formatDelimitedOutputParts(
+  rows: unknown,
+  format: "csv" | "tsv",
+  { fields, metadata }: CliDelimitedOutputOptions,
+): Generator<string> {
+  if (!isPlainObjectArray(rows))
+    throw new CliDelimitedOutputError(
+      Array.isArray(rows)
+        ? "CSV/TSV output requires every selected row to be a plain object."
+        : "The selected output path does not contain a row array.",
+    );
+  if (fields.length === 0)
+    throw new CliDelimitedOutputError(
+      "CSV/TSV output requires at least one explicitly selected field.",
+    );
+
+  const delimiter = format === "csv" ? "," : "\t";
+  const lineEnding = format === "csv" ? "\r\n" : "\n";
+  const encodedFields = fields.map((field) =>
+    encodeDelimitedCell(field, format),
+  );
+  for (const record of rows)
+    for (const field of fields)
+      encodeDelimitedCell(
+        Object.hasOwn(record, field) ? record[field] : undefined,
+        format,
+      );
+
+  yield `# rea-delimited-v1 ${JSON.stringify(metadata)}${lineEnding}`;
+  yield `${encodedFields.join(delimiter)}${lineEnding}`;
+  for (const record of rows)
+    yield `${fields
+      .map((field) =>
+        encodeDelimitedCell(
+          Object.hasOwn(record, field) ? record[field] : undefined,
+          format,
+        ),
+      )
+      .join(delimiter)}${lineEnding}`;
+}
+
+const encodeDelimitedCell = (value: unknown, format: "csv" | "tsv"): string => {
+  if (value === null || value === undefined) return "";
+  let text: string;
+  if (typeof value === "string") text = value;
+  else if (typeof value === "boolean") text = String(value);
+  else if (typeof value === "number" && Number.isFinite(value))
+    text = String(value);
+  else
+    throw new CliDelimitedOutputError(
+      "CSV/TSV cells must be scalar values; nested objects and arrays are not flattened.",
+    );
+  const needsQuotes =
+    format === "csv" ? /[",\r\n]/u.test(text) : /["\t\r\n]/u.test(text);
+  return needsQuotes ? `"${text.replace(/"/gu, '""')}"` : text;
+};
+
+const isPlainObjectArray = (
+  value: unknown,
+): value is readonly Readonly<Record<string, unknown>>[] =>
+  Array.isArray(value) &&
+  value.every(
+    (row: unknown) =>
+      typeof row === "object" &&
+      row !== null &&
+      !Array.isArray(row) &&
+      (Object.getPrototypeOf(row) === Object.prototype ||
+        Object.getPrototypeOf(row) === null),
+  );
 
 const isScalar = (value: unknown): boolean =>
   value === null || value === undefined || typeof value !== "object";

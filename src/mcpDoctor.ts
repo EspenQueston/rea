@@ -8,7 +8,6 @@ import { StringDecoder } from "node:string_decoder";
 import { createCatalogIdentity } from "./catalogIdentity.js";
 import { jsonLinesErrorRecord } from "./cli/jsonLines.js";
 import {
-  CLI_OUTPUT_FORMATS,
   type CliOutputFormat,
   missingCliOutputValueMessage,
   renderCliDocument,
@@ -32,8 +31,8 @@ import {
   mcpDoctorDeadlineRecovery,
 } from "./mcpStartupPolicy.js";
 
-const OUTPUT_FORMATS = CLI_OUTPUT_FORMATS;
-type OutputFormat = CliOutputFormat;
+const OUTPUT_FORMATS = ["toon", "json", "yaml", "md", "jsonl"] as const;
+type OutputFormat = Exclude<CliOutputFormat, "csv" | "tsv">;
 
 /**
  * Canonical `rea mcp doctor` options. This schema is the single source of
