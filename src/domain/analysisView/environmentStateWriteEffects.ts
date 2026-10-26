@@ -50,6 +50,7 @@ import {
 import { plannedBody, restampedFields } from "./environmentStateWriteStamps.js";
 import { readClock } from "./environmentStateWriteValues.js";
 import type { CreateEvidence } from "./environmentStateWriteExplain.js";
+import type { AmpersandSpelling } from "./environmentStateWriteCreateCalls.js";
 import {
   fittedClockFormat,
   matchesClockFormat,
@@ -99,6 +100,8 @@ export interface WriteDraft {
   readonly fixedWidth: Map<string, JsonValue>;
   /** What explained a create's exemplar, kept until a later call widens the plan, which it may then explain again. */
   exemplarInput?: CreateEvidence | undefined;
+  /** How the calls a create plan accepted and the entities its type held spelled `&` in each slugged field. */
+  readonly ampersands: Map<string, AmpersandSpelling>;
 }
 
 /** The value a draft fits a clock field against: one showing it at a fixed width, else the exemplar's. */

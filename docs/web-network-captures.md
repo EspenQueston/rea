@@ -770,7 +770,8 @@ and a field neither rules holds one value. Members either call sent are accepted
 required, and an echoed member a call left out takes the value that call stored
 (`body.defaults`). A clock rule widens to `trimmed` only when no held entity or
 earlier call showed that clock at a fixed width, and a slug to spelling `&` as
-the word (`ampersand: "and"`) only when the other call slugged no `&`. A later
+the word (`ampersand: "and"`) only when no call the plan accepted nor entity the
+type held dropped one. A later
 create that disagrees leaves the plan as it was. A field the first create left
 unexplained, such as an address whose two parts were the same text, takes the
 `composed` rule a later create learns for it when that rule spells the first
@@ -785,7 +786,8 @@ write: a field's value, its slug, or a clock's calendar digits
 (`YYYYMMDDhhmmss`, `YYYYMMDD`, `YYYY-MM-DD` or `YYYY/MM/DD`, in the clock's
 zone). A slug drops `&` unless the application spells it as the word, as Go's
 gosimple/slug and JavaScript's slugify do (`ampersand: "and"`, on a `slug` rule
-or part). A create composes a string only when at least one other entity of the
+or part). When a create slugs no `&`, the entities the type holds show which,
+and a create whose slug spells `&` otherwise than they do has no `slug` rule. A create composes a string only when at least one other entity of the
 type spells it with the same parts and none spells it otherwise. Where one text
 could come from two sources serving could tell apart, such as an id that equals
 the title's slug, the entities the type holds must leave exactly one reading. A

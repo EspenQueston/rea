@@ -125,6 +125,23 @@ const matchesAt = (
   return [];
 };
 
+/** Parts with each slug of a source holding no `&` spelling it as the word, or undefined when no such slug part exists. */
+const ampersandWord = (
+  parts: readonly ComposedPart[],
+  entity: JsonObject,
+): ComposedPart[] | undefined => {
+  let changed = false;
+  const spelled = parts.map((part): ComposedPart => {
+    if (!("as" in part) || part.as !== "slug" || part.ampersand !== undefined)
+      return part;
+    const source = entity[part.from];
+    if (typeof source === "string" && source.includes("&")) return part;
+    changed = true;
+    return { ...part, ampersand: "and" };
+  });
+  return changed ? spelled : undefined;
+};
+
 /** More ways to read one string than this leave it unexplained. */
 const MAX_SEGMENTATIONS = 8;
 
@@ -148,14 +165,17 @@ const segmentations = (
       at += 1;
       continue;
     }
+    // Stop at the cap before comparing or allocating more, however many sources spell the text.
     const choices: SourcePart[] = [];
     for (const { part } of matches)
-      if (!choices.some((choice) => alike(choice, part))) choices.push(part);
+      if (!choices.some((choice) => alike(choice, part))) {
+        choices.push(part);
+        if (readings.length * choices.length > MAX_SEGMENTATIONS) return [];
+      }
     const lead: ComposedPart[] = literal === "" ? [] : [{ text: literal }];
     readings = readings.flatMap((parts) =>
       choices.map((choice) => [...parts, ...lead, choice]),
     );
-    if (readings.length > MAX_SEGMENTATIONS) return [];
     literal = "";
     shown = true;
     at += matches[0]!.token.length;
@@ -241,11 +261,17 @@ export const createdComposer = (
           : [],
       ),
     );
-    const fits = segmentations(text, index, alike).filter(
-      (parts) =>
-        !parts.some((part) => "from" in part && part.from === field) &&
-        (heldSpellings(parts, field, held) ?? 0) > 0,
-    );
+    const fits = segmentations(text, index, alike).flatMap((parts) => {
+      if (parts.some((part) => "from" in part && part.from === field))
+        return [];
+      // A slug whose source here holds no `&` spells it as the held entities do.
+      const spelled = [parts, ampersandWord(parts, entity)].find(
+        (candidate) =>
+          candidate !== undefined &&
+          (heldSpellings(candidate, field, held) ?? 0) > 0,
+      );
+      return spelled === undefined ? [] : [spelled];
+    });
     return fits.length === 1
       ? { field, rule: "composed", parts: fits[0]! }
       : undefined;

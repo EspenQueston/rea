@@ -357,4 +357,20 @@ describe("slug spellings", () => {
       ])("url"),
     ).toBeUndefined();
   });
+
+  it("reads no address that more sources spell than it can tell apart", () => {
+    const fields = Object.fromEntries(
+      Array.from({ length: 40 }, (_, index) => [
+        `alias${String(index)}`,
+        "harbour-notes",
+      ]),
+    );
+    const rules: FieldRule[] = Object.keys(fields).map((field) => ({
+      field,
+      rule: "echo",
+    }));
+    const created = { ...fields, url: "/notes/harbour-notes/harbour-notes" };
+    const held = [{ ...fields, url: "/notes/harbour-notes/harbour-notes" }];
+    expect(createdComposer(created, rules, held)("url")).toBeUndefined();
+  });
 });

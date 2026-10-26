@@ -406,9 +406,10 @@ data you may change. This scenario creates one item:
   `prefix` such as `"Basic "` or with none, as some APIs take encoded
   credentials in their own header. Each part is a literal, a declared secret, a
   saved value, a cookie or a local storage entry, so a header a frontend builds
-  from a login token can be sent too. The encoded value is redacted like a page value, as
-  `[REDACTED:page:<step_id>.<header>]`, and parts read from the page are
-  redacted as page values are.
+  from a login token can be sent too; the password is never a literal other
+  than empty, since Evidence records literals as written. The encoded value is
+  redacted however short, as `[REDACTED:page:<step_id>.<header>]`, and parts
+  read from the page are redacted as page values are.
 - Validation refuses a header name given twice in a step, header names a
   page's `fetch` cannot set, such as `Cookie`, `Origin`, `Host` or `Sec-*`, and
   `User-Agent`, which Chrome drops; it refuses line breaks and other ASCII
@@ -478,13 +479,19 @@ id the application assigns:
 - A `request` step saves with `save: [{name, json_pointer, secret}]`, from its
   own response. A `click` or `press` step saves with `save_response: {method,
   path, save}`, from the response to the request it triggers, such as the
-  create a form's Save button sends: the recorder starts waiting before the
-  step acts, matches the method and a path on the start origin (`{*}` matches
-  one segment, and the query is ignored), and fails the step unless a 2xx JSON
-  response arrives before its `timeout_ms`. A pointer that names no string or
-  number fails the step, so later steps never send a missing value.
+  create a form's Save button sends: the recorder starts watching before the
+  step acts and takes only a request the step starts, so one already running,
+  such as an earlier autosave, cannot answer it. It matches the method and a
+  path on the start origin as the browser spells it, so a path may name
+  `My List` or `My%20List` (`{*}` matches one segment, and the query is
+  ignored), and fails the step unless a 2xx JSON response arrives before its
+  `timeout_ms`. A pointer that names no string or number fails the step, so
+  later steps never send a missing value, as does a response over 4,000,000
+  characters: a request step stops reading it there, and a UI step does not
+  read one whose received size is larger.
 - `{saved:name}` sends a saved value in a request step's `path`, including its
-  query, and in a `goto` destination's URL, percent-encoded. In a request
+  query, and in a `goto` destination's `url`, percent-encoded; a destination's
+  structured `query` values are sent as declared. In a request
   step's `json` body, a string that is only `{saved:name}` becomes the saved
   value with the JSON type it was saved with, so a saved number id is sent as a
   number, and `{saved:name}` inside a longer string is filled as text. A header
@@ -492,8 +499,9 @@ id the application assigns:
   Other braces, such as `{id}`, are sent as written.
 - Validation refuses a saved value that no earlier step saves. A later save of
   the same name replaces the value.
-- A value saved with `secret: true` is redacted like a page value, as
-  `[REDACTED:page:<step_id>.<name>]`, from records made after it is saved. The
+- A value saved with `secret: true` is redacted however short, as a declared
+  secret is, as `[REDACTED:page:<step_id>.<name>]`, from records made after it
+  is saved. The
   recorder reads response bodies on their own schedule, so the response it was
   saved from may keep it, as a login response may keep a token a later step
   reads from the page. Other saved values, such as ids, stay visible, since

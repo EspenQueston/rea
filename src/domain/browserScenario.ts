@@ -193,6 +193,17 @@ const validateRequestSteps = (
           ["actions", index, "headers", position, "value", "value"],
           "A header value cannot carry line breaks or control characters",
         );
+      // Evidence records literals as written, so a password must come from a reference.
+      const password =
+        header.value.source === "basic_credentials"
+          ? header.value.parts[1]
+          : undefined;
+      if (password?.source === "literal" && password.value !== "")
+        addIssue(
+          context,
+          ["actions", index, "headers", position, "value", "parts", 1],
+          "Basic credentials take their password from a declared secret, a saved value, a cookie or local storage, not a literal",
+        );
     });
   });
 };

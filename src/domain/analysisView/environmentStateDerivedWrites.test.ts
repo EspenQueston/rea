@@ -559,7 +559,7 @@ const addressParts = (ampersand?: "and") => [
   },
 ];
 
-describe("slugs, ambiguous addresses and templates across creates", () => {
+describe("slug spellings across creates", () => {
   it("learns that a slug spells & as the word from the first create that sends one", () => {
     const rows = folderCreates(
       [
@@ -605,6 +605,88 @@ describe("slugs, ambiguous addresses and templates across creates", () => {
     expect(planOf(mixed, "post_folders")).toMatchObject({ served: false });
   });
 
+  it("keeps a dropped & that an accepted create showed when a later one spells it as the word", () => {
+    const tag = (id: number, name: string, slug: string) => ({
+      id,
+      name,
+      slug,
+    });
+    const seed = tag(1, "Lamp Oil", "lamp-oil");
+    const created = [
+      tag(2, "Alpha Notes", "alpha-notes"),
+      tag(3, "Bravo & Tide", "bravo-tide"),
+      tag(4, "Charlie & Wind", "charlie-and-wind"),
+    ];
+    const rows: TimedCaptureRow[] = [
+      ["GET", "/api/tags", [seed]],
+      ["GET", "/api/tags/1", seed],
+    ];
+    created.forEach((entity, index) =>
+      rows.push(
+        ["POST", "/api/tags", entity, 201, { name: entity.name }],
+        ["GET", `/api/tags/${String(entity.id)}`, entity],
+        ["GET", "/api/tags", [seed, ...created.slice(0, index + 1)]],
+      ),
+    );
+    const plan = planOf(rows, "post_tags");
+    expect(plan.rules).toContainEqual({
+      field: "slug",
+      rule: "slug",
+      from: "name",
+    });
+    expect(plan.served).toBe(false);
+  });
+
+  it("spells & as the held entities do when the creates slug none", () => {
+    const rows = folderCreates(
+      [
+        { uid: numberedUuid(102), title: "Alpha Harbour", sent: false },
+        { uid: numberedUuid(103), title: "Bravo Tide", sent: false },
+      ],
+      wordSlug,
+      { uid: numberedUuid(101), title: "Lamp & Oil" },
+    );
+    expect(planOf(rows, "post_folders")).toMatchObject({
+      served: true,
+      rules: expect.arrayContaining([
+        { field: "url", rule: "composed", parts: addressParts("and") },
+      ]),
+    });
+  });
+
+  it("learns a slug field's & spelling from held tags, and no slug rule they contradict", () => {
+    const tagRows = (held: string, created: string, slug: string) => {
+      const seed = { id: 1, name: held, slug: wordSlug(held) };
+      const tag = { id: 2, name: created, slug };
+      return [
+        ["GET", "/api/tags", [seed]],
+        ["GET", "/api/tags/1", seed],
+        ["POST", "/api/tags", tag, 201, { name: created }],
+        ["GET", "/api/tags/2", tag],
+        ["GET", "/api/tags", [seed, tag]],
+      ] as TimedCaptureRow[];
+    };
+    expect(
+      planOf(
+        tagRows("Salt & Pepper", "Harbour Notes", "harbour-notes"),
+        "post_tags",
+      ).rules,
+    ).toContainEqual({
+      field: "slug",
+      rule: "slug",
+      from: "name",
+      ampersand: "and",
+    });
+    expect(
+      planOf(tagRows("Salt & Pepper", "Tide & Wind", "tide-wind"), "post_tags")
+        .rules,
+    ).not.toContainEqual(
+      expect.objectContaining({ field: "slug", rule: "slug" }),
+    );
+  });
+});
+
+describe("ambiguous addresses and templates across creates", () => {
   it("learns an address the first create cannot tell apart, its uid being its title's slug, from the second", () => {
     const rows = folderCreates(
       [

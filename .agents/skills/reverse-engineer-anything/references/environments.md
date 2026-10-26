@@ -159,7 +159,8 @@ About `request` steps:
   base64 of `username:password` and redacted), with an optional `prefix` such as
   `"Bearer "` or `"Basic "`. Each credential part is a literal, secret, saved
   value, cookie or local storage entry, so a header the frontend builds from a
-  login token (the username and the token) can be copied too. Copy the
+  login token (the username and the token) can be copied too; the password is
+  a secret or saved value, never a literal. Copy the
   headers the application's own requests send (a CSRF header such as
   `X-CSRFToken` from the `csrftoken` cookie, a bearer token). Values read from the page are redacted from records made after they
   are read, not from the login response that returned them, and values

@@ -25,6 +25,7 @@ import {
   isUuid,
   readClock,
   sequenceNumber,
+  slugOf,
   slugSpellings,
   sortedStrings,
   type ClockFormat,
@@ -304,6 +305,35 @@ const bodyOf = (
 });
 
 /** Explain every field of a created entity: echoed, copied, path, slug, generated, template or constant (unlisted). */
+/**
+ * A slug rule as the held entities spell `&`: as the word when the call slugged none and they spell it so, and no rule
+ * when they spell it otherwise than the call did. Other rules pass unchanged.
+ */
+const heldSlugRule = (
+  rule: FieldRule | undefined,
+  sent: JsonObject,
+  held: readonly JsonObject[],
+): FieldRule | undefined => {
+  if (rule?.rule !== "slug") return rule;
+  const shown = new Set(
+    held.flatMap((entity) => {
+      const from = entity[rule.from];
+      const value = entity[rule.field];
+      if (typeof from !== "string" || !from.includes("&")) return [];
+      if (value === slugOf(from)) return ["dropped"];
+      return value === slugOf(from, "and") ? ["and"] : [];
+    }),
+  );
+  const source = sent[rule.from];
+  if (typeof source === "string" && source.includes("&"))
+    return shown.has(rule.ampersand === "and" ? "dropped" : "and")
+      ? undefined
+      : rule;
+  return shown.has("and") && !shown.has("dropped")
+    ? { ...rule, ampersand: "and" }
+    : rule;
+};
+
 /** Whether a composed string spells a field besides the one a template rebuilds it around, such as a title's slug beside a generated id. */
 const spellsMore = (composed: FieldRule, template: FieldRule): boolean =>
   composed.rule === "composed" &&
@@ -322,7 +352,11 @@ export const explainCreate = (
   const index = indexBody(evidence.call.body);
   for (const [field, value] of Object.entries(evidence.entity)) {
     const rule =
-      requestRule(evidence, index, field, value) ??
+      heldSlugRule(
+        requestRule(evidence, index, field, value),
+        evidence.call.body,
+        evidence.type,
+      ) ??
       generatedRule(evidence, field, value) ??
       (evidence.named === undefined
         ? undefined

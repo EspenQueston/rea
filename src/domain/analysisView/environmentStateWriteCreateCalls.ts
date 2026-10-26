@@ -2,11 +2,13 @@ import type { JsonValue } from "../jsonValue.js";
 import { same, type JsonObject } from "./environmentStateRules.js";
 import { storedKinds } from "./environmentStateWriteApply.js";
 import { fittedClockFormat } from "./environmentStateWriteClockFormats.js";
+import { composedValue } from "./environmentStateWriteComposed.js";
 import {
   alikeRules,
   type FieldRule,
   type WriteBody,
 } from "./environmentStateWriteRules.js";
+import { slugOf, type Ampersand } from "./environmentStateWriteValues.js";
 
 type Default = { readonly member: string; readonly value: JsonValue };
 
@@ -14,7 +16,12 @@ type Default = { readonly member: string; readonly value: JsonValue };
 export interface EarlierEvidence {
   readonly kept: ReadonlySet<string>;
   readonly clockOf: (field: string) => JsonValue | undefined;
+  /** How the plan's accepted calls and the type's held entities spelled `&` in each field's slug; absent where none showed one. */
+  readonly ampersands?: ReadonlyMap<string, AmpersandSpelling>;
 }
+
+/** How a field's slug showed `&`: dropped, or as the word. */
+export type AmpersandSpelling = "dropped" | Ampersand;
 
 /** The plan's rule for a field and a later call's agree: equal, or clocks one spelling covers given what earlier calls showed. */
 const agreeing = (
@@ -31,8 +38,9 @@ const agreeing = (
   const alike = alikeRules(held, later, values.earlier.kept);
   if (alike !== undefined) return alike;
   const spelled = ampersandSpelled(
-    { rule: held, entity: values.exemplar },
+    held,
     { rule: later, entity: values.laterEntity },
+    values.earlier.ampersands?.get(values.field),
   );
   if (spelled !== undefined) return spelled;
   if (held.rule !== "clock" || later.rule !== "clock") return undefined;
@@ -75,17 +83,82 @@ const showsAmpersand = (rule: FieldRule, entity: JsonObject): boolean =>
     return typeof value === "string" && value.includes("&");
   });
 
-/** Two calls' rules that differ only in how a slug spells `&`: the one that spells it as the word, when the other call slugged no `&`. */
+/**
+ * Two calls' rules that differ only in how a slug spells `&`: the one that spells it as the word, when the call
+ * spelling it otherwise slugged no `&`, and no call the plan accepted nor entity the type held dropped one (`shown`).
+ */
 const ampersandSpelled = (
-  held: { readonly rule: FieldRule; readonly entity: JsonObject },
+  held: FieldRule,
   later: { readonly rule: FieldRule; readonly entity: JsonObject },
+  shown: AmpersandSpelling | undefined,
 ): FieldRule | undefined => {
-  const plainHeld = unspelled(held.rule);
+  const plainHeld = unspelled(held);
   if (!same(plainHeld, unspelled(later.rule))) return undefined;
-  const heldSpells = !same(held.rule, plainHeld);
+  const heldSpells = !same(held, plainHeld);
   if (heldSpells === !same(later.rule, unspelled(later.rule))) return undefined;
-  const [spelling, plain] = heldSpells ? [held, later] : [later, held];
-  return showsAmpersand(plain.rule, plain.entity) ? undefined : spelling.rule;
+  if (heldSpells)
+    return showsAmpersand(later.rule, later.entity) ? undefined : held;
+  return shown === "dropped" ? undefined : later.rule;
+};
+
+/** How a rule's slug spells `&`, for a rule that slugs a field. */
+const slugSpelling = (rule: FieldRule): AmpersandSpelling | undefined => {
+  if (rule.rule === "slug") return rule.ampersand ?? "dropped";
+  if (rule.rule !== "composed") return undefined;
+  for (const part of rule.parts)
+    if ("as" in part && part.as === "slug") return part.ampersand ?? "dropped";
+  return undefined;
+};
+
+/** Note how a call that slugged `&` spelled it in each field its own rules slug. */
+export const noteAmpersands = (
+  ampersands: Map<string, AmpersandSpelling>,
+  rules: readonly FieldRule[],
+  entity: JsonObject,
+): void => {
+  for (const rule of rules) {
+    const spelling = slugSpelling(rule);
+    if (spelling !== undefined && showsAmpersand(rule, entity))
+      ampersands.set(rule.field, spelling);
+  }
+};
+
+/** Note how held entities whose slugged source holds `&` spelled each field the plan's rules slug. */
+export const noteHeldAmpersands = (
+  ampersands: Map<string, AmpersandSpelling>,
+  rules: readonly FieldRule[],
+  held: readonly JsonObject[],
+): void => {
+  for (const rule of rules) {
+    if (slugSpelling(rule) === undefined) continue;
+    const plain = unspelled(rule);
+    for (const entity of held) {
+      if (!showsAmpersand(rule, entity)) continue;
+      const spelled = (spelling: Ampersand | undefined): string | undefined =>
+        rule.rule === "slug"
+          ? typeof entity[rule.from] === "string"
+            ? slugOf(entity[rule.from] as string, spelling)
+            : undefined
+          : plain.rule === "composed"
+            ? composedValue(
+                plain.parts.map((part) =>
+                  "as" in part && part.as === "slug" && spelling !== undefined
+                    ? { ...part, ampersand: spelling }
+                    : part,
+                ),
+                entity,
+              )
+            : undefined;
+      // A field that spells neither way shows nothing of how its slug spells `&`; dropping it wins over the word.
+      if (spelled(undefined) === entity[rule.field])
+        ampersands.set(rule.field, "dropped");
+      else if (
+        spelled("and") === entity[rule.field] &&
+        ampersands.get(rule.field) !== "dropped"
+      )
+        ampersands.set(rule.field, "and");
+    }
+  }
 };
 
 /** Defaults joined, undefined when two calls showed one member left out at different values. */

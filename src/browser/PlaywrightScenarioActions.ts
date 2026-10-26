@@ -9,6 +9,7 @@ import {
   awaitSavedResponse,
   performScenarioRequest,
   withSavedPlaceholders,
+  type SavedResponseWait,
 } from "./PlaywrightScenarioRequest.js";
 
 type ScenarioLocator = Extract<
@@ -50,7 +51,7 @@ const savingResponse = (
   input: PerformActionInput,
   action: Extract<BrowserScenarioAction, { action: "click" | "press" }>,
   timeout: number | undefined,
-): (() => Promise<void>) | undefined =>
+): SavedResponseWait | undefined =>
   action.save_response === undefined
     ? undefined
     : awaitSavedResponse(input.page, {
@@ -70,19 +71,27 @@ export const performPlaywrightScenarioAction = async (
   const options = timeout === undefined ? {} : { timeout };
   switch (action.action) {
     case "goto":
+      // Placeholders fill the URL as written, before structured query values join it.
       await page.goto(
-        withSavedPlaceholders(secrets.url(action.destination), secrets),
+        secrets.url({
+          ...action.destination,
+          url: withSavedPlaceholders(action.destination.url, secrets),
+        }),
         { ...options, waitUntil: action.wait_until },
       );
       return;
     case "click": {
-      const saved = savingResponse(input, action, timeout);
-      await resolveLocator(page, action.locator).click({
-        ...options,
-        button: action.button,
-        clickCount: action.click_count,
-      });
-      await saved?.();
+      const saving = savingResponse(input, action, timeout);
+      try {
+        await resolveLocator(page, action.locator).click({
+          ...options,
+          button: action.button,
+          clickCount: action.click_count,
+        });
+        await saving?.saved();
+      } finally {
+        saving?.stop();
+      }
       return;
     }
     case "fill":
@@ -92,9 +101,13 @@ export const performPlaywrightScenarioAction = async (
       );
       return;
     case "press": {
-      const saved = savingResponse(input, action, timeout);
-      await resolveLocator(page, action.locator).press(action.key, options);
-      await saved?.();
+      const saving = savingResponse(input, action, timeout);
+      try {
+        await resolveLocator(page, action.locator).press(action.key, options);
+        await saving?.saved();
+      } finally {
+        saving?.stop();
+      }
       return;
     }
     case "select_option":

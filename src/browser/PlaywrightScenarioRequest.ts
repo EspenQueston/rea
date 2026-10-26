@@ -1,4 +1,4 @@
-import type { Page, Route } from "playwright-core";
+import type { Page, Request, Route } from "playwright-core";
 
 import {
   HEADER_FIELD_VALUE,
@@ -162,7 +162,7 @@ const headerValue = async (
     const user = await credentialPart(step, username!, `${label}.username`);
     const pass = await credentialPart(step, password!, `${label}.password`);
     const encoded = Buffer.from(`${user}:${pass}`).toString("base64");
-    secrets.admitPageValue(label, encoded);
+    secrets.admitCredential(label, encoded);
     return encoded;
   }
   return readPageValue(step, value, label);
@@ -249,10 +249,25 @@ const sendFromPage = (
       });
       if (answer.type === "opaqueredirect") return { redirected: true };
       if (request.readLimit !== undefined) {
-        const text = await answer.text();
-        return text.length > request.readLimit
-          ? { status: answer.status }
-          : { status: answer.status, body: text };
+        // Keep the text only up to the limit, so a large answer is never held whole.
+        const reader = answer.body?.getReader();
+        if (reader === undefined) return { status: answer.status, body: "" };
+        const decoder = new TextDecoder();
+        let text = "";
+        try {
+          for (;;) {
+            const chunk = await reader.read();
+            if (chunk.done) break;
+            text += decoder.decode(chunk.value, { stream: true });
+            if (text.length > request.readLimit) {
+              await reader.cancel();
+              return { status: answer.status };
+            }
+          }
+        } finally {
+          reader.releaseLock();
+        }
+        return { status: answer.status, body: text + decoder.decode() };
       }
       const reader = answer.body?.getReader();
       if (reader !== undefined)
@@ -399,16 +414,26 @@ export const withSavedPlaceholders = (
   );
 
 /** Whether a request a UI step triggered is the one its `save_response` names: method, start origin, and path with `{*}` matching one segment. */
+/** A `save_response` path's segments as a browser spells a URL path, percent-encoded as its URL parser would, `{*}` kept. */
+const pathPattern = (path: string): readonly string[] =>
+  path
+    .split("?")[0]!
+    .split("/")
+    .map((segment) =>
+      segment === "{*}"
+        ? segment
+        : new URL(`http://path.invalid/${segment}`).pathname.slice(1),
+    );
+
 const namesResponse = (
   spec: BrowserScenarioSaveResponse,
+  pattern: readonly string[],
   startOrigin: string,
-  method: string,
-  address: string,
+  request: { readonly method: string; readonly url: string },
 ): boolean => {
-  if (method !== spec.method) return false;
-  const url = URL.parse(address);
+  if (request.method !== spec.method) return false;
+  const url = URL.parse(request.url);
   if (url === null || url.origin !== startOrigin) return false;
-  const pattern = spec.path.split("?")[0]!.split("/");
   const segments = url.pathname.split("/");
   return (
     segments.length === pattern.length &&
@@ -416,10 +441,16 @@ const namesResponse = (
   );
 };
 
+/** A UI step's wait for the response its `save_response` names: `saved` waits and saves, `stop` stops watching requests. */
+export interface SavedResponseWait {
+  readonly saved: () => Promise<void>;
+  readonly stop: () => void;
+}
+
 /**
- * Start waiting, before a UI step acts, for the response its `save_response` names; the returned call waits for that
- * response and saves its values. The step fails unless a 2xx JSON response arrives before its timeout, or the page's
- * default timeout when it sets none.
+ * Start waiting, before a UI step acts, for the response its `save_response` names to a request the step starts; one
+ * already running when the step began, such as an earlier autosave, cannot answer it. The step fails unless a 2xx JSON
+ * response arrives before its timeout, or the page's default timeout when it sets none.
  */
 export const awaitSavedResponse = (
   page: Page,
@@ -430,21 +461,27 @@ export const awaitSavedResponse = (
     readonly timeout: number | undefined;
     readonly secrets: BrowserScenarioSecrets;
   },
-): (() => Promise<void>) => {
+): SavedResponseWait => {
   const { stepId, spec, startOrigin, timeout, secrets } = step;
+  const pattern = pathPattern(spec.path);
+  const started = new Set<Request>();
+  const watch = (request: Request): void => {
+    if (
+      namesResponse(spec, pattern, startOrigin, {
+        method: request.method(),
+        url: request.url(),
+      })
+    )
+      started.add(request);
+  };
+  page.on("request", watch);
   const waiting = page.waitForResponse(
-    (response) =>
-      namesResponse(
-        spec,
-        startOrigin,
-        response.request().method(),
-        response.url(),
-      ),
+    (response) => started.has(response.request()),
     timeout === undefined ? {} : { timeout },
   );
   // The step may fail before it waits; the rejection is reported by the wait, or not at all.
   waiting.catch(() => undefined);
-  return async () => {
+  const saved = async (): Promise<void> => {
     let response: Awaited<typeof waiting>;
     try {
       response = await waiting;
@@ -457,8 +494,15 @@ export const awaitSavedResponse = (
       throw new ScenarioRequestError(
         `Step ${stepId}: the ${spec.method} ${spec.path} response answered ${String(response.status())}; values are saved only from a 2xx response.`,
       );
+    // Playwright reads a body whole, so the size the browser received decides before it is read.
+    const { responseBodySize } = await response.request().sizes();
+    if (responseBodySize > MAX_SAVED_RESPONSE_CHARACTERS)
+      throw new ScenarioRequestError(
+        `Step ${stepId}: the response is too large to save values from.`,
+      );
     saveValues(stepId, await response.text(), spec.save, secrets);
   };
+  return { saved, stop: () => page.off("request", watch) };
 };
 
 /**

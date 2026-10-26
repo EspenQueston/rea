@@ -661,6 +661,25 @@ describe("saved value schema", () => {
     ).toEqual([]);
   });
 
+  it("refuses a literal Basic password, which Evidence would record as written", () => {
+    const basic = (password: unknown) =>
+      requestStep({
+        headers: [
+          {
+            name: "Authorization",
+            value: {
+              source: "basic_credentials",
+              parts: [{ source: "literal", value: "admin" }, password],
+            },
+          },
+        ],
+      });
+    expect(
+      issues([basic({ source: "literal", value: "hunter2" })]),
+    ).toContainEqual(expect.stringContaining("not a literal"));
+    expect(issues([basic({ source: "literal", value: "" })])).toEqual([]);
+  });
+
   it("builds Basic credentials from page values and refuses undeclared secret parts", () => {
     const basic = (username: unknown, password: unknown) =>
       requestStep({
@@ -778,6 +797,69 @@ describe("saved value execution", () => {
       "folder 42 with [REDACTED:page:create.token]",
     );
   });
+});
+
+describe("saved value credentials and limits", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("redacts Basic credentials and secret saves however short", async () => {
+    stubFetch(200, ['{"pin":"x7"}']);
+    const parsed = scenario(
+      [
+        requestStep({
+          headers: [
+            {
+              name: "X-Auth",
+              value: {
+                source: "basic_credentials",
+                parts: [
+                  { source: "secret", secret_id: "user" },
+                  { source: "secret", secret_id: "password" },
+                ],
+              },
+            },
+          ],
+          save: [{ name: "pin", json_pointer: "/pin", secret: true }],
+        }),
+      ],
+      [
+        { secret_id: "user", environment_variable: "APP_USER" },
+        { secret_id: "password", environment_variable: "APP_PASSWORD" },
+      ],
+    );
+    const secrets = resolved(parsed, { APP_USER: "a", APP_PASSWORD: "b" });
+    await perform(fakePage({}), parsed.actions[0]!, secrets);
+    const encoded = Buffer.from("a:b").toString("base64");
+    const redacted = secrets.redact(`X-Auth: ${encoded} pin x7`);
+    expect(redacted).not.toContain(encoded);
+    expect(redacted).not.toContain("x7");
+  });
+
+  it("stops reading a response to save from once it passes the limit", async () => {
+    const chunk = new Uint8Array(3_000_000).fill(97);
+    const read = vi
+      .fn()
+      .mockResolvedValueOnce({ done: false, value: chunk })
+      .mockResolvedValueOnce({ done: false, value: chunk })
+      .mockResolvedValueOnce({ done: false, value: chunk })
+      .mockResolvedValueOnce({ done: true });
+    const cancel = vi.fn(async () => undefined);
+    vi.stubGlobal("fetch", async () => ({
+      status: 200,
+      type: "basic",
+      body: { getReader: () => ({ read, cancel, releaseLock: vi.fn() }) },
+    }));
+    const parsed = scenario([
+      requestStep({ save: [{ name: "folder", json_pointer: "/id" }] }),
+    ]);
+    await expect(
+      perform(fakePage({}), parsed.actions[0]!, resolved(parsed)),
+    ).rejects.toThrow("too large to save values from");
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(cancel).toHaveBeenCalledOnce();
+  });
 
   it("fails a step whose response holds no value to save", async () => {
     stubFetch(200, ['{"items":[]}', "not json"]);
@@ -836,7 +918,9 @@ describe("saved value execution", () => {
     for (const value of [encoded, "operator-7", "cookie-key-5d1c"])
       expect(redacted).not.toContain(value);
   });
+});
 
+describe("goto placeholders", () => {
   it("fills a goto destination's placeholders, percent-encoded", async () => {
     const parsed = scenario([
       requestStep({ save: [{ name: "item", json_pointer: "/id" }] }),
@@ -856,61 +940,126 @@ describe("saved value execution", () => {
       expect.anything(),
     );
   });
-});
 
-describe("saving from a UI step's response", () => {
-  interface FakeResponse {
-    readonly method: string;
-    readonly url: string;
-    readonly status: number;
-    readonly body: string;
-  }
-
-  /** A page whose click triggers the given responses; waitForResponse resolves with the first one it names. */
-  const uiPage = (responses: readonly FakeResponse[]) => {
-    const order: string[] = [];
-    const page = {
-      getByRole: () => ({
-        click: async () => {
-          order.push("click");
-        },
-      }),
-      waitForResponse: async (
-        names: (response: unknown) => boolean,
-        options: { timeout?: number },
-      ) => {
-        order.push(`wait ${String(options.timeout)}`);
-        await Promise.resolve();
-        const found = responses
-          .map((response) => ({
-            request: () => ({ method: () => response.method }),
-            url: () => response.url,
-            status: () => response.status,
-            text: async () => response.body,
-          }))
-          .find(names);
-        if (found === undefined) throw new Error("Timeout exceeded");
-        return found;
-      },
-    } as unknown as Page;
-    return { page, order };
-  };
-
-  const clickSaving = (path: string) =>
-    scenario([
+  it("keeps a structured query value that spells a placeholder as written", async () => {
+    const parsed = scenario([
+      requestStep({ save: [{ name: "item", json_pointer: "/id" }] }),
       {
-        step_id: "save-item",
-        action: "click",
-        timeout_ms: 5000,
-        locator: { kind: "role", role: "button", name: "Save" },
-        save_response: {
-          method: "POST",
-          path,
-          save: [{ name: "item", json_pointer: "/id" }],
+        step_id: "open",
+        action: "goto",
+        destination: {
+          url: `${ORIGIN}/items/{saved:item}`,
+          query: [
+            {
+              name: "note",
+              value: { source: "literal", value: "{saved:item}" },
+            },
+          ],
         },
+        wait_until: "load",
       },
     ]);
+    const secrets = resolved(parsed);
+    secrets.save("create.item", "item", "7", false);
+    const goto = vi.fn(async () => null);
+    await perform({ goto } as unknown as Page, parsed.actions[1]!, secrets);
+    const [address] = goto.mock.calls[0] as unknown as [string];
+    const url = new URL(address);
+    expect(url.pathname).toBe("/items/7");
+    expect(url.searchParams.get("note")).toBe("{saved:item}");
+  });
+});
 
+interface FakeResponse {
+  readonly method: string;
+  readonly url: string;
+  readonly status: number;
+  readonly body: string;
+  /** A request already running when the step began, such as an earlier autosave. */
+  readonly earlier?: boolean;
+  /** The body size the browser received, when it differs from the body's. */
+  readonly size?: number;
+}
+
+/**
+ * A page whose click starts the given requests, emitting each that did not start earlier to request listeners, and
+ * answers them in order; waitForResponse resolves with the first answer it names once the click acted.
+ */
+const uiPage = (responses: readonly FakeResponse[], clickFails = false) => {
+  const order: string[] = [];
+  const reads = { count: 0 };
+  const listeners = new Set<(request: unknown) => void>();
+  let acted: () => void = () => undefined;
+  const clicked = new Promise<void>((resolve) => {
+    acted = resolve;
+  });
+  const answers = responses.map((response) => {
+    const request = {
+      method: () => response.method,
+      url: () => response.url,
+      sizes: async () => ({
+        responseBodySize: response.size ?? response.body.length,
+      }),
+    };
+    return {
+      response,
+      request,
+      answer: {
+        request: () => request,
+        url: () => response.url,
+        status: () => response.status,
+        text: async () => {
+          reads.count += 1;
+          return response.body;
+        },
+      },
+    };
+  });
+  const page = {
+    on: (_event: string, listener: (request: unknown) => void) =>
+      listeners.add(listener),
+    off: (_event: string, listener: (request: unknown) => void) =>
+      listeners.delete(listener),
+    getByRole: () => ({
+      click: async () => {
+        order.push("click");
+        if (clickFails) throw new Error("Element is not attached");
+        for (const { response, request } of answers)
+          if (response.earlier !== true)
+            for (const listener of listeners) listener(request);
+        acted();
+      },
+    }),
+    waitForResponse: async (
+      names: (response: unknown) => boolean,
+      options: { timeout?: number },
+    ) => {
+      order.push(`wait ${String(options.timeout)}`);
+      await clicked;
+      const found = answers.map(({ answer }) => answer).find(names);
+      if (found === undefined) throw new Error("Timeout exceeded");
+      return found;
+    },
+  } as unknown as Page;
+  return { page, order, listeners, reads };
+};
+
+const clickSaving = (path: string) =>
+  scenario([
+    {
+      step_id: "save-item",
+      action: "click",
+      timeout_ms: 5000,
+      locator: { kind: "role", role: "button", name: "Save" },
+      save_response: {
+        method: "POST",
+        path,
+        save: [{ name: "item", json_pointer: "/id" }],
+      },
+    },
+  ]);
+
+describe("saving from a UI step's response", () => {
   it("waits before clicking, and saves from the response the step names", async () => {
     const parsed = clickSaving("/api/lists/{*}/items");
     const secrets = resolved(parsed);
@@ -943,6 +1092,55 @@ describe("saving from a UI step's response", () => {
     await perform(page, parsed.actions[0]!, secrets);
     expect(order).toEqual(["wait 5000", "click"]);
     expect(secrets.savedValue("item")).toBe("item-7");
+  });
+
+  it("saves from a request the step started, not one already running, and matches an encoded path", async () => {
+    const parsed = clickSaving("/api/lists/My List/items");
+    const secrets = resolved(parsed);
+    const { page, listeners } = uiPage([
+      {
+        method: "POST",
+        url: `${ORIGIN}/api/lists/My%20List/items`,
+        status: 201,
+        body: '{"id":"autosaved"}',
+        earlier: true,
+      },
+      {
+        method: "POST",
+        url: `${ORIGIN}/api/lists/My%20List/items`,
+        status: 201,
+        body: '{"id":"item-8"}',
+      },
+    ]);
+    await perform(page, parsed.actions[0]!, secrets);
+    expect(secrets.savedValue("item")).toBe("item-8");
+    expect(listeners.size).toBe(0);
+  });
+
+  it("refuses a response too large to save from without reading it", async () => {
+    const parsed = clickSaving("/api/items");
+    const { page, reads } = uiPage([
+      {
+        method: "POST",
+        url: `${ORIGIN}/api/items`,
+        status: 201,
+        body: '{"id":"x"}',
+        size: 5_000_000,
+      },
+    ]);
+    await expect(
+      perform(page, parsed.actions[0]!, resolved(parsed)),
+    ).rejects.toThrow("too large to save values from");
+    expect(reads.count).toBe(0);
+  });
+
+  it("stops watching requests when the step fails before its response", async () => {
+    const parsed = clickSaving("/api/items");
+    const { page, listeners } = uiPage([], true);
+    await expect(
+      perform(page, parsed.actions[0]!, resolved(parsed)),
+    ).rejects.toThrow("Element is not attached");
+    expect(listeners.size).toBe(0);
   });
 
   it("fails the step when no named response arrives or it is not 2xx", async () => {

@@ -77,7 +77,11 @@ import {
   fittedClockFormat,
   noteFixedWidths,
 } from "./environmentStateWriteClockFormats.js";
-import { mergedCreatePlan } from "./environmentStateWriteCreateCalls.js";
+import {
+  mergedCreatePlan,
+  noteAmpersands,
+  noteHeldAmpersands,
+} from "./environmentStateWriteCreateCalls.js";
 import {
   containsDelimited,
   generatedIntegerDigits,
@@ -276,15 +280,23 @@ const refineCreate = (
       { rules: draft.plan.rules, body: draft.plan.body! },
       draft.observed!,
       later,
-      { kept: draft.kept, clockOf: (field) => clockEvidence(draft, field) },
+      earlierOf(draft),
     ) ?? reexplained(draft, explained.rules, later);
   if (widened === undefined) return false;
   retainFixed(context, widened.body.fixed.slice(draft.plan.body!.fixed.length));
   draft.plan.rules = widened.rules;
   draft.plan.body = widened.body;
   draft.exemplarInput = undefined;
+  noteAmpersands(draft.ampersands, explained.rules, evidence.observed.object);
   return true;
 };
+
+/** What the plan's earlier calls showed, for merging a later one. */
+const earlierOf = (draft: WriteDraft) => ({
+  kept: draft.kept,
+  clockOf: (field: string) => clockEvidence(draft, field),
+  ampersands: draft.ampersands,
+});
 
 /** A later create as the plan merge reads it. */
 const laterOf = (
@@ -331,7 +343,7 @@ const reexplained = (
     },
     draft.observed!,
     later,
-    { kept: draft.kept, clockOf: (field) => clockEvidence(draft, field) },
+    earlierOf(draft),
   );
 };
 
@@ -441,6 +453,8 @@ const buildCreate = (
   });
   draft.observed = evidence.observed.object;
   draft.exemplarInput = input;
+  noteHeldAmpersands(draft.ampersands, explained.rules, held);
+  noteAmpersands(draft.ampersands, explained.rules, evidence.observed.object);
   for (const entity of held) noteFixedWidths(draft.fixedWidth, entity);
   return true;
 };

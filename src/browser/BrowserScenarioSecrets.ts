@@ -272,10 +272,19 @@ export class BrowserScenarioSecrets {
    * {@link MIN_REDACTED_PAGE_VALUE_LENGTH} is not redacted.
    */
   admitPageValue(label: string, value: string): void {
+    this.admit(label, value, MIN_REDACTED_PAGE_VALUE_LENGTH);
+  }
+
+  /** Redact a credential a step built or a value it saved as secret from everything recorded after it, whatever its length, as a declared secret is. */
+  admitCredential(label: string, value: string): void {
+    this.admit(label, value, 1);
+  }
+
+  private admit(label: string, value: string, shortest: number): void {
     // fetch sends a header value without surrounding spaces and tabs, so that is the spelling records hold.
     const sent = value.replace(/^[\t ]+|[\t ]+$/gu, "");
-    if (sent !== value) this.admitPageValue(label, sent);
-    if (value.length < MIN_REDACTED_PAGE_VALUE_LENGTH) return;
+    if (sent !== value) this.admit(label, sent, shortest);
+    if (value.length < shortest) return;
     for (const held of this.values.values()) if (held === value) return;
     let id = `page:${label}`;
     for (let suffix = 2; this.values.has(id); suffix += 1)
@@ -330,7 +339,7 @@ export class BrowserScenarioSecrets {
     secret: boolean,
   ): void {
     this.saved.set(name, value);
-    if (secret) this.admitPageValue(label, String(value));
+    if (secret) this.admitCredential(label, String(value));
   }
 
   /** A saved value with the JSON type it was saved with. */
