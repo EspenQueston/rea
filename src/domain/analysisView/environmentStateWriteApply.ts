@@ -614,7 +614,7 @@ export const writtenResponse = (
     (rendered, path) => {
       const tokens = pointerTokens(path);
       const kept = memberAt(shown, tokens);
-      return kept === undefined || written.sent?.includes(tokens[0]!) === true
+      return kept === undefined
         ? rendered
         : withMemberAt(rendered, tokens, kept);
     },

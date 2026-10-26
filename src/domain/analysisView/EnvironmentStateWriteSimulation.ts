@@ -105,6 +105,23 @@ const keptInOrder = (
     );
   });
 
+/** Whether a list read's query sets a parameter the view's query model reads as a sort or its direction. */
+const sortedByQuery = (
+  view: Extract<StateView, { shape: "list" }>,
+  record: StateRecordFacts,
+): boolean => {
+  const sent = new Set(
+    [...new URLSearchParams(record.query ?? "").keys()].map((key) =>
+      key.toLowerCase(),
+    ),
+  );
+  return Object.entries(view.query?.parameters ?? {}).some(
+    ([parameter, { role }]) =>
+      (role === "sort" || role === "direction") &&
+      sent.has(parameter.toLowerCase()),
+  );
+};
+
 const APPLY = {
   create: applyCreate,
   update: applyUpdate,
@@ -892,19 +909,7 @@ export class EnvironmentStateWriteSimulation {
     record: StateRecordFacts,
     name: string,
   ): void {
-    const sent = new Set(
-      [...new URLSearchParams(record.query ?? "").keys()].map((key) =>
-        key.toLowerCase(),
-      ),
-    );
-    if (
-      Object.entries(view.query?.parameters ?? {}).some(
-        ([parameter, { role }]) =>
-          (role === "sort" || role === "direction") &&
-          sent.has(parameter.toLowerCase()),
-      )
-    )
-      return;
+    if (sortedByQuery(view, record)) return;
     const draft = this.#drafts.get(name)!;
     const kept = this.#wholeListing(view, record, (items) =>
       draft.candidates.filter(
@@ -929,7 +934,8 @@ export class EnvironmentStateWriteSimulation {
     exercised: ReadonlySet<string>,
   ): CheckOutcome | undefined {
     const line = this.#line(view, record);
-    if (line === undefined) return undefined;
+    // A read its query sorts shows the query's order, which may break ties otherwise than the collection.
+    if (line === undefined || sortedByQuery(view, record)) return undefined;
     const written = new Set(
       [...exercised].flatMap((name) => {
         const { plan } = this.#drafts.get(name)!;

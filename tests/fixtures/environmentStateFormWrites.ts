@@ -439,3 +439,47 @@ export const UNSORTED_SEED_ROWS: readonly TimedCaptureRow[] = (() => {
     ["GET", "/api/folders", [alpha, bravo, renamed]],
   ];
 })();
+
+/** Books kept in id order, which a `?sort=shelf` read breaks ties of by name, then a rename that read shows reordered. */
+export const SHELF_TIE_ROWS: readonly TimedCaptureRow[] = (() => {
+  const shelved = (id: number, name: string): Entity => ({
+    id,
+    name,
+    shelf: "a",
+  });
+  const [alpha, bravo] = [shelved(1, "Alpha"), shelved(2, "Bravo")];
+  const zulu = shelved(1, "Zulu");
+  return [
+    ["GET", "/api/books", [alpha, bravo]],
+    ["GET", "/api/books?sort=-id", [bravo, alpha]],
+    ["GET", "/api/books/1", alpha],
+    ["GET", "/api/books/2", bravo],
+    ["PUT", "/api/books/1", zulu, 200, { name: "Zulu", shelf: "a" }],
+    ["GET", "/api/books/1", zulu],
+    ["GET", "/api/books?sort=shelf", [bravo, zulu]],
+    ["GET", "/api/books", [zulu, bravo]],
+  ];
+})();
+
+/** A user create that sends `active: false` and is answered so, whose read shows the account active. */
+export const ACTIVE_ON_READ_ROWS: readonly TimedCaptureRow[] = (() => {
+  const user = (id: number, name: string, active: boolean): Entity => ({
+    id,
+    name,
+    active,
+  });
+  const root = user(1, "Root", true);
+  return [
+    ["GET", "/api/users", [root]],
+    ["GET", "/api/users/1", root],
+    [
+      "POST",
+      "/api/users",
+      user(2, "Ada", false),
+      201,
+      { name: "Ada", active: false },
+    ],
+    ["GET", "/api/users/2", user(2, "Ada", true)],
+    ["GET", "/api/users", [root, user(2, "Ada", true)]],
+  ];
+})();
