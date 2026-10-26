@@ -158,7 +158,7 @@ export class JavaScriptSymbolicBindings {
           if (
             t.isIdentifier(target) &&
             t.isStringLiteral(key) &&
-            t.isObjectExpression(descriptor)
+            descriptor !== undefined
           ) {
             const value = staticObjectProperty(
               descriptor,
@@ -167,9 +167,16 @@ export class JavaScriptSymbolicBindings {
             );
             if (value.status === "explicit")
               this.#addWrite(target, [key.value], value.property.value, node);
-            else if (value.status === "dynamic")
-              // Keep the unresolved call as a write so an earlier export cannot
-              // survive a descriptor whose effective value is unknown.
+            else if (
+              value.status === "dynamic" ||
+              ["get", "set"].some(
+                (name) =>
+                  staticObjectProperty(descriptor, name, shapes.isNullish)
+                    .status !== "missing",
+              )
+            )
+              // Unknown values and accessor replacements invalidate an earlier
+              // data export. Only a descriptor omitting value/get/set leaves it.
               this.#addWrite(target, [key.value], node, node);
           }
         }

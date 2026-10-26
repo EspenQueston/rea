@@ -875,6 +875,7 @@ const descriptorSender = `function(channel) { return (...args) => send(channel, 
 const descriptorNoop = `function() { return () => {}; }`;
 const descriptorCases = [
   ["control", `{value:${descriptorSender}}`, true],
+  ["accessor-noop", `{get:function(){return ${descriptorNoop}}}`, false],
   [
     "duplicate-noop",
     `{value:${descriptorSender},value:${descriptorNoop}}`,
@@ -918,6 +919,7 @@ cliTest.for(["CLI", "stdio MCP"] as const)(
           2(module) { module.exports = require("electron"); },
           5(module, exports, load) {
             const electron = load(2);
+            exports.sender = ${descriptorSender};
             Object.defineProperty(exports, "sender", ${descriptor});
             function send(channel, ...args) { electron.ipcRenderer.send(channel, ...args); }
           },

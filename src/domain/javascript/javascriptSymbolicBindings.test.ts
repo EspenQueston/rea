@@ -760,6 +760,10 @@ it.each([
 
 it.each([
   ["unknown spread", `{value:require("electron"),...input}`, "unknown"],
+  ["unknown descriptor", `input`, "unknown"],
+  ["accessor getter", `{get(){return replacement}}`, "unknown"],
+  ["accessor setter", `{set(value){replacement=value}}`, "unknown"],
+  ["absent accessor", `{get:undefined}`, "unknown"],
   ["unknown key", `{value:require("electron"),[key]:replacement}`, "unknown"],
   [
     "getter",
