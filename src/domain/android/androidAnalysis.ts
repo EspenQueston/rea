@@ -117,6 +117,10 @@ const manifestComponent = z.strictObject({
   foreground_service_type: z.string().nullable(),
   authorities: z.array(z.string()).nullable(),
   target_activity: z.string().nullable(),
+  // Defaults keep older Evidence parseable without inventing declarations.
+  enabled: z.boolean().nullable().default(null),
+  process: z.string().nullable().default(null),
+  grant_uri_permissions: z.boolean().nullable().default(null),
 });
 
 /**
