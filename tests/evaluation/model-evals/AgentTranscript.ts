@@ -362,9 +362,8 @@ const codexCall = (
   const completed =
     item.status === "completed" ||
     (event.type === "item.completed" && item.status === undefined);
-  const delivered =
-    completed && !clientFailed && resultConsistent && facts.retained;
-  return {
+  const delivered = completed && !clientFailed && facts.retained;
+  const call = {
     id: textValue(item.id) ?? null,
     server: textValue(server) ?? null,
     tool,
@@ -374,6 +373,9 @@ const codexCall = (
     errorCode: facts.errorCode,
     resultContent: delivered ? facts.content : undefined,
   };
+  // Contradictory `result`/`output` representations are one ambiguous report:
+  // neither delivery nor either alias's error code can be trusted.
+  return resultConsistent ? call : ambiguousCall(call);
 };
 
 const codexAgentText = (value: unknown): string | undefined => {
