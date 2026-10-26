@@ -378,6 +378,44 @@ it.each([
     expect(route?.kind === "known" ? route.path : undefined).toBe(expected);
   },
 );
+it("decodes script URL segments without reinterpreting local filenames", () => {
+  const chunk =
+    "https://example.test/_next/static/chunks/app/blog/%5Bid%5D/page-abc.js";
+  expect(classifyNextAppRoutePath(chunk, { kind: "script-url" })).toEqual({
+    kind: "known",
+    path: "/blog/:id",
+  });
+  expect(
+    classifyNextAppRoutePath(chunk, {
+      kind: "source-literal",
+      runtime: "next",
+    }),
+  ).toEqual({ kind: "known", path: "/blog/:id" });
+  expect(
+    classifyNextAppRoutePath(
+      "https://example.test/_next/static/chunks/app/blog/%255Bid%255D/page-abc.js",
+      { kind: "script-url" },
+    ),
+  ).toEqual({ kind: "known", path: "/blog/%5Bid%5D" });
+  expect(
+    classifyNextAppRoutePath("app/blog/%5Bid%5D/page.tsx", {
+      kind: "source-literal",
+      runtime: "next",
+    }),
+  ).toEqual({ kind: "known", path: "/blog/%5Bid%5D" });
+  expect(
+    classifyNextAppRoutePath(
+      "https://example.test/_next/static/chunks/app/blog/part%2Fadmin/page-abc.js",
+      { kind: "script-url" },
+    ),
+  ).toBeUndefined();
+  expect(
+    classifyNextAppRoutePath(
+      "https://example.test/_next/static/chunks/app/blog/%ZZ/page-abc.js",
+      { kind: "script-url" },
+    ),
+  ).toBeUndefined();
+});
 it("distinguishes route-pattern markers, navigation query strings and Next asset bases", () => {
   expect(routePath("/reports/:id?")).toBe("/reports/:id?");
   expect(routePath("/reports?tab=recent#summary", { navigation: true })).toBe(

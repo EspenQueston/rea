@@ -61,11 +61,11 @@ export const classifyNextAppRoutePath = (
   context: NextAppRouteContext,
 ): NextAppRoutePath | undefined => {
   if (raw.includes("\\") || context.kind === "source-reference") return;
-  let value = raw;
-  if (
+  const fromUrl =
     context.kind === "script-url" ||
-    (context.kind === "source-literal" && raw.includes("://"))
-  ) {
+    (context.kind === "source-literal" && raw.includes("://"));
+  let value = raw;
+  if (fromUrl) {
     try {
       value = new URL(raw).pathname;
     } catch {
@@ -125,12 +125,21 @@ export const classifyNextAppRoutePath = (
   if (match === null || (match[2] !== undefined && !chunk)) return;
   const sourceSegments = (match[1] ?? "").split("/");
   // A private folder excludes the whole page, including intercepted ancestors.
-  // Keep filesystem segment spelling: only Next's explicit %5F escape is
-  // normalized below; generic URI decoding merges distinct source filenames.
+  // Decode URL segments exactly once, but preserve source filename spelling.
+  // Only Next's explicit %5F escape is normalized for local source paths.
   if (sourceSegments.some((segment) => segment.startsWith("_"))) return;
   const segments: string[] = [];
   for (const sourceSegment of sourceSegments) {
-    const segment = sourceSegment.replace(/%5F/gu, "_");
+    let segment = sourceSegment;
+    if (fromUrl) {
+      try {
+        segment = decodeURIComponent(segment);
+      } catch {
+        return;
+      }
+    } else {
+      segment = segment.replace(/%5F/gu, "_");
+    }
     if (/^\([^)]*\)$/u.test(segment) || segment.startsWith("@")) continue;
     // Intercepted routes need a parent routing context that a filename does not establish.
     if (segment.startsWith("("))
