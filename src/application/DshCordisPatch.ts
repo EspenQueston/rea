@@ -276,24 +276,6 @@ export class DshCordisDocument {
       : validated;
   }
 
-  /**
-   * Settings whose values stay unevaluated Cordis expressions under the given
-   * overrides. Their absence from the literal record is not proven, so
-   * cross-setting validation must keep them unknown.
-   */
-  unresolvedEnvironmentSettings(
-    overrides: Readonly<Record<string, string>> = {},
-  ): ReadonlySet<string> {
-    const raw = this.config?.env;
-    if (!isRecord(raw)) return new Set();
-    const unresolved = new Set<string>();
-    for (const [key, value] of Object.entries(raw)) {
-      if (value instanceof CordisExpression && overrides[key] === undefined)
-        unresolved.add(key);
-    }
-    return unresolved;
-  }
-
   desired(
     command: readonly string[],
     overrides: Readonly<Record<string, string>>,

@@ -771,11 +771,15 @@ const clientConfigurationDesired = async (
   const launcher =
     command.length === 0 ? [PRODUCT_IDENTITY.cliBinary, "mcp"] : command;
   if (format === "dsh") {
+    // Cordis registrations keep unevaluated expressions for settings unrelated
+    // to the deadline, so dsh does not gate on the provider request budget:
+    // only the timeout inputs require literals, and the wrapper's budget
+    // resolver is deliberately left unset.
     const validated = await clientRegistrationEnvironmentDetailsWithBudget(
       effective,
       providerEnvironment,
       "effective",
-      resolveProviderRequestBudget,
+      undefined,
     );
     if (!validated.ok) throw validated.error;
     const desired = (

@@ -12,6 +12,7 @@ import {
 
 import { readClientRegistrationStatuses } from "../../../src/application/ClientRegistrationStatus.js";
 import { npxRegistrationCommand } from "../../../src/application/ClientRegistrationIdentity.js";
+import { ok } from "../../../src/domain/result.js";
 import {
   configureClientConfiguration,
   inspectClientConfiguration,
@@ -1235,6 +1236,46 @@ describe("DeepSeek Harness entry ownership", () => {
     expect(await readFile(client.configPath, "utf8")).toContain(
       "!!js process.env.GHIDRA_INSTALL_DIR",
     );
+  });
+});
+
+describe("DeepSeek Harness budget resolver expressions", () => {
+  it("keeps an environment expression while a budget resolver is supplied", async () => {
+    const { home, client } = await harnessClient();
+    await writeFile(
+      client.configPath,
+      `- insert:
+    - id: rea-mcp
+      name: "@deepseek-ai/dsh-mcp-client"
+      config:
+        serverName: rea
+        transport: stdio
+        command: stale-launcher
+        args: [mcp]
+        env:
+          GHIDRA_INSTALL_DIR: !!js process.env.GHIDRA_INSTALL_DIR
+`,
+    );
+    const budgetResolver = async () => ok(45_000);
+    // A supplied budget resolver still classifies the row instead of
+    // rejecting the expression-backed environment, because the deadline
+    // derivation only needs the timeout inputs as literals.
+    expect(
+      await readClientRegistrationStatuses(home, undefined, {
+        platform: process.platform,
+        environment: {},
+        resolveProviderRequestBudget: budgetResolver,
+      }),
+    ).toMatchObject([
+      expect.objectContaining({ client: "dsh", state: "stale" }),
+    ]);
+    expect(
+      (await configureClientConfiguration(client, {}, command, budgetResolver))
+        .status,
+    ).toBe("configured");
+    const text = await readFile(client.configPath, "utf8");
+    expect(text).toContain("!!js process.env.GHIDRA_INSTALL_DIR");
+    expect(text).not.toContain("stale-launcher");
   });
 });
 
