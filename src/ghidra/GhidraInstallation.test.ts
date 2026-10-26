@@ -3,8 +3,7 @@ import { createInspectionResources } from "../../tests/fixtures/inspectionResour
 import { missingJavaProbe } from "./GhidraInstallation.fixture.js";
 import { AnalysisCancelledError } from "../domain/analysisErrorCore.js";
 import { ProviderAdapterError } from "../domain/providerAdapterError.js";
-import { err } from "../domain/result.js";
-import { ok as javaProbeOk } from "../domain/result.js";
+import { err, ok as javaProbeOk } from "../domain/result.js";
 import {
   parseGhidraJavaOutput,
   type GhidraJavaObservation,
@@ -1715,7 +1714,7 @@ it("explains the macOS keg-only JDK case without probing an unselected installat
       },
     }),
   );
-  expect(probed).toEqual(["java"]);
+  expect(probed).toEqual(["/usr/bin/java"]);
   expect(inspection.checks.find(({ name }) => name === "java")).toMatchObject({
     status: "failed",
     code: "runtime_missing",
@@ -1814,8 +1813,8 @@ it.each([
       scenario === "explicit home"
         ? ["/selected-jdk/bin/java"]
         : scenario === "PATH succeeds"
-          ? ["java"]
-          : ["java", keg],
+          ? ["/usr/bin/java"]
+          : ["/usr/bin/java", keg],
     );
     expect(inspection.status).toBe(
       scenario === "PATH succeeds" || scenario === "keg succeeds"
@@ -1826,19 +1825,21 @@ it.each([
       expect(ghidraInstallationDiagnostics(inspection)).toMatchObject({
         java_discovery_failures: expect.arrayContaining([
           {
-            command: "java",
+            command: "/usr/bin/java",
             code: "runtime_missing",
             detail: expect.any(String),
           },
         ]),
       });
     }
-    if (scenario === "both fail") expect(inspection.javaCommand).toBe("java");
+    if (scenario === "both fail")
+      expect(inspection.javaCommand).toBe("/usr/bin/java");
   },
 );
 
 it.each([
-  ["darwin", undefined, "/selected-bin/java", "java"],
+  ["darwin", undefined, "/selected-bin/java", "/selected-bin/java"],
+  ["darwin", undefined, "/linked/../jdk/java", "/linked/../jdk/java"],
   ["darwin", "/selected-jdk", undefined, "/selected-jdk/bin/java"],
   ["linux", undefined, undefined, "java"],
   ["win32", undefined, undefined, "java.exe"],
@@ -1847,27 +1848,49 @@ it.each([
   async (platform, javaHome, pathJava, expected) => {
     const checked: string[] = [];
     const probed: string[] = [];
-    await inspectGhidraInstallation(
+    const inspection = await inspectGhidraInstallation(
       {
         resourceOwner: inspectionResources.owner,
-        environment: { PATH: "/selected-bin" },
+        environment: {
+          PATH: `:relative-bin:${pathJava === undefined ? "/selected-bin" : pathJava.slice(0, -"/java".length)}`,
+        },
         installDir: INSTALL,
         platform,
         architecture: "arm64",
         ...(javaHome === undefined ? {} : { javaHome }),
       },
       host({
+        readText: () =>
+          `application.version=${SUPPORTED_GHIDRA_VERSION}\napplication.java.min=21\n`,
         executable: (candidate) => {
           checked.push(candidate);
           return candidate === pathJava || host().executable(candidate);
         },
         probeJava: (command) => {
           probed.push(command);
-          return missingJavaProbe;
+          // A running JVM remains selected even when outside Ghidra's bounds.
+          // An absent PATH runtime instead permits macOS fallback discovery.
+          return javaProbeOk({
+            ...JAVA,
+            home: "/selected-jdk",
+            major: 17,
+            version: "17.0.20.1",
+          });
         },
       }),
     );
     expect(probed).toEqual([expected]);
+    expect(inspection).toMatchObject({
+      status: "unavailable",
+      javaCommand: expected,
+      javaVersion: "17.0.20.1",
+    });
+    expect(inspection.checks.find(({ name }) => name === "java")).toMatchObject(
+      {
+        status: "failed",
+        code: "unsupported_version",
+      },
+    );
     expect(
       checked.some((candidate) => candidate.includes("/opt/openjdk/")),
     ).toBe(false);

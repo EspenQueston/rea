@@ -1566,6 +1566,27 @@ describe("Mach-O load command reader: reads and validates universal binary slice
     }
   });
 
+  it.each([
+    [1, "arm64v8"],
+    [2, "arm64e"],
+    [12, "arm64e.x1"],
+    [0x8000000c, "arm64e.x1"],
+    [0x81000002, "arm64e"],
+  ] as const)(
+    "names ARM64 subtype %i as %s without losing source bits",
+    async (subtype, architecture) => {
+      const facts = await read(
+        machoImage({ cpu: { type: CPU.arm64.type, subtype } }),
+      );
+      expect(facts).toMatchObject({
+        status: "parsed",
+        slices: [
+          expect.objectContaining({ architecture, cpu_subtype: subtype }),
+        ],
+      });
+    },
+  );
+
   it("retains physical slice identity and declared build platform", async () => {
     const thin = machoImage({ commands: [buildVersionCommand(7)] });
     const parsedThin = await read(thin);
@@ -1845,3 +1866,21 @@ it.each([true, false])(
     });
   },
 );
+
+it("observes only the common 28-byte header of a 64-bit slice", async () => {
+  const bytes = machoImage({ fileType: FILE_TYPE.dylib }).subarray(0, 28);
+  const readAt = vi.fn(readerOf(bytes));
+  expect(await readMachoImage(readAt, 32)).toMatchObject({
+    status: "parsed",
+    slices: [{ file_type: "dylib", file_type_code: FILE_TYPE.dylib }],
+  });
+  expect(readAt.mock.calls).toEqual([
+    [0, 8],
+    [0, 28],
+    [32, 0],
+  ]);
+  expect(await readMachoImage(readerOf(bytes), 28)).toEqual({
+    status: "malformed",
+    reason: "load commands extend beyond the Mach-O slice",
+  });
+});

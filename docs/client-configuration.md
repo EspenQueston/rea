@@ -6,6 +6,51 @@ for the reviewed setup transaction and [client IDs](installation.md#supported-ag
 The versioned verification notes below describe their stated runs; live service
 acceptance is verified only where explicitly recorded.
 
+## Launchers and PATH
+
+A client launched from a desktop app, IDE or service can inherit a different
+`PATH` from your terminal. An absolute path to `rea-agents` does not resolve its
+interpreter: the npm launcher's `#!/usr/bin/env node` still searches `PATH` for
+Node. Running that command successfully in a terminal does not establish that
+the client can launch it.
+
+For direct JavaScript installations, setup registers the selected runtime
+executable and REA script by absolute path. On POSIX, it prefers executable
+`node` or `bun` and REA aliases on setup's `PATH` only when they resolve to the
+same selected files. This preserves manager-owned aliases across version updates;
+otherwise setup uses the selected paths directly. Package-runner registrations keep
+their selected runner. Setup does not copy your ambient environment into client
+settings. To refresh an older registration, preview
+`rea setup --client <client-id> --skill=false --dry-run`, then run the same command
+without `--dry-run` and approve the displayed changes. Setup preserves unrelated
+settings, backs up changed configuration and leaves an aligned registration
+unchanged. Restart the client after applying the update.
+
+If a runtime manager removes the registered executable and no surviving alias
+was available, doctor reports its identity as unknown and setup retains the
+registration. REA does not infer that an arbitrary missing executable was Node
+from its script argument. Back up the client's configuration, verify the absolute
+path and supported version of the runtime you intend to use, then update only
+the runtime command, preserving the REA script arguments and other settings.
+Rerun setup to review the registration and restart the client.
+
+`rea mcp doctor --json` tests the production MCP adapter using the runtime
+executable and environment of the terminal running doctor. It does not launch
+the client's configured command or reproduce the client's environment. If doctor
+passes but the client disconnects, inspect the client's startup error and registered
+launcher; see [verification scope](client-verification.md#launch-environment-verification).
+
+## Runtime settings and client deadlines
+
+`update_analysis_settings` changes curated defaults inside the running REA
+server. It does not edit the client registration, extend the client's tool-call
+deadline, or recompute timeout values previously derived by `rea setup`. When
+raising a REA startup or operation deadline, separately ensure the client allows
+enough time for the full request. Use `inspect_analysis_settings` for the running
+server's defaults; `rea doctor` checks launch configuration and cannot observe
+another process's runtime overrides. See the
+[settings design](design/limits-and-recovery.md) for ownership and lifetime.
+
 ## Client tool names and discovery
 
 REA advertises canonical names such as `binary_session`. The MCP host decides
@@ -159,14 +204,25 @@ and Claude Code reports that autocompact is thrashing. To avoid this:
   `mcpServers.rea` entry in `~/.claude.json` (`$CLAUDE_CONFIG_DIR/.claude.json`
   when that variable is set), then restart Claude Code. Setup keeps this
   override.
+- To remove entire tool families from the upfront catalog, run
+  `rea setup --client claude_code --tool-families <ids>` with the families the
+  workflow needs (see [the advertising scope contract](mcp-contracts.md#tool-family-advertising-scope)).
+  Out-of-scope tools are not advertised and their calls fail with the SDK's
+  disabled-tool error, so widen the selection when a task needs another
+  family. Setup writes the scope into the entry's `env` as
+  `REA_MCP_TOOL_FAMILIES`; rerun setup with a different selection to refresh
+  it, then restart Claude Code.
 
 The sizes above come from REA's own `tools/list`. A live Claude Code session
 against DeepSeek's API is unverified.
 
-For a client whose stdio reader rejects the complete catalog frame, add
-`"REA_MCP_OUTPUT_SCHEMA_PROFILE": "off"` to REA's `env` object and restart the
-client. This omits only advertised output schemas; REA still validates complete
-structured results against its canonical contracts. See [MCP output schema
+For a client whose stdio reader rejects the complete catalog frame, set
+`"REA_MCP_OUTPUT_SCHEMA_PROFILE": "compact"` to bound every advertised output
+schema, or `"off"` to omit them, in REA's `env` object, then restart the client.
+Both keep canonical result validation and complete structured results; `compact`
+keeps a widened root shape and `off` advertises nothing. On catalogs large
+enough that full input schemas alone approach the frame limit, also keep the
+input profile at its `compact` default. See [MCP output schema
 profiles](mcp-contracts.md#output-schemas).
 
 ## Kimi Code
@@ -182,8 +238,16 @@ startup; an explicit Ghidra startup timeout of 2700000 ms produces a 2820000 ms
 tool timeout. The startup allowance follows an explicitly selected Ghidra or
 Hopper provider, and otherwise uses the larger known Ghidra/Hopper deadline.
 An explicit `REA_JEB_MCP_TIMEOUT_MS` deadline, shared by catalog discovery and
-each tools/call, also contributes to that maximum. For `ida` or `auto` selection, a valid IDA registration's parsed
+each tools/call, also contributes to that maximum. An explicit `REA_GHIDRA_DECOMPILE_TIMEOUT_SECONDS` is added to the Ghidra startup allowance, because a single-decompile call can import the target and then decompile up to that limit; setup forwards it into the registration. For `ida` or `auto` selection, a valid IDA registration's parsed
 `timeoutMs` also contributes to that maximum; its default is 300000 ms.
+The derived value is a single-decompile estimate, not a deadline for an
+unbounded batch. For example, startup 330 seconds plus two 600-second
+decompiles and 120 seconds of headroom needs an estimated 1650 seconds,
+before any additional listing or output work. Select the client tool deadline
+for the intended workload, split `batch_decompile`, use `decompile_all`
+limit/resume, or reduce `trace_native_values` `max_functions`. The trace can
+decompile several functions serially; its depth and graph budgets do not
+make the single-decompile allowance a whole-traversal deadline. Existing positive caller deadlines are preserved.
 Setup forwards these explicitly selected REA deadlines and the input schema
 profile into the registration; unrelated process values are omitted. An
 explicit `REA_JADX_OPERATION_TIMEOUT_MS` is forwarded with the JADX
@@ -191,6 +255,20 @@ registration but does not contribute to the derived tool timeout; raise
 `toolTimeoutMs` to cover a longer selected JADX deadline.
 This headroom is a practical default, not a guarantee for every analysis
 duration. Setup preserves positive timeout values already in the `rea` entry.
+
+Setup also forwards explicitly selected input/output schema profiles,
+`REA_MCP_MAX_RESPONSE_BYTES`, provider paths and supported Ghidra, JADX and Kuna
+settings. It also forwards explicit executable and resource selections for ADB,
+apktool, packet capture, GDB/Rizin/objdump, Cutter, WABT, Wakaru, firmware and
+signal tools, browser inspection, and pwntools/pwndbg. This includes their
+supported prlimit overrides, Darwin Swift compiler/SDK/module-cache selections,
+and compile timeout, logging level and explicitly configured reference-secret
+patterns. A provider being unavailable does not discard its selected paths;
+doctor reports its readiness separately. Explicit selections override discovered
+defaults, including when setup runs again with a changed selection. Unrelated
+environment variables, process ownership tokens and one-shot target paths are not
+copied. Existing client environment overrides remain intact unless setup supplies
+the same key.
 You can edit `startupTimeoutMs` and `toolTimeoutMs` there; doctor keeps positive
 caller-selected values aligned and reports a non-blocking advisory when a tool
 timeout is shorter than the known provider allowance.
@@ -248,6 +326,15 @@ Setup and doctor follow Qwen Code's tilde and working-directory-relative home
 overrides. Qwen Code also discovers personal skills in `~/.agents/skills`,
 where setup installs the bundled workflow.
 
+If an existing direct-script registration fails with `env: node: No such file or
+directory`, refresh it through setup as described under [Launchers and PATH](#launchers-and-path).
+For an immediate Qwen-specific workaround, when Node is installed in
+`/opt/homebrew/bin`, add `"PATH": "/opt/homebrew/bin:${PATH}"` to that server's
+existing `env` object and restart Qwen. Qwen expands `${PATH}` from its parent
+environment; other clients can use different substitution syntax. Qwen's stdio
+launcher inherits the parent `PATH` and applies server overrides; a reduced
+parent environment does not establish that Qwen removed Homebrew from it.
+
 ## Antigravity
 
 Antigravity 2.0 discovers personal skills in `~/.gemini/config/skills`.
@@ -297,15 +384,17 @@ for the supported policy values.
 When direct launcher paths prove the same executable or Node entrypoint,
 setup retains the existing caller-selected spelling. An otherwise aligned
 registration therefore needs no rewrite or recovery backup merely because
-REA was invoked through another symlink. Unresolved identity does not prove
-equivalence.
+REA was invoked through another symlink. Setup also retains that spelling when
+another field, such as an invalid timeout, needs repair. Unresolved identity
+does not prove equivalence.
 
-| Settings                                  | Setup ownership                                                       |
-| ----------------------------------------- | --------------------------------------------------------------------- |
-| Launcher, transport and activation        | Refreshes the REA stdio connection and enables it.                    |
-| Explicit server environment               | Preserves configured overrides and merges selected provider settings. |
-| Codex positive timeouts and client policy | Retains caller choices; adds missing recommended REA timeouts.        |
-| Unrelated or future server settings       | Retains their parsed values.                                          |
+| Settings                                    | Setup ownership                                                                         |
+| ------------------------------------------- | --------------------------------------------------------------------------------------- |
+| Launcher, transport and activation          | Refreshes the REA stdio connection and enables it.                                      |
+| Explicit server environment                 | Preserves configured overrides and merges selected provider settings.                   |
+| Codex timeouts                              | Retains positive values; repairs missing or invalid values to recommended REA defaults. |
+| Codex approval policies and tool selections | Retains caller choices; refuses known malformed values.                                 |
+| Unrelated or future server settings         | Retains their parsed values.                                                            |
 
 Dry-run applies the same policy validation and writes no files. A successful
 refresh keeps an exact recovery snapshot of the original configuration;
@@ -336,7 +425,9 @@ not enforce Codex's 30 seconds as the doctor deadline. The 120000 ms
 tool-operation headroom and the 64 KiB doctor stderr cap stay fixed. Setup preserves positive caller-selected timeout
 values in the REA entry, and doctor reports a non-blocking advisory when a tool
 timeout is shorter than the known provider allowance. An explicitly selected
-JEB request budget also contributes to the allowance. A configured IDA
+JEB request budget also contributes to the allowance, and an explicit
+`REA_GHIDRA_DECOMPILE_TIMEOUT_SECONDS` is added to the Ghidra startup
+allowance. A configured IDA
 registration's parsed `timeoutMs` contributes for `ida` or `auto` selection.
 An explicit `REA_JADX_OPERATION_TIMEOUT_MS` is forwarded with the JADX
 registration but does not contribute; raise `tool_timeout_sec` to cover a
@@ -480,6 +571,28 @@ server with `enable: false` on its entry; doctor reports such a registration
 as stale, and rerunning setup removes the flag to repair it. Native configuration
 uses strict JSON; setup refuses comments, trailing commas and a BOM rather than
 writing a registration ZCode cannot load.
+
+## FreeBuff
+
+For FreeBuff, the proposed integration writes `mcpServers.rea` into the user-scope
+`~/.agents/mcp.json` shared-agent file. Entries carry `command`, `args`, and
+`env`; stdio is the default transport. The proposed personal skill location is
+`~/.agents/skills`, so setup installs its skill copy there. Because the same
+file doubles as ZCode's user-scope fallback (see above), a `freebuff`
+registration is also in the file ZCode uses until ZCode defines its own native server.
+Setup and doctor detect FreeBuff from its own profile directory
+(`~/.config/freebuff-desktop`), not from the shared `.agents` folder that
+REA's skill installs create for every client.
+
+The configuration write and personal skill locations are proposed integration
+boundaries. FreeBuff MCP loading and skill discovery have not been verified
+with an installed native FreeBuff client/version; filesystem tests cover REA's
+editing, discovery, and ownership behavior only. Automatic applicability
+requires the FreeBuff profile directory even when the shared MCP file exists.
+
+FreeBuff setup support requires `rea-agents@6.8.0` or later. Older versions
+reject `rea setup --client freebuff` as an unsupported client. See the
+[installation guide](installation.md#supported-agents) for client availability.
 
 ## DeepSeek Harness
 

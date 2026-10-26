@@ -1,5 +1,6 @@
 import { digestCanonicalValue } from "../canonicalDigest.js";
 import type { Evidence } from "../evidence.js";
+import { machoRuntimeSymbolName } from "../native/machoSymbolName.js";
 import type { ManagedNativeObservationFacts } from "./managedNativeVerificationSource.js";
 import type { ManagedNativeBoundaryInspection } from "./managedArtifact.js";
 import type {
@@ -40,13 +41,14 @@ export const collectNativeSymbols = (
   return { symbols, accepted, unsupported, moduleFormatsByEvidenceId };
 };
 
-const normalizedSymbolName = (native: NativeSymbol): string =>
-  native.source === "macho-export" && native.name.startsWith("_")
-    ? native.name.slice(1)
+/** P/Invoke resolves a Mach-O export through dlsym, which names it without the symbol-table prefix. */
+const lookupSymbolName = (native: NativeSymbol): string | null =>
+  native.source === "macho-export"
+    ? machoRuntimeSymbolName(native.name)
     : native.name;
 
 const sameSymbolName = (expected: string, native: NativeSymbol): boolean =>
-  expected === normalizedSymbolName(native);
+  expected === lookupSymbolName(native);
 
 type ModuleCompatibility = "match" | "mismatch" | "unknown";
 
@@ -256,7 +258,14 @@ const candidateNames = (
 ): readonly string[] => {
   if (managed.import_name.length === 0) return [];
   const names = new Set<string>([managed.import_name]);
-  if (!managed.no_mangle) {
+  // Unix P/Invoke lookup uses the declared entry point directly, regardless of
+  // marshalling charset or calling convention. Keep Windows decorations local
+  // to PE or an unresolved native platform; metadata flags remain unchanged.
+  if (
+    !managed.no_mangle &&
+    nativeFormat !== "elf" &&
+    nativeFormat !== "mach-o"
+  ) {
     if (
       managed.char_set === "unicode" ||
       (nativeFormat === "pe" && managed.char_set === "auto")
@@ -344,7 +353,7 @@ const matchPinvoke = (
     );
   const exact = candidates.find(
     (symbol) =>
-      managed.import_name === normalizedSymbolName(symbol) &&
+      managed.import_name === lookupSymbolName(symbol) &&
       moduleRelation(symbol) === "match",
   );
   const unknownModule = candidates.find(

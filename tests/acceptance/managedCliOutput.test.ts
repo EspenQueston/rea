@@ -4,6 +4,7 @@ import { join } from "node:path";
 
 import { expect } from "vitest";
 
+import { JSON_LINES_SELECTION_REMEDIATION } from "../../src/cli/jsonLines.js";
 import { elf, thinMach } from "../../src/domain/binaryTarget.fixture.js";
 import { buildManagedPeFixture } from "../../src/dotnet/ManagedPe.fixture.js";
 import { createTestTempDirectory } from "../fixtures/temporaryDirectory.js";
@@ -384,7 +385,8 @@ cliTest(
       arguments: [...argv, "--filter-output", "toString", "--token-count"],
     });
     expect(omittedCount.exitCode).toBe(0);
-    expect(omittedCount.stdout).toBe("0\n");
+    // A missing JSON selection delivers an empty object, which costs one token.
+    expect(omittedCount.stdout).toBe("1\n");
     const jsonl = await cli.run({
       arguments: [
         "inspect-managed-members",
@@ -400,8 +402,18 @@ cliTest(
       $rea: "jsonl/v1",
       type: "error",
       result: {
-        code: "unreadable_output",
-        remediation: { action: expect.stringContaining("--format json") },
+        code: "invalid_request",
+        category: "invalid_input",
+        remediation: { action: JSON_LINES_SELECTION_REMEDIATION },
+        details: {
+          issues: [
+            {
+              path: ["filter-output"],
+              reason: "invalid_value",
+              observed: [{ path: ["operation"], shape: "string" }],
+            },
+          ],
+        },
       },
     });
   },

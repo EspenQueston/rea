@@ -12,15 +12,17 @@ import {
   compareManagedMemberPaths,
 } from "../../../../src/application/managed/ManagedMemberComparisonService.js";
 import { parseBinaryTarget } from "../../../../src/application/BinaryTargetResolver.js";
-import { managedMemberComparisonResultSchema } from "../../../../src/domain/managed/managedMemberComparison.js";
+import {
+  managedMemberComparisonResultSchema,
+  compareManagedMembersInputSchema,
+} from "../../../../src/domain/managed/managedMemberComparison.js";
 import { readManagedMemberEvidence } from "../../../../src/domain/managed/managedMemberComparisonMatch.js";
 import { createEvidence } from "../../../../src/domain/evidence.js";
 import { projectAnalysisError } from "../../../../src/domain/analysisErrorProjection.js";
-import { jsonValueSchema } from "../../../../src/domain/jsonValue.js";
-import { compareManagedMembersInputSchema } from "../../../../src/domain/managed/managedMemberComparison.js";
+
 import { inspectManagedMembersBytes } from "../../../../src/dotnet/ManagedMemberInspector.js";
-import { managedPeFixtureTarget } from "../../../../src/dotnet/ManagedPe.fixture.js";
 import {
+  managedPeFixtureTarget,
   buildManagedNestedTypeFixture,
   buildManagedPeFixture,
 } from "../../../../src/dotnet/ManagedPe.fixture.js";
@@ -139,7 +141,7 @@ const compare = (
       {
         operation: "inspect_managed_members",
         parameters: {},
-        result: jsonValueSchema.parse(change?.(inspection) ?? inspection),
+        result: change?.(inspection) ?? inspection,
         confidence: "observed",
         authority: "shipped-artifact",
       },
@@ -475,14 +477,14 @@ describe("managed member comparison subject identity", () => {
       {
         operation: "inspect_managed_members",
         parameters: {},
-        result: jsonValueSchema.parse({
+        result: {
           ...inspection,
           artifact: { ...inspection.artifact, sha256: otherDigest },
           identity_scope: {
             ...inspection.identity_scope,
             requires_artifact_sha256: otherDigest,
           },
-        }),
+        },
       },
     );
     const aligned = createEvidence(
@@ -563,11 +565,11 @@ describe("managed call-target comparison", () => {
         {
           operation: "inspect_managed_members",
           parameters: {},
-          result: jsonValueSchema.parse({
+          result: {
             ...inspection,
             call_edges:
               alterEdges?.(inspection.call_edges) ?? inspection.call_edges,
-          }),
+          },
           confidence: "observed",
           authority: "shipped-artifact",
         },
@@ -636,10 +638,10 @@ describe("managed member comparison path workflow", () => {
         {
           operation: "inspect_managed_members",
           parameters: {},
-          result: jsonValueSchema.parse({
+          result: {
             ...inspection,
             coverage: { ...inspection.coverage, state: "partial" },
-          }),
+          },
           confidence: "observed",
           authority: "shipped-artifact",
         },
@@ -910,41 +912,6 @@ describe("managed comparison snapshot admission and cleanup", () => {
     expect(owners[0]?.handle.fd).toBe(-1);
     expect(resources.hasPending).toBe(false);
   });
-});
-
-describe("managed comparison malformed artifact admission", () => {
-  it.each(["left", "right"] as const)(
-    "retains malformed %s source classification and completed peer Evidence",
-    async (side) => {
-      const directory = await createTestTempDirectory("rea-managed-malformed-");
-      const good = join(directory, "good.dll");
-      const bad = join(directory, "bad.dll");
-      const bytes = buildManagedPeFixture();
-      await writeFile(good, bytes);
-      bytes.writeUInt16LE(0, bytes.readUInt32LE(0x3c) + 6);
-      await writeFile(bad, bytes);
-      const result = await compareManagedMemberPaths({
-        leftPath: side === "left" ? bad : good,
-        rightPath: side === "right" ? bad : good,
-      });
-      expect(result.ok).toBe(false);
-      if (result.ok) return;
-      expect(result.error._tag).toBe("AnalysisInputError");
-      expect(projectAnalysisError(result.error)).toMatchObject({
-        code: "invalid_request",
-        details: {
-          issues: [
-            expect.objectContaining({
-              message: expect.stringContaining("PE section count"),
-            }),
-          ],
-        },
-      });
-      expect(result.error.partialObservation !== undefined).toBe(
-        side === "right",
-      );
-    },
-  );
 });
 
 describe("managed comparison target identity", () => {

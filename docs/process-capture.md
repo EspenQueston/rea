@@ -228,6 +228,12 @@ from launch, must be ordered, and must fall within `timeout_ms`. Inputs marked
 Environment overrides are recorded in the scenario commitment; inherited
 values are not copied into Evidence.
 
+A bare executable name uses the scenario's `PATH` override, then the inherited
+`PATH`. When neither supplies `PATH`, lookup uses `/usr/bin:/bin`, matching
+[Node's Unix default](https://nodejs.org/api/child_process.html#child-process).
+An explicitly empty `PATH` searches only the working directory. Executable,
+working-directory, and observation paths preserve native `symlink/..` traversal.
+
 Terminal dimensions must satisfy `columns × (rows + scrollback) ≤ 1,000,000`.
 Every scheduled resize uses the same selected scrollback and must fit this
 working-buffer budget. REA rejects oversized scenarios before launching the
@@ -482,7 +488,8 @@ Every capture requires `truncation_details`, with separate accounting for:
   input, so raw omissions also limit rendered coverage. `unknown_size_frames`
   counts frames whose complete size was not calculated; it does not by itself
   identify normalization as the cause. `normalization_over_budget_frames`
-  identifies omissions caused by an ordered normalization stage.
+  counts the subset of unknown-size frames stopped by an ordered normalization
+  stage; it cannot exceed `unknown_size_frames`.
   `observed_bytes` includes only rendered frame sizes determined exactly.
 - `filesystem_before` and `filesystem_after`: file-count/depth limits,
   enumeration failures, whole-file hash budget and bytes successfully hashed.

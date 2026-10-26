@@ -16,7 +16,7 @@ import { semanticRequireOrigin } from "./javascriptSemanticRequireOrigin.js";
 import { compareUnicodeCodePoints } from "../unicodeCodePointOrder.js";
 import {
   completeSemanticSteps,
-  traverseJavaScriptAstSteps,
+  traverseJavaScriptValueAstSteps,
 } from "./javascriptSemanticTraversal.js";
 import {
   evaluateSemanticBinding,
@@ -32,6 +32,7 @@ import {
   unwrapJavaScriptExpression,
 } from "./javascriptAstValues.js";
 import {
+  isErasedJavaScriptDeclaration,
   isTypeOnlyExportDeclaration,
   isTypeOnlyExportSpecifier,
   isTypeOnlyImportDeclaration,
@@ -45,6 +46,7 @@ import {
   type CommonJsExportSite,
 } from "./javascriptCommonJsExportReceivers.js";
 import type { JavaScriptSemanticPropertyPath } from "./javascriptSemanticPropertyPaths.js";
+import { semanticComputedMethodKey } from "./javascriptSemanticEvaluationOrder.js";
 
 interface CollectCallableInput {
   readonly node: t.Node;
@@ -71,6 +73,12 @@ export const collectSemanticCallable = (input: CollectCallableInput): void => {
         ? null
         : bodyScope.scopeId,
     location: range(node),
+    computedKeyLocation:
+      "key" in node &&
+      t.isNode(node.key) &&
+      semanticComputedMethodKey(node, node.key)
+        ? range(node.key)
+        : null,
     returnSites: [],
     returnCoverage: {
       status: "partial",
@@ -90,6 +98,16 @@ export const collectSemanticModuleLink = (
     CommonJsExportReceiverEffect
   >,
 ): void => {
+  // Import/export declarations also describe erased type links. Their nested
+  // expressions do not establish runtime require or CommonJS export links.
+  if (
+    state.erasedSyntaxNodes.has(node) &&
+    !t.isTSImportEqualsDeclaration(node) &&
+    !t.isImportDeclaration(node) &&
+    !t.isExportNamedDeclaration(node) &&
+    !t.isExportAllDeclaration(node)
+  )
+    return;
   if (t.isTSImportEqualsDeclaration(node)) collectImportEquals(node, state);
   else if (t.isImportDeclaration(node)) collectImports(node, state);
   else if (t.isExportAllDeclaration(node))
@@ -110,7 +128,9 @@ export const collectSemanticModuleLink = (
     addModuleLink(
       state,
       {
-        kind: "export",
+        kind: isErasedJavaScriptDeclaration(node.declaration)
+          ? "type-import"
+          : "export",
         specifier: null,
         importedName: null,
         localName: defaultExportLocalName(node.declaration),
@@ -172,7 +192,7 @@ export function* collectSemanticReferencesSteps(
 ): Generator<void, JavaScriptSemanticReference[]> {
   const output: JavaScriptSemanticReference[] = [];
   const seen = new Set<string>();
-  yield* traverseJavaScriptAstSteps(program, {
+  yield* traverseJavaScriptValueAstSteps(program, state.erasedSyntaxNodes, {
     enter: (node, parent, readAncestors) => {
       if (
         !t.isIdentifier(node) ||
@@ -180,8 +200,9 @@ export function* collectSemanticReferencesSteps(
         (name !== undefined && node.name !== name)
       )
         return;
-      const ancestors = readAncestors();
-      const role = semanticIdentifierRole(node, parent, ancestors);
+      let ancestors: readonly t.Node[] | undefined;
+      const ancestry = () => (ancestors ??= readAncestors());
+      const role = semanticIdentifierRole(node, parent, ancestry);
       if (role === null) return;
       // A compound assignment or update reads before it writes; emit both so
       // reference consumers see the read they actually execute.
@@ -189,7 +210,7 @@ export function* collectSemanticReferencesSteps(
         role === "write" &&
         semanticReadsBeforeWrite(
           node,
-          semanticWrappedWriteSite(node, parent, ancestors) ?? parent,
+          semanticWrappedWriteSite(node, parent, ancestry()) ?? parent,
         )
           ? (["read", "write"] as const)
           : ([role] as const);
@@ -631,8 +652,12 @@ export const semanticReadsBeforeWrite = (
 export const semanticIdentifierRole = (
   node: t.Identifier,
   parent: t.Node,
-  ancestors: readonly t.Node[],
+  readAncestors: () => readonly t.Node[],
 ): JavaScriptSemanticReference["role"] | null => {
+  // Member identifiers are either object/computed-key reads or fixed property
+  // names. None is a bound destructuring slot, so no ancestor snapshot is needed.
+  if (t.isMemberExpression(parent) || t.isOptionalMemberExpression(parent))
+    return semanticReferenceRole(node, parent);
   if (
     t.isObjectProperty(parent) &&
     parent.key === node &&
@@ -640,6 +665,7 @@ export const semanticIdentifierRole = (
     parent.value !== node
   )
     return null;
+  const ancestors = readAncestors();
   const patternAncestor = enclosingPatternAncestor(node, parent, ancestors);
   if (patternAncestor !== null) {
     if (isPatternOwnerDeclaration(patternAncestor)) return null;

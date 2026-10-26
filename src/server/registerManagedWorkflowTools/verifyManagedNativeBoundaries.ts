@@ -1,15 +1,15 @@
 import { workflowUnknownInput } from "../../application/investigation/WorkflowUnknown.js";
 import type { EvidenceMcpServer } from "../EvidenceMcpServer.js";
 import { runAdmittedToolOperation } from "../admittedToolOperation.js";
-import { recordSessionEvidenceSources } from "../sessionEvidence.js";
+import { recordEvidenceSources } from "../../application/investigation/recordEvidenceSources.js";
 
 import { executeManagedNativeBoundaries } from "../../application/managed/ManagedNativeVerificationService.js";
 import { logToolExecution } from "../toolLogging.js";
 import { toolRegistrationOptions } from "../toolRegistrationOptions.js";
-import { managedWorkflowContract } from "./contract.js";
+import { toolContract } from "../../contracts/toolContracts.js";
 import type { ManagedWorkflowToolRegistration } from "./types.js";
 
-const nativeVerificationContract = managedWorkflowContract(
+const nativeVerificationContract = toolContract(
   "verify_managed_native_boundaries",
 );
 
@@ -39,7 +39,7 @@ export const registerVerifyManagedNativeBoundaries = (
               nativeVerificationContract,
             );
           const execution = result.value;
-          const recordedSources = recordSessionEvidenceSources(
+          const recordedSources = recordEvidenceSources(
             options.recordEvidence,
             execution.sourceEvidence,
           );

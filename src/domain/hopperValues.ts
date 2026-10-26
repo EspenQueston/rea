@@ -3,7 +3,7 @@ import { z } from "zod";
 import { fixedTupleSchema } from "./fixedTupleSchema.js";
 import { addressCoordinate } from "./native/addressCoordinate.js";
 
-import type { JsonValue } from "./jsonValue.js";
+import { jsonObjectSchema, type JsonValue } from "./jsonValue.js";
 
 import { err, ok, type Result } from "./result.js";
 import { nativeApiBoundarySchema } from "./native/nativeApiBoundary.js";
@@ -235,6 +235,25 @@ export const containingProcedureResolutionSchema = z.discriminatedUnion(
     }),
   ],
 );
+export type ContainingProcedureResolution = z.infer<
+  typeof containingProcedureResolutionSchema
+>;
+
+/** Validate provider procedure facts before a workflow interprets absence. */
+export const parseContainingProcedureResolution = (
+  value: JsonValue,
+): Result<ContainingProcedureResolution, AnalysisOutputError> => {
+  const parsed = containingProcedureResolutionSchema.safeParse(value);
+  return parsed.success
+    ? ok(parsed.data)
+    : err(
+        new AnalysisOutputError(
+          "resolve_containing_procedure",
+          "expected a containing-procedure resolution",
+          { cause: parsed.error },
+        ),
+      );
+};
 
 export const localVariableSchema = z
   .object({
@@ -370,6 +389,20 @@ const facetAvailabilitySchema = z.discriminatedUnion("available", [
   z.object({ available: z.literal(false), reason: z.string().min(1) }).strict(),
 ]);
 
+/** Provider-declared availability per dossier facet; an omitted facet declares nothing. */
+export const functionFacetAvailabilitySchema = z
+  .object({
+    pseudocode: facetAvailabilitySchema.exactOptional(),
+    assembly: facetAvailabilitySchema.exactOptional(),
+    comments: facetAvailabilitySchema.exactOptional(),
+    callers: facetAvailabilitySchema.exactOptional(),
+    callees: facetAvailabilitySchema.exactOptional(),
+    references: facetAvailabilitySchema.exactOptional(),
+    strings_names: facetAvailabilitySchema.exactOptional(),
+    cfg: facetAvailabilitySchema.exactOptional(),
+  })
+  .strict();
+
 export const functionDossierSchema = z
   .object({
     procedure: procedureIdentitySchema.safeExtend({
@@ -427,19 +460,7 @@ export const functionDossierSchema = z
     ),
     native_api: nativeApiBoundarySchema.nullable(),
     native_value_flow: nativeValueFlowSchema.nullable(),
-    facet_availability: z
-      .object({
-        pseudocode: facetAvailabilitySchema.exactOptional(),
-        assembly: facetAvailabilitySchema.exactOptional(),
-        comments: facetAvailabilitySchema.exactOptional(),
-        callers: facetAvailabilitySchema.exactOptional(),
-        callees: facetAvailabilitySchema.exactOptional(),
-        references: facetAvailabilitySchema.exactOptional(),
-        strings_names: facetAvailabilitySchema.exactOptional(),
-        cfg: facetAvailabilitySchema.exactOptional(),
-      })
-      .strict()
-      .exactOptional(),
+    facet_availability: functionFacetAvailabilitySchema.exactOptional(),
     limitations: z.array(z.string()),
   })
   .strict();
@@ -556,7 +577,7 @@ export const parseListCount = (
   const unwrapped = unwrapProperty(value, property);
   const list = z.array(z.unknown()).safeParse(unwrapped);
   if (list.success) return ok(list.data.length);
-  const map = z.record(z.string(), z.unknown()).safeParse(unwrapped);
+  const map = jsonObjectSchema.safeParse(unwrapped);
   return map.success
     ? ok(Object.keys(map.data).length)
     : invalid(operation, `${property} list`, map.error);

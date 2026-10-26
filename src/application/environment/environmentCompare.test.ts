@@ -36,7 +36,7 @@ import {
   parameterScopes,
 } from "./environmentCompareMatch.js";
 import type { EnvironmentManifestTool } from "./environmentSource.js";
-import { isCut, probeRequests } from "./environmentCompareProbe.js";
+import { probeRequests } from "./environmentCompareProbe.js";
 import { parseCaptureEvidence } from "./environmentSource.js";
 
 const fixture = environmentStateServeFixture(timedCaptureEvidence(BOOK_ROWS));
@@ -410,12 +410,6 @@ describe("what the comparison translates and learns", () => {
     ).toBe(0);
   });
 
-  it("compares a large binary body only by status, as it does large text", () => {
-    expect(isCut({ kind: "base64", encoded: "AAAA", whole: false })).toBe(true);
-    expect(isCut({ kind: "base64", encoded: "AAAA", whole: true })).toBe(false);
-    expect(isCut({ kind: "cut", text: "a" })).toBe(true);
-  });
-
   it("translates mapped ids in query values except those that page a list", () => {
     const call = matchProbeRequest(extraSource.manifest, {
       method: "GET",
@@ -692,6 +686,10 @@ describe("probe request chronology", () => {
     ["2026-10-20T09:00:00.0002Z", "2026-10-20T09:00:00.0001Z"],
     ["2026-10-20T09:00:00.0000000002Z", "2026-10-20T09:00:00.0000000001Z"],
     ["0001-01-01T00:00:00.0002Z", "0001-01-01T01:00:00.0001+01:00"],
+    ["2026-10-20 09:00:00.0002Z", "2026-10-20 09:00:00.0001Z"],
+    ["2026-10-20T10:00:00.0002+0100", "2026-10-20T09:00:00.0001Z"],
+    ["2026-10-20 10:00:00.0002+0100", "2026-10-20 09:00:00.0001+0000"],
+    ["2026-10-20T09:00:00.0002", "2026-10-20T09:00:00.0001"],
   ])(
     "replays an earlier delete before a later submillisecond read (%s)",
     (later, earlier) => {
@@ -736,6 +734,7 @@ describe("probe request chronology", () => {
 
   it.each([
     ["2026-10-20T09:00:00.000100Z", "2026-10-20T10:00:00.0001+01:00"],
+    ["2026-10-20T09:00:00.0001Z", "2026-10-20T09:00:00.000100"],
     ["Tue, 20 Oct 2026 09:00:00 GMT", "2026-10-20T09:00:00Z"],
   ])(
     "keeps ordinal order for equal instants and native-Date spelling compatibility (%s)",

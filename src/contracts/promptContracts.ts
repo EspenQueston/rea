@@ -1,4 +1,5 @@
 import type { TOOL_CONTRACTS } from "./toolContracts.js";
+import { toolFamilyId } from "./toolFamilies.js";
 
 type ToolName = (typeof TOOL_CONTRACTS)[number]["name"];
 
@@ -133,7 +134,7 @@ export const PROMPT_CONTRACTS = [
       {
         tools: ["inspect_analysis_view", "trace_application_feature"],
         instruction:
-          "When inspect_binary_layout or analyze_javascript_application Evidence is already retained, call inspect_analysis_view with that evidence_id for a summary, one section/symbol/module, or a stable page. Do not re-run the producer. Use trace_application_feature once a route, API, channel, module, string, or native export seed is known.",
+          "When retained binary-layout or JavaScript-application Evidence exists, call inspect_analysis_view with that evidence_id for a summary, one section/symbol/module, or a stable page. Do not re-run the producer. Use trace_application_feature once a route, API, channel, module, string, or native export seed is known.",
       },
       {
         tools: [
@@ -203,7 +204,7 @@ export const PROMPT_CONTRACTS = [
       {
         tools: ["open_binary", "analyze_function", "compare_functions"],
         instruction:
-          "When code-level localization is needed, analyze corresponding functions on both targets and compare their Evidence.",
+          "When code-level localization is needed, analyze corresponding functions on both targets and compare their complete dossiers: pass each summary's parent_evidence_id as a retained-evidence reference, or request detail complete.",
       },
       {
         tools: ["compare_process_captures", "find_changed_behavior"],
@@ -297,7 +298,7 @@ export const PROMPT_CONTRACTS = [
           "analyze_function",
         ],
         instruction:
-          "Resolve crash text or addresses to function dossiers; do not infer a source location from symbol similarity alone.",
+          "Resolve crash text or addresses to function dossiers, requesting detail complete when build_call_path will consume them; do not infer a source location from symbol similarity alone.",
       },
       {
         tools: ["xrefs", "procedure_callers", "build_call_path"],
@@ -400,3 +401,24 @@ export const PROMPT_CONTRACTS = [
     ],
   },
 ] as const satisfies readonly PromptContract[];
+
+/**
+ * Workflows whose every suggested tool is in the advertised families.
+ * A partial workflow would direct the agent to a disabled call, so a prompt
+ * is advertised only when its complete tool set is in scope; an absent
+ * selection keeps the complete inventory, matching unscoped servers.
+ */
+export const promptsForToolFamilies = (
+  selection: ReadonlySet<string> | undefined,
+  contracts: readonly PromptContract[] = PROMPT_CONTRACTS,
+): readonly PromptContract[] =>
+  selection === undefined
+    ? contracts
+    : contracts.filter(({ steps }) =>
+        steps.every(({ tools }) =>
+          tools.every((tool) => {
+            const family = toolFamilyId(tool);
+            return family !== undefined && selection.has(family);
+          }),
+        ),
+      );

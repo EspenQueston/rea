@@ -90,14 +90,14 @@ export interface StableRegularFileDescriptor {
   readonly initial: Stats;
 }
 
-/** Open and verify the selected file descriptor without blocking on pipes. */
+/** Admit a non-blocking regular-file descriptor with its validated initial facts. */
 export const openRegularFile = async (
   path: string,
   options: {
     readonly symlinks: "follow" | "reject";
     readonly signal?: AbortSignal | undefined;
   },
-): Promise<FileHandle> => {
+): Promise<StableRegularFileDescriptor> => {
   assertRegularFileActive(options.signal);
   const handle = await open(
     path,
@@ -131,7 +131,7 @@ export const openRegularFile = async (
         throw new RegularFileChangedError(path);
       assertRegularFileActive(options.signal);
     }
-    return handle;
+    return { handle, initial: metadata };
   } catch (cause: unknown) {
     try {
       await owner.close();
@@ -177,9 +177,24 @@ const isUnopenableFileTypeError = (cause: unknown): boolean =>
   typeof cause.errno === "number" &&
   UNOPENABLE_FILE_TYPE_ERRNOS.has(cause.errno);
 
+/** Stable content identity; access times are deliberately excluded. */
+export type RegularFileState = Pick<
+  Stats,
+  "dev" | "ino" | "size" | "mode" | "mtimeMs" | "ctimeMs"
+>;
+
+export const regularFileState = (stats: Stats): RegularFileState => ({
+  dev: stats.dev,
+  ino: stats.ino,
+  size: stats.size,
+  mode: stats.mode,
+  mtimeMs: stats.mtimeMs,
+  ctimeMs: stats.ctimeMs,
+});
+
 /** Compare one regular file's identity and mutable metadata across a read. */
 export const sameRegularFileState = (
-  expected: Stats | BigIntStats,
+  expected: RegularFileState | BigIntStats,
   observed: Stats | BigIntStats,
 ): boolean =>
   observed.isFile() &&

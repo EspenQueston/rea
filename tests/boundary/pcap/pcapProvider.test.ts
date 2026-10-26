@@ -136,6 +136,7 @@ it("inspects a capture with endpoints, DNS, TLS SNI, and HTTP", async () => {
   expect(result.capture_start).toBe("2026-10-11T14:13:40.608505Z");
   expect(result.capture_end).toBe("2026-10-11T14:13:40.981978Z");
   expect(result.packet_count).toBe(3);
+  expect(result.snapshot_length).toBe(262144);
   expect(result.endpoints).toEqual(
     expect.arrayContaining([
       { address: "192.168.1.100", port: null, packet_count: 3 },
@@ -309,7 +310,9 @@ it.each([
             },
     });
     expect(producerLaunches).toBe(1);
-    expect(await readFile(path)).toEqual(Buffer.from("pcap-fixture-bytes"));
+    expect(
+      Buffer.compare(await readFile(path), Buffer.from("pcap-fixture-bytes")),
+    ).toBe(0);
     const snapshotPath = result.error.cleanupResources.find((resource) =>
       resource.endsWith("/capture.pcap"),
     );
@@ -339,9 +342,12 @@ it.each([
         });
         expect(result.error.cleanupIncomplete).toBe(true);
         expect(cleanupAttempts).toBe(attemptsBeforeClose + 1);
-        await expect(readFile(snapshotPath)).resolves.toEqual(
-          Buffer.from("pcap-fixture-bytes"),
-        );
+        expect(
+          Buffer.compare(
+            await readFile(snapshotPath),
+            Buffer.from("pcap-fixture-bytes"),
+          ),
+        ).toBe(0);
       } finally {
         denied.mockRestore();
       }
@@ -513,7 +519,7 @@ console.log(${JSON.stringify(TSHARK_JSON)});`,
     expect(projectAnalysisError(result.error)).toMatchObject({
       code: "artifact_changed",
     });
-  expect(await readFile(path)).toEqual(before);
+  expect(Buffer.compare(await readFile(path), before)).toBe(0);
 });
 
 it("binds both tools to the snapshot when the original capture changes", async () => {

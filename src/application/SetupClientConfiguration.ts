@@ -6,6 +6,7 @@ import {
   effectiveClientConfiguration,
   readConfigurationText,
   type ClientConfigurationSource,
+  type ClientConfigurationFileError,
 } from "./ClientConfigurationFiles.js";
 import { err, ok, type Result } from "../domain/result.js";
 import { ConfigurationError } from "../domain/configurationErrors.js";
@@ -55,7 +56,6 @@ import {
   preserveCurrentRecoveryBackup,
   selectCurrentRecoveryBackup,
 } from "./SetupRecoveryBackup.js";
-import type { ClientConfigurationFileError } from "./ClientConfigurationFiles.js";
 import type {
   ClientConfigurationInspection,
   ClientConfigurationResult,
@@ -74,17 +74,13 @@ export class ClientConfigurationCleanupRollbackFailure extends RegularFileCleanu
       { readonly status: "failed" }
     >,
   ) {
-    super(
-      failure.path,
-      failure.owner,
-      failure.outcome,
-      new AggregateError(
+    super({
+      ...failure,
+      cleanupCause: new AggregateError(
         [failure.cleanupCause, configurationFailure],
         `Configuration readback cleanup and rollback failed: ${failure.path}`,
       ),
-      failure.retention,
-      failure.completionCancellation,
-    );
+    });
   }
 }
 
@@ -380,7 +376,7 @@ const persistClientConfiguration = async ({
             !clientConfigurationValuesEqual(readback.servers[name], entry),
         )
       ) {
-        return rollbackOrReadbackFailure(
+        return await rollbackOrReadbackFailure(
           publication,
           original,
           recoveryBackupPath,
@@ -596,9 +592,11 @@ const inspectClientDocument = async (
       return { status: "invalid", remediation: fallback.error.detail };
     }
   } catch (cause: unknown) {
-    if (cause instanceof RegularFileCleanupFailure) throw cause;
-    if (cause instanceof ConfigurationError)
-      return { status: "invalid", remediation: cause.message };
+    if (
+      cause instanceof RegularFileCleanupFailure ||
+      cause instanceof ConfigurationError
+    )
+      throw cause;
     // Malformed configuration is reported with the invalid remediation.
     void cause;
     return {

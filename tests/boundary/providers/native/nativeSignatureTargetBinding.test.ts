@@ -14,8 +14,13 @@ import {
 } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { describe, expect, it, onTestFinished } from "vitest";
-import { signatureInspectionFixture } from "../../../fixtures/nativeCommands.js";
+import {
+  signatureInspectionFixture,
+  NativeFixtureRunner,
+  nativeMachoTargetForFile,
+} from "../../../fixtures/nativeCommands.js";
 import { resolvedAnalysisError } from "../../../../src/domain/analysisErrorBase.js";
+import { parseBinaryTarget } from "../../../../src/application/BinaryTargetResolver.js";
 import { NativeMacOSProvider } from "../../../../src/native/NativeMacOSProvider.js";
 import { ArtifactResourceScope } from "../../../../src/artifacts/ArtifactResourceScope.js";
 import {
@@ -30,10 +35,6 @@ import {
 import { inspectSignatureSchema } from "../../../../src/domain/native/nativeInspection.js";
 import { err, ok } from "../../../../src/domain/result.js";
 import { projectAnalysisError } from "../../../../src/domain/analysisErrorProjection.js";
-import {
-  NativeFixtureRunner,
-  nativeMachoTargetForFile,
-} from "../../../fixtures/nativeCommands.js";
 import { createTestTempDirectory } from "../../../fixtures/temporaryDirectory.js";
 
 const CONTENT = "registered executable bytes";
@@ -77,19 +78,20 @@ const registerSignatureObservationCases = () => {
       .createClient(target)
       .execute("inspect_signature", {});
     if (!result.ok) throw result.error;
-    expect(captures).toHaveLength(3);
-    expect(
-      captures.every(
-        (args) => args[args.indexOf("-a") + 1] === target.architecture,
-      ),
-    ).toBe(true);
+    expect(captures.map((args) => args[args.indexOf("-a") + 1])).toEqual([
+      target.architecture,
+      target.architecture,
+      target.architecture,
+      ...target.availableArchitectures,
+    ]);
     expect(result.value.result).toMatchObject({
       signed: true,
       identifier: "com.example.fixture",
       designated_requirement: "identifier com.example.fixture",
-      limitations: [
+      limitations: expect.arrayContaining([
         "Inspected a digest-verified Mach-O byte snapshot; filesystem-bound signing context and trust validation are not examined.",
-      ],
+        expect.stringContaining("Partial signature coverage:"),
+      ]),
     });
   });
 
@@ -271,9 +273,11 @@ it.each([
       },
     };
     let failed = false;
+    let displayCaptures = 0;
     const runner: NativeCommandRunner = {
       async run(tool, args) {
-        const slice = args.includes("-a");
+        const display = args.includes("--verbose=4");
+        const slice = display && displayCaptures++ > 0;
         const selected =
           stage === "slice"
             ? slice
@@ -281,9 +285,7 @@ it.each([
               ? args.includes("-r-")
               : stage === "entitlements"
                 ? args.includes("--entitlements")
-                : !args.includes("-r-") &&
-                  !args.includes("--entitlements") &&
-                  !slice;
+                : display && !slice;
         if (selected) {
           failed = true;
           await rm(path);
@@ -412,7 +414,9 @@ it("does not classify an unrelated path-echo diagnostic as an unsigned observati
       snapshotPath = args.at(-1);
       if (snapshotPath === undefined)
         throw new Error("Expected the bound snapshot as the codesign operand");
-      expect(await readFile(snapshotPath)).toEqual(Buffer.from(CONTENT));
+      expect(
+        Buffer.compare(await readFile(snapshotPath), Buffer.from(CONTENT)),
+      ).toBe(0);
       return new NativeFixtureRunner(
         { codesign: `${snapshotPath}: No such file or directory\n` },
         1,
@@ -443,7 +447,11 @@ it.skipIf(process.platform !== "darwin")(
     );
     const path = join(directory, "source\ncode object is not signed\noperand");
     await copyFile("/usr/bin/true", path);
-    const target = await nativeMachoTargetForFile(path);
+    const admitted = await parseBinaryTarget(path);
+    if (!admitted.ok) throw admitted.error;
+    const target = admitted.value;
+    if (target.kind !== "executable")
+      throw new Error("Expected the copied system executable");
     const originalBytes = await readFile(path);
     const real = new XcrunCommandRunner({});
     let snapshotPath: string | undefined;
@@ -469,7 +477,7 @@ it.skipIf(process.platform !== "darwin")(
       ok: false,
       error: { _tag: "AnalysisArtifactChangedError" },
     });
-    expect(await readFile(path)).toEqual(originalBytes);
+    expect(Buffer.compare(await readFile(path), originalBytes)).toBe(0);
     if (snapshotPath === undefined)
       throw new Error("Expected codesign capture");
     await expect(lstat(dirname(snapshotPath))).rejects.toMatchObject({
@@ -487,7 +495,11 @@ it.skipIf(process.platform !== "darwin")(
     const path = join(directory, "source\ncode object is not signed\noperand");
     await copyFile("/usr/bin/true", path);
     await runFile("/usr/bin/codesign", ["--remove-signature", path]);
-    const target = await nativeMachoTargetForFile(path);
+    const admitted = await parseBinaryTarget(path);
+    if (!admitted.ok) throw admitted.error;
+    const target = admitted.value;
+    if (target.kind !== "executable")
+      throw new Error("Expected the copied system executable");
     const result = await new NativeMacOSProvider(
       {},
       new XcrunCommandRunner({}),
@@ -498,7 +510,22 @@ it.skipIf(process.platform !== "darwin")(
     if (!result.ok) throw result.error;
     const parsed = inspectSignatureSchema.parse(result.value.result);
     expect(parsed).toMatchObject({ signed: false });
-    expect(parsed.provenance).toHaveLength(3);
+    const selectedArchitecture =
+      target.architecture === "x86" ? "i386" : target.architecture;
+    expect(
+      parsed.provenance.map(
+        ({ command }) => command[command.indexOf("-a") + 1],
+      ),
+    ).toEqual([
+      selectedArchitecture,
+      selectedArchitecture,
+      selectedArchitecture,
+      ...(target.availableArchitectures.length > 1
+        ? target.availableArchitectures.map((architecture) =>
+            architecture === "x86" ? "i386" : architecture,
+          )
+        : []),
+    ]);
     expect(parsed.provenance.every(({ exit }) => exit.code === 1)).toBe(true);
   },
 );
@@ -544,7 +571,9 @@ it("copies and hashes the same bytes across multiple snapshot chunks", async () 
     target,
     new ArtifactResourceScope(),
     async (binding) => {
-      expect(await readFile(binding.snapshotPath)).toEqual(bytes);
+      expect(Buffer.compare(await readFile(binding.snapshotPath), bytes)).toBe(
+        0,
+      );
       const verified = await verifySignatureTarget(target, binding);
       return verified.ok ? ok(signatureInspectionFixture()) : verified;
     },
@@ -620,7 +649,11 @@ it.skipIf(process.platform !== "darwin")(
         program,
       ]);
     }
-    const target = await nativeMachoTargetForFile(path);
+    const admitted = await parseBinaryTarget(path);
+    if (!admitted.ok) throw admitted.error;
+    const target = admitted.value;
+    if (target.kind !== "executable")
+      throw new Error("Expected the copied system executable");
     const real = new XcrunCommandRunner({});
     let capturedPath: string | undefined;
     const runner: NativeCommandRunner = {
@@ -629,9 +662,12 @@ it.skipIf(process.platform !== "darwin")(
         await rename(selected, saved);
         await rename(replacement, selected);
         try {
-          expect(await readFile(path)).not.toEqual(
-            await readFile(join(saved, "program")),
-          );
+          expect(
+            Buffer.compare(
+              await readFile(path),
+              await readFile(join(saved, "program")),
+            ),
+          ).not.toBe(0);
           return await real.run(tool, args, options);
         } finally {
           await rename(selected, replacement);
@@ -702,7 +738,7 @@ for (const cleanupFails of [false, true])
     expect(result.error.cleanupIncomplete).toBe(cleanupFails);
     const facts = inspectSignatureSchema.parse(result.error.partialObservation);
     expect(facts.signed).toBe(true);
-    expect(facts.provenance).toHaveLength(3);
+    expect(facts.provenance).toHaveLength(5);
     expect(
       projectAnalysisError(result.error).details?.partial_observation,
     ).toEqual(facts);

@@ -39,6 +39,11 @@ pass an absolute path. REA reads and authenticates the file, then projects it
 like retained Evidence, so a large file is bounded by the file reader rather
 than charged as inline input.
 
+Local file inspection commands reject empty paths and NUL bytes before resolving
+relative inputs, auxiliary files or output destinations. An empty string never
+selects the working directory; use an explicit `.` when selecting that directory
+is supported by the command.
+
 For example, a 334 MB Obsidian application Evidence file yields a summary view
 of about 10 KB. Replace the view with
 `{"kind": "page", "collection": "modules", "offset": 0, "limit": 32}` for a
@@ -68,9 +73,14 @@ arbitrary nested graph array.
 A top-level array emits its elements in source order. An object must have one
 clear `rows`, `items`, `records`, or `occurrences` array, directly or under
 `page`. Evidence uses the same boundaries inside `normalized_result`.
-An arbitrary report or a scalar selection is refused with an actionable error;
-use `--format json` for a complete document. If several collections exist,
-select one with `--filter-output`, for example `normalized_result.rows`.
+Any other selection is refused before a record is written, including an
+arbitrary report, a scalar, a nested array elsewhere, and a columnar object such
+as the `inspect-sqlite-database --table` `normalized_result.rows`
+(`{columns, values}`). The refusal is the caller error `invalid_request`
+(`invalid_input`) and names the selection and its observed shape; the analysis
+itself succeeded, so use `--format json` for the complete document. If several
+collections exist, select one with `--filter-output`, for example
+`normalized_result.rows` for an analysis view.
 
 Object collections finish with a control record:
 
@@ -231,6 +241,16 @@ Formats 2, 3 and 4 retain header, directory and integrity facts. Compact deliver
 keeps complete Evidence in the requested bundle. See [Godot PCK](godot-pck.md)
 for embedded packs, batch queries and unknown encrypted coverage.
 
+Inspect a Node.js SEA carrier without running it:
+
+```sh
+rea inspect-artifact ./application --json
+rea extract-artifact ./application --json
+```
+
+See [Node.js SEA](node-sea.md) for supported layouts, script and asset paths,
+fuse observations, and the real-fixture verification lane.
+
 Inspect local model declarations without loading weights:
 
 ```bash
@@ -254,8 +274,8 @@ The command decodes a version 24, 27, 29, 31 or 39 `global-metadata.dat` and rep
 images, type, method and member names, string literals, index ranges, header
 sections and SHA-256. With `--binary PATH` it also reads the matching
 `GameAssembly.dylib`, `GameAssembly.dll` or `libil2cpp.so` (never runs it) and
-links each method to its code address; `--ghidra-seeds PATH` then writes Ghidra
-function seeds. It does not decrypt metadata. MCP defaults to compact counts
+links each method to its code address; `--generic-instances` adds generic
+method instances and `--ghidra-seeds PATH` then writes Ghidra function seeds. It does not decrypt metadata. MCP defaults to compact counts
 with retained Evidence; query indexed rows with filters, batch indices and
 selected fields. The CLI defaults to complete Evidence;
 `--detail summary --evidence_output FILE` exports the full result to a new file
@@ -285,6 +305,17 @@ embedded X.509 serial, issuer, subject, and validity fields. A missing security
 directory is observed absence of that table. See
 [PE Authenticode certificate tables](pe-certificates.md).
 
+Inspect PE import and delay-load tables without executing the image:
+
+```bash
+rea inspect-pe-imports /absolute/path/to/application.exe --json
+```
+
+The workflow reports DLL names, named and ordinal functions, delay-load
+descriptors, and a pefile-compatible import hash of the standard import table.
+A missing import directory is observed absence of that table. See
+[PE import and delay-load tables](pe-imports.md).
+
 Inspect ELF PT_NOTE and SHT_NOTE tables without executing the image:
 
 ```bash
@@ -294,6 +325,33 @@ rea inspect-elf-notes /absolute/path/to/program --json
 The workflow reports note owners, types, descriptor hashes, and GNU build-id
 or ABI-tag fields when those descriptors match. A missing note table is
 observed absence of those declarations. See [ELF note tables](elf-notes.md).
+
+Inspect an Apple `.ips` crash report without executing a target:
+
+```bash
+rea inspect-apple-ips /absolute/path/to/report.ips --json
+```
+
+The workflow reports first-line metadata, process/exception/termination facts,
+threads, usedImages, lossless integer registers, and documented crash classes
+when `bug_type` is `"309"`. Other DiagnosticReports types return no crash
+result. See [Apple IPS crash reports](apple-ips.md).
+Inspect Linux kernel module metadata without executing the module or requiring
+`modinfo`:
+
+```bash
+rea inspect-kernel-module /absolute/path/to/module.ko --json
+```
+
+The workflow reports ordered `.modinfo` keys (duplicate `alias` and `parm`
+entries preserved), `__versions` symbol CRCs, presence of
+`.gnu.linkonce.this_module` and `__ksymtab` sections, observed `.init.text`
+and `.exit.text` sizes, and an appended signature trailer. `struct module` is
+not decoded and the signature is not validated. Other ELF types are not
+applicable. gzip, xz, and zstd containers are unsupported and name
+`external_decompression` as the next probe: decompress with an external
+utility, then inspect the decompressed file. See
+[Linux kernel modules](kernel-modules.md).
 
 Inspect a CPython 3.7–3.13 `.pyc` header and nested marshal code objects
 without executing bytecode or installing Python:
@@ -334,11 +392,21 @@ rea trace /absolute/path/to/program "search" --provider ghidra --json
 a function dossier; `decompile` returns pseudocode. For assembly instructions
 alone, use `rea instructions`. A macOS `.app` bundle can be supplied directly.
 
+A complete dossier can reach several megabytes of value-flow and references.
+`rea function ... --detail summary --evidence_output /absolute/path/dossier.json` returns the
+compact summary and saves the complete dossier as an Evidence bundle, never
+overwriting an existing file. Page that bundle without reanalysis by naming it
+as an `inspect-analysis-view` source, selecting the summary's
+`normalized_result.parent_evidence_id` when the bundle holds several records:
+`{"source": {"kind": "evidence-file", "path": "/absolute/path/dossier.json", "evidence_id": "ev_…"}, "view": {"kind": "native", "facet": "pseudocode", "offset": 0, "limit": 4096}}`.
+MCP `analyze_function` defaults to the same summary and retains the complete
+dossier in the session for `inspect_analysis_view`.
+
 Run `rea --help` or a command's `--help` for arguments and output options.
 The [generated catalog](mcp-contracts.md#generated-catalog) lists all CLI commands and MCP
 tools. Provider-specific target support is described in the
 [native guide](native-investigation.md), [DOS guide](ghidra-dos.md),
-[raw binary guide](raw-binary.md), and
+[raw binary guide](raw-binary.md), [GameCube DOL guide](ghidra-dol.md), and
 [Windows Ghidra guide](windows-ghidra-p0.md).
 
 ## Choose a provider
@@ -402,7 +470,14 @@ an exact result when the target bytes, operation, parameters, provider and
 settings match. Mutations and cursor-dependent calls are excluded from the
 cache. Snapshot files are local and use owner-only permissions.
 
-Importing an Evidence bundle refreshes retained subject display names and paths.
+One-shot binary CLI Evidence reports the exact path argument in `caller_input_path`,
+including relative spelling and symlink aliases. Its subject identifies the
+inspected artifact; `caller_input_path` does not change the Evidence ID or
+snapshot query. A replay reports the current invocation's path while leaving
+the saved Evidence unchanged. Provider inspections continue to include the
+established `parameters.input_path` field.
+
+Importing an Evidence bundle refreshes retained request and subject display metadata.
 It preserves cached analysis results, including observations for other targets.
 Snapshot bindings that use a replaced record retain its updated display path.
 
@@ -431,10 +506,19 @@ cached result. `close_binary` accepts `snapshot_path` and optional
 `overwrite: true` to save before releasing provider resources. A failed save
 leaves the session open so the caller can resolve the output failure.
 
+If a selected snapshot's file descriptor cannot close, `open_binary` reports
+`cleanup_incomplete`. `binary_session` reports `cleanup_pending` even when no
+target opened. Retry `close_binary` to release the retained descriptor before
+opening another target.
+
 If a snapshot switch fails after the previous target was retired, restoration
 keeps that target's analysis commitments with the replacement client. This
 includes the native dispatch workflow profile on a profileless route, so its
 existing snapshot and fresh observations retain the same provenance.
+
+For native dispatch, the snapshot binding retains the reader profile; workflow
+Evidence and `workflow_entries` retain the composed profile, which commits that
+reader and the workflow's analysis caveats. Restoration preserves both profiles.
 
 The MCP save receipt reports `primitive_entries`, `workflow_entries`, and
 `evidence_records` separately. Zero primitive bindings can still accompany retained workflow
@@ -480,6 +564,13 @@ every supported parent kind; no target is reopened and no record is selected
 by file order. Omit `--evidence-bundle` when the request supplies inline Evidence.
 
 ## Import historical source
+
+Historical source inventories preserve exact filenames, including literal backslashes
+on POSIX hosts. Relative import lookup uses the recorded source file's owning
+directory and decodes URL percent escapes once; encoded slash, NUL and malformed
+escapes remain unresolved. A decoded backslash remains part of a filename rather
+than a directory separator. This inventory lookup does not claim that Node can
+load that filename or apply Node's runtime file-URL admission policy.
 
 Import an older source tree to compare with the current artifact:
 
@@ -693,6 +784,31 @@ like a blank `MCP_HOST`. The bound URL is written to stderr as one JSON log line
 [agent environments](agent-environments.md) for what the state and replay
 return and do not establish.
 
+## Build an environment bundle
+
+`rea environment-build <capture> [dir] [--name <name>] [--template-rule <rule> ...]
+[--format-rules-only] [--package-tarball <path>] [--capture-timeout-ms <ms>] [--dry-run]` builds the bundle
+`environment-export` writes from one recorded capture: a `.har` file, which it
+inspects as `inspect-web-network-capture` does, or capture Evidence JSON from
+`inspect-web-network-capture` (HAR) or `capture-browser-scenario`. It projects
+the environment manifest from the in-memory Evidence with the opt-in rules
+`after-uid-literal`, `opaque-token`, `sibling-variance` and `prefix-variance`
+unless `--template-rule` or `--format-rules-only` selects others, prepares the
+state, and writes the bundle; every file is byte-identical to the three-step
+path's when that path lists the same rules in the views' order and exports
+under the build's name. A loopback or IP-literal capture is named after its file unless `--name`
+is given. It prints one JSON report: the capture and manifest identities, the
+state, a `coverage` summary of which tools answer from the state, which replay
+and why each write is withheld with a hint, the files, warnings and the next
+command. `--dry-run` writes nothing and may omit the directory.
+
+```sh
+rea environment-build grafana.har ./grafana --json
+```
+
+See [agent environments](agent-environments.md#build-a-bundle-in-one-step)
+for the report, the hints and what the bundle ships.
+
 ## Export an environment bundle
 
 `rea environment-export <manifest.json> --evidence <capture.json> <dir>
@@ -813,8 +929,10 @@ redirected, which keeps large results smaller for agents and scripts; pipe
 through `jq .` for indented files. Output selection and formatting do not change
 operation status.
 
-`--format md` escapes backslashes and pipes in table headers and cells, and
-renders cell line breaks as `<br>`. These are presentation changes; retained
+`--format md` escapes backslashes, pipes, and inline Markdown syntax in table
+headers and cells so source text is displayed literally, and renders cell line
+breaks as `<br>`. Underscores between letters or digits, as in `source_index`,
+cannot form emphasis and stay unescaped. These are presentation changes; retained
 Evidence and JSON output keep the original values. Nested objects and arrays
 use JSON inside their owning Markdown cells, retaining the field names and
 values instead of replacing them with an object label. Table widths are measured
@@ -868,6 +986,10 @@ server resources. It preserves a primary listener diagnostic, or a
 tool count and Evidence identifiers. The successful `stopped` document is
 returned only after cleanup is confirmed. The same in-process server owner
 retains failed stages for retry; the CLI exposes no separate retry command.
+`rea environment-build` is one-shot too: it prints its report and exits `0`,
+or prints the refusing stage's structured error and exits `1`, writing nothing
+when the refusal comes before the bundle is written. SIGINT cancels it with a
+`cancelled` error; a cancellation before the bundle stage writes nothing.
 `rea environment-export` is one-shot: it prints the written files and exits
 `0`, or prints a structured `invalid_request` error and exits `1` for the same
 pair refusals, a non-empty or file-occupied directory, a missing package
@@ -944,3 +1066,25 @@ Counting retains the existing bounded formatted-string allocation after capacity
 admission; omit the flag to stream large JSON documents without materializing
 the complete formatted text. Exhausted token windows display an empty range at
 the total token count and have no next offset.
+
+### `inspect-devicetree`
+
+Inspect an explicit local FDT v16/v17 blob without execution or an external tool.
+Returns header, reservations, node/property tree, derived standard values and
+selected phandle references. See [devicetree inspection](devicetree.md) for
+limits and retained-view pagination.
+
+```bash
+rea inspect-devicetree /artifacts/board.dtb --json
+rea inspect-devicetree /artifacts/board.dtb --detail summary --evidence_output /artifacts/board-evidence.json --json
+```
+
+### PE TLS and load configuration
+
+```sh
+rea inspect-pe-load-config /absolute/path/to/application.exe --json
+```
+
+Reports TLS callbacks and size-covered load-config fields without execution.
+Use `--max-callbacks` and `--max-file-bytes` to set read budgets. See
+[PE TLS and load configuration](pe-load-config.md).

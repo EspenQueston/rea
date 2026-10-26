@@ -1,13 +1,18 @@
 import { isSelectedRegularFileError } from "../../filesystem/RegularFile.js";
 import { ArtifactReaderFailure } from "../../artifacts/ArtifactReader.js";
-import { readStableArtifact } from "../../artifacts/readStableArtifact.js";
 import {
-  artifactFilePrimaryFailure,
+  readStableArtifact,
+  completedStableArtifact,
+} from "../../artifacts/readStableArtifact.js";
+import {
+  artifactFilePrimaryFacts,
+  type ArtifactFilePrimaryFacts,
   bindArtifactFileCleanup,
   artifactFileCancellationCause,
 } from "../../artifacts/ArtifactFileOperation.js";
 import { ArtifactResourceScope } from "../../artifacts/ArtifactResourceScope.js";
 import { analysisErrorWithCleanupFailure } from "../../domain/analysisErrorCleanup.js";
+import { fileSnapshotPartialObservationSchema } from "../../domain/fileSnapshotObservation.js";
 import type { PeCertificatesPort } from "../../application/binaryDiagnostics/PeCertificatesPort.js";
 import type { ExecutionOptions } from "../../application/AnalysisProvider.js";
 import { ArtifactOperationError } from "../../domain/artifactOperationError.js";
@@ -96,10 +101,15 @@ const inputBudgetRemediation = (
       : `Raise max_entries above ${String(input.max_entries)} or select a smaller artifact; the limit is the caller-selected certificate entry budget.`;
 
 const peCertificatesFailurePrimary = (
-  cause: unknown,
+  facts: ArtifactFilePrimaryFacts,
   input: InspectPeCertificatesInput,
 ) => {
-  if (cause instanceof ArtifactReaderFailure && cause.reason === "integrity")
+  const { cause, origin } = facts;
+  if (
+    origin === "owned-or-classified" &&
+    cause instanceof ArtifactReaderFailure &&
+    cause.reason === "integrity"
+  )
     return new AnalysisArtifactChangedError(
       OPERATION,
       input.path,
@@ -108,11 +118,18 @@ const peCertificatesFailurePrimary = (
         cause,
       },
     );
-  if (cause instanceof ArtifactReaderFailure && cause.reason === "cancelled")
+  if (
+    origin === "owned-or-classified" &&
+    cause instanceof ArtifactReaderFailure &&
+    cause.reason === "cancelled"
+  )
     return new AnalysisCancelledError(OPERATION, {
       cause: artifactFileCancellationCause(cause),
     });
-  if (cause instanceof ArtifactReaderFailure) {
+  if (
+    origin === "owned-or-classified" &&
+    cause instanceof ArtifactReaderFailure
+  ) {
     if (cause.reason === "limit")
       return new AnalysisResourceConstraintError(
         OPERATION,
@@ -160,7 +177,9 @@ const peCertificatesFailurePrimary = (
   }
   return new ArtifactOperationError(
     OPERATION,
-    cause instanceof ArtifactReaderFailure ? cause.reason : "io",
+    origin === "owned-or-classified" && cause instanceof ArtifactReaderFailure
+      ? cause.reason
+      : "io",
     undefined,
     cause instanceof Error
       ? cause.message
@@ -174,9 +193,19 @@ const peCertificatesFailure = (
   input: InspectPeCertificatesInput,
 ) => {
   const primary = peCertificatesFailurePrimary(
-    artifactFilePrimaryFailure(cause),
+    artifactFilePrimaryFacts(cause),
     input,
   );
+  const snapshot = completedStableArtifact(cause);
+  if (snapshot !== undefined)
+    primary.retainPartialObservation(
+      fileSnapshotPartialObservationSchema.parse({
+        kind: "file-snapshot-hash",
+        path: input.path,
+        sha256: snapshot.sha256,
+        bytes: snapshot.bytes.length,
+      }),
+    );
   if (!(cause instanceof ArtifactReaderFailure) || cause.cleanup === undefined)
     return primary;
   const cleanup = new ProviderCleanupError(

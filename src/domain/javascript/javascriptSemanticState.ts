@@ -135,6 +135,8 @@ export interface JavaScriptSemanticAnalysisState {
   /** Callee sites whose possible local returns needed a broader projection. */
   readonly returnedReferenceWidenings: Set<t.Node>;
   readonly parentsByNode: WeakMap<t.Node, t.Node>;
+  /** TypeScript syntax omitted from JavaScript value evaluation. */
+  readonly erasedSyntaxNodes: WeakSet<t.Node>;
   readonly scopes: JavaScriptSemanticScopeState[];
   readonly scopesById: Map<string, JavaScriptSemanticScopeState>;
   /** Scope boundaries and descendant scopes resolved on demand. */
@@ -171,6 +173,10 @@ export interface JavaScriptSemanticAnalysisState {
   readonly ambientBindingWrites: Map<string, t.Node[]>;
   /** Source-local writes, tagged by global, import.meta or CJS module identity. */
   readonly ambientWrites: SemanticPropertyPathCoverage;
+  /** Browser receivers proven to be only the ambient global identity. */
+  readonly retainedGlobalCallReceivers: WeakSet<t.Node>;
+  /** Store targets whose ownership is unknown or ambient, as classified by ambient indexing. */
+  readonly escapingReferenceStores: WeakSet<t.MemberExpression>;
   /** Ambient object identities passed to calls whose effects are not evaluated. */
   readonly ambientEscapes: SemanticPropertyPathCoverage;
   /** Capture sites keep later opaque effects from changing earlier copies. */
@@ -199,6 +205,12 @@ export interface JavaScriptBindingIndex {
     referenceNode: t.Node,
   ): JavaScriptSemanticBindingState | undefined;
   effectsForReferenceAt(
+    site: t.Node,
+    referenceNode: t.Node,
+    propertyPath?: JavaScriptSemanticPropertyPath,
+  ): JavaScriptSemanticReferenceEffectsAtSite;
+  /** Order declarations within one activation; deferred and repeating effects stay unknown. */
+  effectsForReferenceWithinActivationAt(
     site: t.Node,
     referenceNode: t.Node,
     propertyPath?: JavaScriptSemanticPropertyPath,

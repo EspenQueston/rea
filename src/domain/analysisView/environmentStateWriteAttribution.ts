@@ -1,4 +1,5 @@
 import {
+  ownMember,
   renderStateEntity,
   same,
   type JsonObject,
@@ -210,6 +211,11 @@ export class WriteEffects {
     }
   }
 
+  /** The fields a tool's effect on an entity still holds: null for a create's or delete's whole effect, undefined when none remains. */
+  changedOn(key: string, tool: string): readonly string[] | null | undefined {
+    return this.#changed.get(key)?.get(tool);
+  }
+
   /** Whether a read showing `fields` of a target shows anything of a tool's effect there: a create's or delete's always, an update's through a field it changed; unknown claims count as shown. */
   shows(
     tool: string,
@@ -407,7 +413,9 @@ export const writtenFieldChecks = (
     if (fields === null || compared.length === 0) continue;
     outcomes.set(
       tool,
-      compared.every((field) => same(shown[field], observed[field])),
+      compared.every((field) =>
+        same(ownMember(shown, field), ownMember(observed, field)),
+      ),
     );
   }
   return outcomes;

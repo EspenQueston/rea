@@ -32,6 +32,7 @@ export type Il2cppMetadataDecoded = Omit<
   | "return_types"
   | "field_types"
   | "parameter_types"
+  | "generic_method_instances"
 >;
 
 /**
@@ -535,11 +536,7 @@ function* readTypes(tables: MetadataTables): Generator<
       typeDefinitionTypeIndices * widths.type +
       widths.generic_container;
     if (tables.linkFacts !== undefined) {
-      const genericContainerIndex = readIndex(
-        bytes,
-        at + 8 + typeDefinitionTypeIndices * widths.type,
-        widths.generic_container,
-      );
+      const genericContainerIndex = readTypeGenericContainer(tables, index);
       if (
         genericContainerIndex < -1 ||
         genericContainerIndex >= genericContainerCount
@@ -549,10 +546,10 @@ function* readTypes(tables: MetadataTables): Generator<
           `type ${index} generic container ${genericContainerIndex} is outside the ${genericContainerCount} available rows`,
         );
       if (genericContainerIndex !== -1) {
-        const genericContainerAt =
-          section("genericContainers").offset +
-          genericContainerIndex * GENERIC_CONTAINER_RECORD_BYTES;
-        const argumentCount = bytes.readInt32LE(genericContainerAt + 4);
+        const argumentCount = readGenericContainer(
+          tables,
+          genericContainerIndex,
+        ).count;
         if (argumentCount < 0)
           throw new Il2cppMetadataFormatFailure(
             "index-out-of-range",
@@ -634,14 +631,12 @@ function* readMethods({
       );
     if (linkFacts !== undefined) {
       const returnAt = at + 4 + widths.type_definition;
-      const tokenAt =
-        returnAt +
-        widths.type +
-        (methodReturnParameterToken ? 4 : 0) +
-        widths.parameter +
-        widths.generic_container;
       linkFacts.returnTypes[index] = readIndex(bytes, returnAt, widths.type);
-      linkFacts.methodTokens[index] = bytes.readUInt32LE(tokenAt);
+      linkFacts.methodTokens[index] = bytes.readUInt32LE(
+        at +
+          methodContainerAt({ widths, methodReturnParameterToken }) +
+          widths.generic_container,
+      );
     }
     parameterRanges.push({
       start: readIndex(
@@ -759,7 +754,92 @@ export interface Il2cppMetadataLinkFacts {
   readonly genericTypeArgumentCounts: Int32Array;
   /** Demand-read names from this stable metadata snapshot, by GenericParameterIndex. */
   readonly genericParameterName: (index: number) => string | undefined;
+  /**
+   * Demand-read GenericContainerIndex of a type definition: -1 for a
+   * non-generic type, undefined when the index or layout is not decoded.
+   */
+  readonly typeGenericContainer: (index: number) => number | undefined;
+  /**
+   * Demand-read GenericContainerIndex of a method definition: -1 for a
+   * non-generic method, undefined when the index is out of range.
+   */
+  readonly methodGenericContainer: (index: number) => number | undefined;
+  /**
+   * Demand-read argument count and first GenericParameterIndex of a generic
+   * container; undefined out of range and for the counted (version 39)
+   * layout, whose container records are not decoded.
+   */
+  readonly genericContainer: (
+    index: number,
+  ) => { readonly count: number; readonly parameterStart: number } | undefined;
 }
+
+/** Byte offset of GenericContainerIndex in a method record; the token follows. */
+const methodContainerAt = ({
+  widths,
+  methodReturnParameterToken,
+}: Pick<MetadataTables, "widths" | "methodReturnParameterToken">) =>
+  4 +
+  widths.type_definition +
+  widths.type +
+  (methodReturnParameterToken ? 4 : 0) +
+  widths.parameter;
+
+/** Raw row interpretation; callers own index and layout admission. */
+const readTypeGenericContainer = (tables: MetadataTables, index: number) =>
+  readIndex(
+    tables.bytes,
+    tables.section("typeDefinitions").offset +
+      index * tables.recordBytes.typeDefinitions +
+      8 +
+      tables.typeDefinitionTypeIndices * tables.widths.type,
+    tables.widths.generic_container,
+  );
+
+/** ownerIndex, type_argc, is_method and genericParameterStart are int32. */
+const readGenericContainer = (tables: MetadataTables, index: number) => {
+  const at =
+    tables.section("genericContainers").offset +
+    index * GENERIC_CONTAINER_RECORD_BYTES;
+  return {
+    count: tables.bytes.readInt32LE(at + 4),
+    parameterStart: tables.bytes.readInt32LE(at + 12),
+  };
+};
+
+/** Type and method container indices and container records, read on demand. */
+const createGenericContainerReaders = (tables: MetadataTables) => {
+  const typeCount = tables.counts.typeDefinitions;
+  const containers = tables.section("genericContainers");
+  const containerCount =
+    tables.indexing === "counted"
+      ? 0
+      : Math.floor(containers.size / GENERIC_CONTAINER_RECORD_BYTES);
+  const inRange = (index: number, count: number) =>
+    Number.isInteger(index) && index >= 0 && index < count;
+  const methods = tables.section("methods"),
+    methodCount = tables.counts.methods,
+    methodBytes = tables.recordBytes.methods,
+    methodAt = methodContainerAt(tables);
+  return {
+    methodGenericContainer: (index: number): number | undefined =>
+      !inRange(index, methodCount)
+        ? undefined
+        : readIndex(
+            tables.bytes,
+            methods.offset + index * methodBytes + methodAt,
+            tables.widths.generic_container,
+          ),
+    typeGenericContainer: (index: number): number | undefined =>
+      tables.indexing === "counted" || !inRange(index, typeCount)
+        ? undefined
+        : readTypeGenericContainer(tables, index),
+    genericContainer: (index: number) =>
+      !inRange(index, containerCount)
+        ? undefined
+        : readGenericContainer(tables, index),
+  };
+};
 
 /** Own the row layout once; unused generic names allocate no arrays or strings. */
 const createGenericParameterReader = (tables: MetadataTables) => {
@@ -866,6 +946,7 @@ function* readMetadataCoreSteps(
           tables.counts.typeDefinitions,
         ),
         genericParameterName: createGenericParameterReader(tables),
+        ...createGenericContainerReaders(tables),
       },
     };
   yield;
@@ -892,23 +973,3 @@ function* readMetadataCoreSteps(
     link: tables.linkFacts,
   };
 }
-
-const runSteps = <T>(steps: Generator<void, T>): T => {
-  for (;;) {
-    const step = steps.next();
-    if (step.done) return step.value;
-  }
-};
-
-/** Synchronous consumption of the same decoder for byte-level callers. */
-export const readIl2cppMetadata = (
-  bytes: Buffer,
-  options: Il2cppMetadataReadOptions = {},
-): Il2cppMetadataDecoded => runSteps(readIl2cppMetadataSteps(bytes, options));
-
-/** Synchronous decoding that also retains the typed row facts used for native linking. */
-export const readIl2cppMetadataForLinking = (
-  bytes: Buffer,
-  options: Il2cppMetadataReadOptions = {},
-): Il2cppMetadataForLinking =>
-  runSteps(readIl2cppMetadataForLinkingSteps(bytes, options));

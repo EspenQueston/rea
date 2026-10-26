@@ -197,6 +197,14 @@ registrations/removals and dispatch, Node timers and cancellation handles, async
 `node:child_process` creation and ownership, configuration sources and direct
 defaults, request construction and response consumers, parse/coercion/
 validation boundaries, and built-in resource acquisition/release.
+Reassignments connect retained right-hand reads to the binding or property
+write. Compound assignments also retain the previous-value input; logical
+assignments keep conditional inputs as candidates. These edges describe
+influence without evaluating arithmetic or establishing execution order or the
+resulting value. Deferred callback bodies do not become inputs to the enclosing
+assignment. Computed method keys belong to the enclosing callable; parameter
+defaults and method bodies belong to the method. Uncertain later property reads
+remain opt-in through `include_ambiguous_dynamic_edges`.
 Global timer, `fetch`, `WebSocket`, `JSON.parse`, and coercion calls receive
 these built-in effects only when the file has no visible possible write to that
 global, including a computed write through a global object. The check does not
@@ -419,8 +427,11 @@ value. Earlier `break`/`continue` paths can leave a var initializer unexecuted.
 Legacy non-strict block-function copies are indexed on their outer variable
 owner, while strict/module and lexical-shadowing boundaries keep their values.
 A catch-shadowed var declaration keeps declaration ownership separate from its
-initializer's lexical assignment. Ordinary functions own an implicit arguments
-object; arrows retain lexical arguments lookup. Promise source identity uses
+initializer's lexical assignment, including object and array destructuring slots.
+Projected initializer facts retain their source and alias identity on the lexical
+recipient, so a later mutation through that alias prevents reporting the original
+object field as an unchanged constant. Ordinary functions own an implicit
+arguments object; arrows retain lexical arguments lookup. Promise source identity uses
 the same read-position selection and requires an unmodified intrinsic factory.
 
 Rebound values are evaluated at their read position: saving an incoming parameter
@@ -437,8 +448,10 @@ uncertainty rather than pretending to execute later writes. References
 handed back by local functions, methods, constructors, async functions, and
 generators also retain escape uncertainty, including when the call is read-only;
 this does not establish that a mutation occurred. Aliases
-and shared children in spread and rest copies retain that uncertainty; copied
-primitive slots and unrelated containing properties remain known. Object rest
+and shared children in spread and rest copies retain that uncertainty. Exposing
+the copy alone does not invalidate copied primitive slots or unrelated containing
+properties. Dynamic child writes such as `copy[key].value = 2` remain conservative
+about which original slot was selected. Object rest
 excludes consumed keys, array rest excludes the consumed prefix for known
 arrays, and later explicit data properties and methods replace earlier object
 spread references. A known array prefix does not expose values from a following
@@ -455,6 +468,11 @@ Receiver projections follow known data fields initialized from `this` or earlier
 self-referencing fields; static fields retain their declaring class identity.
 An alias cycle that repeatedly selects deeper children retains escape uncertainty
 at its recovered roots rather than claiming a fixed number of loop iterations.
+Equivalent member reads in a repeating loop share unknown ordering instead of
+creating a distinct capture for every branch history. Straight-line captures and
+once-only loop inputs retain their own selection sites. When unobserved suffixes
+are widened, their exact observed prefixes stay separate so unrelated siblings
+remain known.
 
 Writes through an object getter's returned receiver retain that uncertainty
 when the object is an array element, nested inside mixed object/array
@@ -499,8 +517,22 @@ escape uncertainty. External prototype changes and unsupported runtime protocols
 remain unknown rather than supplying exact post-invocation values.
 Identifier references and closure captures share Babel syntax-role facts plus
 explicit binding/write roles; noncomputed declaration keys and import/meta names
-are not lexical reads. Provenance-only expression-depth omissions enter the same typed source coverage
-as value-evaluation bounds and remain visible in retained application Evidence.
+are not lexical reads. TypeScript type positions, including `typeof` type queries
+and computed keys in erased signatures, do not evaluate JavaScript bindings or
+create runtime calls or captures. Decorators on declared class fields can still
+run when the class is defined, and a decorated declared or abstract field can
+evaluate its computed key. Provenance-only expression-depth omissions enter
+the same typed source coverage as value-evaluation bounds and remain visible in
+retained application Evidence.
+Immediate synchronous function results also share the loader reference owner.
+An expression arrow returning the retained CommonJS `require` can preserve that
+loader identity. Possible loader results with opaque alternatives or block
+bodies retain candidate uncertainty; async and generator results are their
+wrapper values.
+This does not interpret `typeof` or Proxy behavior in bundler shims. Historical
+source imports consume the same proven loader fact and keep their existing
+requirement for a known loader association.
+
 Direct generator and async calls produce iterators and
 Promises; body returns do not become direct call-result flows. Their unresolved
 consumption remains an explicit frontier. Replaced emitter bindings select their

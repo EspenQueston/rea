@@ -1,19 +1,23 @@
-import { AnalysisCleanupLeaseGroup } from "../artifacts/AnalysisCleanupLease.js";
+import {
+  AnalysisCleanupLeaseGroup,
+  AnalysisCleanupLease,
+} from "../artifacts/AnalysisCleanupLease.js";
 import { projectAnalysisError } from "../domain/analysisErrorProjection.js";
 import { ProviderCleanupError } from "../domain/providerCleanupError.js";
 import { PlaywrightBrowserScenarioProvider } from "./PlaywrightBrowserScenarioProvider.js";
-import { AnalysisCleanupLease } from "../artifacts/AnalysisCleanupLease.js";
 import { EventEmitter } from "node:events";
 
-import { beforeEach, expect, it, vi } from "vitest";
+import { beforeEach, expect, it, vi, type Mock } from "vitest";
+import type { PlaywrightScenarioStorage } from "./PlaywrightScenarioStorage.js";
 
 const mocks = vi.hoisted(() => ({
   openBrowser: vi.fn(),
   storage: undefined as
     | {
-        initialize: ReturnType<typeof vi.fn>;
-        settle: ReturnType<typeof vi.fn>;
-        close: ReturnType<typeof vi.fn>;
+        initialize: Mock<PlaywrightScenarioStorage["initialize"]>;
+        settle: Mock<PlaywrightScenarioStorage["settle"]>;
+        limitations: Mock<PlaywrightScenarioStorage["limitations"]>;
+        close: Mock<PlaywrightScenarioStorage["close"]>;
       }
     | undefined,
   finishEvents: vi.fn(),
@@ -26,9 +30,16 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("./CdpTargetSession.js", () => ({
-  openCdpEndpoint: async () => ({
-    discovery: { targets: [{ id: "target" }] },
-    connection: {
+  openCdpEndpoint: async (
+    _endpoint: unknown,
+    operation: Parameters<
+      import("./CdpTargetSessionOwner.js").CdpTargetSessionOwner["register"]
+    >[1],
+    _signal: unknown,
+    _limits: unknown,
+    owner: import("./CdpTargetSessionOwner.js").CdpTargetSessionOwner,
+  ) => {
+    const connection = {
       send: mocks.policySend,
       onEvent: (listener: typeof mocks.policyEvent) => {
         mocks.policyEvent = listener;
@@ -36,8 +47,13 @@ vi.mock("./CdpTargetSession.js", () => ({
       },
       close: mocks.policyTransportClose,
       beginCleanupGrace: mocks.policyBeginCleanupGrace,
-    },
-  }),
+    } as unknown as import("./CdpConnection.js").CdpConnection;
+    owner.register(connection, operation, "target");
+    return {
+      discovery: { targets: [{ id: "target" }] },
+      connection,
+    };
+  },
   attachCdpTargetSession: async (connection: unknown) => ({
     connection,
     sessionId: "policy-session",
@@ -203,11 +219,16 @@ const fixture = () => {
     profilePath: "/tmp/profile",
   });
   mocks.storage = {
-    initialize: vi.fn(async () => undefined),
-    settle: vi.fn(async () => undefined),
-    close: vi.fn(async (stopLoading = false) => ({
-      loadingStopped: stopLoading,
-    })),
+    initialize: vi.fn<PlaywrightScenarioStorage["initialize"]>(
+      async () => undefined,
+    ),
+    settle: vi.fn<PlaywrightScenarioStorage["settle"]>(async () => undefined),
+    limitations: vi.fn<PlaywrightScenarioStorage["limitations"]>(() => []),
+    close: vi.fn<PlaywrightScenarioStorage["close"]>(
+      async (stopLoading = false) => ({
+        loadingStopped: stopLoading,
+      }),
+    ),
   };
   return { cleanup, page, storage: mocks.storage };
 };
@@ -1038,7 +1059,7 @@ it("retries transport close without detaching an already released policy session
   const failure = new Error("transport close rejected");
   mocks.policyTransportClose.mockRejectedValueOnce(failure);
   await expect(session.close()).rejects.toMatchObject({
-    cause: failure,
+    cause: { cause: failure },
     cleanupIncomplete: true,
   });
   await expect(session.close()).resolves.toBe("disconnected-external");
@@ -1314,9 +1335,7 @@ it("preserves both cleanup failures and retries retained owners", async () => {
   const { cleanup, storage } = fixture();
   const detachFailure = new Error("CDP detach rejected");
   const transportFailure = new Error("Playwright transport close failed");
-  storage.close
-    .mockRejectedValueOnce(detachFailure)
-    .mockResolvedValueOnce(undefined);
+  storage.close.mockRejectedValueOnce(detachFailure);
   cleanup.close
     .mockRejectedValueOnce(transportFailure)
     .mockImplementationOnce(async (finishEvents?: () => Promise<void>) => {

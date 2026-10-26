@@ -1,26 +1,31 @@
-import { readArtifactInspectionSources } from "../domain/artifactInspection.js";
+import { analysisEvidenceSources } from "../application/AnalysisEvidenceSources.js";
 import type { AnalysisViewRequest } from "../domain/analysisView/analysisView.js";
 import { z } from "incur";
-import { parseEvidence, type Evidence } from "../domain/evidence.js";
+import {
+  parseEvidence,
+  withEvidenceCallerInputPath,
+  type Evidence,
+} from "../domain/evidence.js";
 import type { JsonValue } from "../domain/jsonValue.js";
 import { projectAnalysisError } from "../domain/analysisErrorProjection.js";
 import type { AnalysisError } from "../domain/analysisErrorBase.js";
-import { ok, type Result } from "../domain/result.js";
+import { err, ok, type Result } from "../domain/result.js";
 import { AnalysisInputError } from "../domain/analysisErrorCore.js";
 import { createEvidenceBundle } from "../domain/evidenceBundle.js";
 import { publishEvidenceDelivery } from "../application/EvidenceBundleCommands.js";
 import { inspectAnalysisViewValidated } from "../application/analysisView/AnalysisViewService.js";
+import { localPathStringSchema } from "../domain/localPath.js";
 import { absoluteCallerPath } from "../filesystem/callerPath.js";
 import { finishAnalysisCommand } from "./finishAnalysisCommand.js";
+import { analysisInputErrorFromIssues } from "../domain/inputIssueProjection.js";
+import type { ZodSafeParseResult } from "zod";
 
 export const analysisEvidenceDeliveryOptions = {
   detail: z
     .enum(["complete", "summary"])
     .default("complete")
     .describe("Deliver complete Evidence, or a summary with --evidence_output"),
-  evidence_output: z
-    .string()
-    .min(1)
+  evidence_output: localPathStringSchema
     .optional()
     .describe(
       "Save complete Evidence as a bundle; required for summary delivery. Never overwrites.",
@@ -58,6 +63,54 @@ export const cliEvidenceDeliveryInputError = (
         },
       ])
     : undefined;
+
+/** Parse delivery JSON once and enforce its owning schema before opening a target. */
+export const parseCliAnalysisEvidenceDelivery = <
+  Delivery extends {
+    readonly detail: "complete" | "summary";
+    readonly view?: AnalysisViewRequest | undefined;
+  },
+>(
+  operation: string,
+  options: {
+    readonly detail: "complete" | "summary";
+    readonly evidence_output?: string | undefined;
+    readonly view?: string | undefined;
+  },
+  schema: {
+    readonly safeParse: (input: unknown) => ZodSafeParseResult<Delivery>;
+  },
+): Result<
+  Delivery & { readonly evidenceOutput: string | undefined },
+  AnalysisError
+> => {
+  let view: unknown;
+  try {
+    view = options.view === undefined ? undefined : JSON.parse(options.view);
+  } catch (cause) {
+    return err(
+      new AnalysisInputError(operation, { cause }, [
+        {
+          path: ["view"],
+          reason: "invalid_format",
+          message: "view must be valid JSON",
+        },
+      ]),
+    );
+  }
+  const raw = {
+    detail: options.detail,
+    ...(view === undefined ? {} : { view }),
+  };
+  const parsed = schema.safeParse(raw);
+  if (!parsed.success)
+    return err(
+      analysisInputErrorFromIssues(operation, parsed.error.issues, raw),
+    );
+  const value = { ...parsed.data, evidenceOutput: options.evidence_output };
+  const invalid = cliEvidenceDeliveryInputError({ ...value, operation });
+  return invalid === undefined ? ok(value) : err(invalid);
+};
 
 /** One-shot delivery owns report publication; analysis keeps its own cleanup owner. */
 export const deliverCliAnalysisEvidence = async (
@@ -131,26 +184,25 @@ export const publishCliAnalysisEvidence = async (
     return projectAnalysisError(
       delivered.error.retainPartialObservation(complete),
     );
-  const inspectionSources =
-    complete.operation === "inspect_artifact"
-      ? readArtifactInspectionSources(complete.normalized_result)
-      : ok([]);
+  // This projection answers the same direct invocation as its parent. Later
+  // inspect_analysis_view calls own their own input and do not inherit it.
+  const selected =
+    detail === "summary" && complete.caller_input_path !== undefined
+      ? withEvidenceCallerInputPath(delivered.value, complete.caller_input_path)
+      : delivered.value;
+  const inspectionSources = analysisEvidenceSources(complete);
   if (!inspectionSources.ok)
-    return projectAnalysisError(
-      inspectionSources.error.retainPartialObservation(complete),
-    );
+    return projectAnalysisError(inspectionSources.error);
   const published = await publishEvidenceDelivery({
     bundle: createEvidenceBundle([
       ...new Map(
-        [
-          ...(input.sourceEvidence ?? []),
-          ...inspectionSources.value,
-          complete,
-        ].map((record) => [record.evidence_id, record]),
+        [...(input.sourceEvidence ?? []), ...inspectionSources.value].map(
+          (record) => [record.evidence_id, record],
+        ),
       ).values(),
     ]),
     complete,
-    delivered: delivered.value,
+    delivered: selected,
     outputPath: absoluteCallerPath(evidenceOutput),
     operation,
     signal,

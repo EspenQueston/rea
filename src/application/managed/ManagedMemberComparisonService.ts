@@ -1,3 +1,4 @@
+import { parseAnalysisInput } from "../AnalysisInput.js";
 import { z } from "zod";
 
 import {
@@ -28,7 +29,6 @@ import {
   MANAGED_STATIC_PROVIDER,
   MANAGED_WORKFLOW_PROVIDER,
 } from "../../domain/investigationProviders.js";
-import { analysisInputErrorFromIssues } from "../../domain/inputIssueProjection.js";
 
 const managedMemberComparisonRequestSchema = z.strictObject({
   left: z.unknown(),
@@ -46,16 +46,15 @@ export const executeManagedMemberComparison = (
   input: unknown,
 ): Result<ManagedMemberComparisonExecution, AnalysisError> => {
   const operation = "compare_managed_members";
-  const request = managedMemberComparisonRequestSchema.safeParse(input);
-  if (!request.success)
-    return err(
-      analysisInputErrorFromIssues(operation, request.error.issues, input, {
-        cause: request.error,
-      }),
-    );
-  const left = readManagedMemberEvidence(request.data.left, "left");
+  const request = parseAnalysisInput(
+    operation,
+    input,
+    managedMemberComparisonRequestSchema,
+  );
+  if (!request.ok) return request;
+  const left = readManagedMemberEvidence(request.value.left, "left");
   if (!left.ok) return left;
-  const right = readManagedMemberEvidence(request.data.right, "right");
+  const right = readManagedMemberEvidence(request.value.right, "right");
   if (!right.ok) return right;
   if (left.value.evidence.evidence_id === right.value.evidence.evidence_id)
     return err(
@@ -118,9 +117,10 @@ export const compareManagedMemberPaths = async (
     if (!rightTarget.ok) return err(rightTarget.error);
     const inspectTarget = async (
       target: BinaryTarget,
-      selectedPath: string,
+      inputField: "leftPath" | "rightPath",
     ) => {
       const { path } = target;
+      const selectedPath = input[inputField];
       let snapshot: Awaited<ReturnType<typeof readManagedSnapshot>>;
       try {
         snapshot = await readSnapshot(
@@ -143,7 +143,12 @@ export const compareManagedMemberPaths = async (
         });
       } catch (cause: unknown) {
         throw (
-          managedInspectionInputFailure(operation, selectedPath, cause) ?? cause
+          managedInspectionInputFailure(
+            operation,
+            selectedPath,
+            cause,
+            inputField,
+          ) ?? cause
         );
       }
       const evidence = createEvidence(target, MANAGED_STATIC_PROVIDER, {
@@ -156,9 +161,9 @@ export const compareManagedMemberPaths = async (
       });
       return { inspection, evidence };
     };
-    const left = await inspectTarget(leftTarget.value, input.leftPath);
+    const left = await inspectTarget(leftTarget.value, "leftPath");
     partialEvidence = left.evidence;
-    const right = await inspectTarget(rightTarget.value, input.rightPath);
+    const right = await inspectTarget(rightTarget.value, "rightPath");
     const result = compareManagedMembers(
       {
         evidenceId: left.evidence.evidence_id,

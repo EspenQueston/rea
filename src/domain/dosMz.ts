@@ -11,6 +11,14 @@ export const dosMzImageByteLength = (bytes: Buffer): Result<number, string> => {
   return ok((pages - 1) * 512 + (lastPageBytes === 0 ? 512 : lastPageBytes));
 };
 
+/** One validated relocation, retaining raw words and both target coordinate spaces. */
+export interface DosMzRelocation {
+  readonly segment: number;
+  readonly offset: number;
+  readonly moduleOffset: number;
+  readonly fileOffset: number;
+}
+
 /** DOS load-module coordinates before applying the loader's segment relocation. */
 export interface DosMzHeader {
   readonly headerBytes: number;
@@ -19,6 +27,7 @@ export interface DosMzHeader {
   readonly overlayBytes: number;
   readonly relocationCount: number;
   readonly relocationTableOffset: number;
+  readonly relocations: readonly DosMzRelocation[];
   readonly entrySegment: number;
   readonly entryOffset: number;
 }
@@ -72,11 +81,12 @@ export const observeMzWindowsHeader = (
   const headerBytes = bytes.readUInt16LE(8) * 16;
   const relocationCount = bytes.readUInt16LE(6);
   const tableStart = bytes.readUInt16LE(24);
+  const tableEnd = tableStart + relocationCount * 4;
   if (
     headerBytes !== 0 &&
     relocationCount > 0 &&
     tableStart < 64 &&
-    tableStart + relocationCount * 4 > 60
+    tableEnd > 60
   )
     return { state: "absent" };
   const offset = bytes.readUInt32LE(60);
@@ -92,6 +102,17 @@ export const observeMzWindowsHeader = (
   const signature = windowsHeaderSignature(available);
   if (signature !== "other" && signature !== "unobserved")
     return { state: "declared", offset, signature };
+  // A relocation table that ends inside a complete DOS header owns the rest of
+  // that header as padding. An observed non-Windows signature confirms that a
+  // dword in that padding is DOS data. An unread signature still requests the
+  // bounded follow-up read when enough bytes remain to recognize one.
+  if (
+    headerBytes >= 64 &&
+    relocationCount > 0 &&
+    tableEnd <= 60 &&
+    (signature === "other" || fileSize - offset < 2)
+  )
+    return { state: "absent" };
   if (headerBytes === 0 || headerBytes >= 64) {
     const remaining = fileSize - offset;
     const needsMore =
@@ -162,10 +183,11 @@ export const parseDosMzHeader = (
   if (relocationCount > 0 && tableEnd > bytes.length)
     return err("truncated DOS MZ relocation table");
   const moduleBytes = imageBytes - headerBytes;
-  const relocations = validateRelocations(
+  const relocations = readRelocations(
     bytes,
     relocationTableOffset,
     relocationCount,
+    headerBytes,
     moduleBytes,
   );
   if (!relocations.ok) return relocations;
@@ -180,6 +202,7 @@ export const parseDosMzHeader = (
     overlayBytes: fileSize - imageBytes,
     relocationCount,
     relocationTableOffset,
+    relocations: relocations.value,
     entrySegment,
     entryOffset,
   });
@@ -200,18 +223,27 @@ export const parseMzHeaderEvidence = (
   windowsHeader: observeMzWindowsHeader(bytes, fileSize, signatureEvidence),
 });
 
-const validateRelocations = (
+const readRelocations = (
   bytes: Buffer,
   relocationTableOffset: number,
   relocationCount: number,
+  headerBytes: number,
   moduleBytes: number,
-): Result<void, string> => {
+): Result<readonly DosMzRelocation[], string> => {
+  const relocations: DosMzRelocation[] = [];
   for (let index = 0; index < relocationCount; index += 1) {
     const record = relocationTableOffset + index * 4;
     const offset = bytes.readUInt16LE(record);
     const segment = bytes.readUInt16LE(record + 2);
-    if (segment * 16 + offset + 2 > moduleBytes)
+    const moduleOffset = segment * 16 + offset;
+    if (moduleOffset + 2 > moduleBytes)
       return err(`DOS MZ relocation ${index} points outside its load module`);
+    relocations.push({
+      segment,
+      offset,
+      moduleOffset,
+      fileOffset: headerBytes + moduleOffset,
+    });
   }
-  return ok(undefined);
+  return ok(relocations);
 };

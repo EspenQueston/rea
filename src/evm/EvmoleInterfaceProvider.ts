@@ -1,3 +1,4 @@
+import { safeParseUtf8Json } from "../domain/safeJson.js";
 import { createHash, randomUUID } from "node:crypto";
 import { access, readFile, stat, writeFile } from "node:fs/promises";
 import { constants } from "node:fs";
@@ -24,6 +25,7 @@ import {
 import {
   OwnedCommandFailure,
   ownedCommandResources,
+  runOwnedCommand,
 } from "../process/OwnedCommand.js";
 import {
   AnalysisError,
@@ -41,13 +43,12 @@ import { evmInterfaceEvidence } from "../domain/evm/evmInterfaceEvidence.js";
 import {
   DEFAULT_EVM_TIMEOUT_MS,
   type InspectEvmInterfaceInput,
+  evmInterfaceSchema,
 } from "../domain/evm/evmInterface.js";
-import { evmInterfaceSchema } from "../domain/evm/evmInterface.js";
 import { solidityMetadataSchema } from "../domain/evm/solidityMetadata.js";
 import { ProviderAdapterError } from "../domain/providerAdapterError.js";
 import { ProviderCleanupError } from "../domain/providerCleanupError.js";
 import { err, ok, type Result } from "../domain/result.js";
-import { runOwnedCommand } from "../process/OwnedCommand.js";
 import { PrivateRuntimeRoot } from "../process/PrivateRuntimeRoot.js";
 import type { ProviderProcessSupervisor } from "../process/ProviderProcess.js";
 import {
@@ -58,7 +59,7 @@ import {
 } from "./EvmoleFailures.js";
 import {
   evmoleInterfaceReplySchema,
-  projectEvmoleInterface,
+  projectEvmoleFunctions,
 } from "./EvmoleInterfaceAdapter.js";
 import {
   EVMOLE_PROVIDER_IDENTITY,
@@ -569,7 +570,9 @@ export class EvmoleInterfaceProvider implements EvmInterfacePort {
           undefined,
           this.#resources,
         );
-        reply = replySchema.parse(JSON.parse(file.bytes.toString("utf8")));
+        const decoded = safeParseUtf8Json(file.bytes);
+        if (!decoded.ok) throw decoded.cause;
+        reply = replySchema.parse(decoded.value);
       } catch (cause: unknown) {
         const cleanup =
           cause instanceof ArtifactReaderFailure ? cause.cleanup : undefined;
@@ -678,7 +681,7 @@ export class EvmoleInterfaceProvider implements EvmInterfacePort {
           hardfork: "unknown",
         },
         evidence_kind: "inferred",
-        functions: projectEvmoleInterface(reply.raw).functions,
+        functions: projectEvmoleFunctions(reply.raw),
         discovery_completeness: "unknown",
         runtime_execution: "not-performed",
         diagnostics: {

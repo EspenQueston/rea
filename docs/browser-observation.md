@@ -94,6 +94,14 @@ content. Actual JSON properties with those names remain content. Reference-only
 objects, unsupported values, and opaque cookie partition identities remain
 incomplete. Previously exported fingerprints are not recomputed; recapture both
 sides when comparing captures produced across this decoder change.
+IndexedDB schema fingerprints with `projection_version: 2` include the observed
+database version and object-store definitions. A missing, malformed, or imprecise
+version leaves the schema fingerprint incomplete while retaining observed store
+facts. Historical fingerprints without this marker covered object stores only:
+matching historical hashes cannot establish unchanged database versions, and a
+historical hash is not compared with a version-bearing hash. Recapture both
+sides for a complete IndexedDB version comparison; other proven storage changes
+remain reportable.
 
 Script comparison groups observations by reported URL and compares unordered
 content samples. Producer inventory keys include optional metadata, so a changed
@@ -371,9 +379,17 @@ REA establishes a main-frame origin boundary before enabling Runtime, Debugger, 
 An observed navigation also takes precedence over failures from stale
 document reads, such as a script ID invalidated by reload; cancellation remains
 cancellation. Retry after navigation settles, or refresh target discovery if
-the selected page was replaced. Screenshot origin refusals identify the
-current document's permitted-origin scope and direct the caller to select a
-permitted document or explicitly revise `allowed_origins`.
+the selected page was replaced. Origin-scope refusals from page inspection,
+runtime observation, screenshots, and WebMCP discovery explain the permitted
+HTTP(S) origin scope and direct the caller to select a permitted document or
+explicitly revise `allowed_origins`. Page capture also preserves an observed
+main-frame scope violation when a later document read fails. An unresolved
+initial main frame does not establish an origin violation; its bounded startup
+retries retain a distinct refusal.
+
+Screenshot capture requires a valid main-frame identity. Malformed identity
+produces a protocol failure; a readable child frame cannot substitute for the
+main frame.
 
 The web-session timeline uses CDP monotonic seconds where the event producer
 provides a comparable timestamp; absent or invalid timestamps are `null` rather
@@ -396,8 +412,12 @@ allowance; exhaustion fails the observation explicitly instead of guessing scope
 
 ## Data minimization
 
-The Link projection parses repeated CDP header field lines independently and
-retains their declarations in order. Each link keeps its target in `href` and
+Response metadata parses repeated CDP header field lines independently. The
+Link projection retains their declarations in order. `csp.directives` lists the
+directives of every CSP policy in order, across field lines and comma-separated
+policies, without recording policy boundaries, so a directive name can repeat.
+Single-valued policy fields combine their lines as one comma-separated value,
+as RFC 9110 specifies. Each link keeps its target in `href` and
 its relationship context in `context_url` with a separate `context_scope`;
 absent `anchor` uses the response URL, while a relative `anchor` resolves
 against that URL. Anchored links remain in the projection, but a `link_rel`
@@ -414,6 +434,17 @@ complete Structured Field Item, including parameters such as `report-to`.
 These are declarations, not an assessment of the document's effective policy;
 absent, malformed or non-token items project as `null`.
 
+Console entries, WebSocket frame summaries, and selected request/response JSON
+shape outputs share one 8 MiB retained-observation allowance per capture. Shape
+inference admits expanded path bytes before allocating those paths, including
+escaped and Unicode property names. Replacing or removing a request's shapes
+refunds their retained charges. A refused body shape preserves network metadata
+and any captured peer shape with `resource_budget_exhausted` coverage; a refused
+WebSocket frame is counted as dropped rather than reclassified as non-JSON text.
+The allowance has no runtime override. Protocol messages and JSON input parsing
+remain subject to their separate transport admission; this output allowance does
+not bound the whole process heap.
+
 REA retains local observation data and removes only URL userinfo credentials, explicitly declared scenario secrets, and values from structured credential/storage fields:
 
 - URL observations preserve the complete local URL, including query values, fragments, duplicate parameters, and their order. Only username/password userinfo is removed; malformed original URL strings remain available with `origin: null`.
@@ -421,7 +452,7 @@ REA retains local observation data and removes only URL userinfo credentials, ex
 - Supported DOM URL attributes are projected separately as resolved destinations. Empty `action` on HTML or XHTML forms and empty `formaction` on HTML or XHTML submit controls resolve to the document URL; other relative URL attributes resolve against the captured document base.
 - Accessibility structure and reported roles are retained by default, while names and descriptions require `include_accessibility_text: true`. The browser protocol may omit an individual role; that role remains unknown for comparison. Other observed accessibility differences can still establish a change.
 - Network observations retain method, status, MIME type, size, type, initiator stack location, and complete URLs with userinfo credentials removed. Redirects reported by CDP are attached as ordered `redirects` on the one request ID, with the prior request URL, CDP response URL, method/type, response status/MIME/encoded length, request timestamp, and the next `requestWillBeSent` event timestamp. CDP delivers `redirectResponse` with that next request event, so the latter is an event boundary rather than an exact response timestamp. Redirect response headers and bodies are discarded; hops outside the selected origins are discarded with the request chain. Headers are discarded after an allowlisted projection of length/encoding, structured CSP/Link/policy fields, and untrusted agent hints. Cookies and authorization headers are never retained.
-- Request/response bodies are not requested or parsed by default. When selected, only allowed-origin JSON media types are read, converted immediately to complete value-free typed paths, types and observation counts, and discarded. Each path segment is either `{ "kind": "property", "name": "raw property name" }` or `{ "kind": "array-element" }`; array-element types include primitives and nested arrays. Literal `*` properties remain distinct from array elements. `Network.getResponseBody` is never sent unless JSON body shape capture is selected. A JSON-typed request body that CDP reports through `hasPostData` but omits from `postData`, or that cannot be parsed as JSON, makes `json_body_shapes` unavailable. That request's `body_shapes.status` is `partial`, not `included`, when only its response shape was captured. Comparison uses body shapes only when both captures selected them, and compares request/response shapes only where both observations provide those facts. Unavailable or truncated selected coverage makes equivalence unknown; observed differences still report changed.
+- Request/response bodies are not requested or parsed by default. When selected, only allowed-origin JSON media types are read, converted immediately to complete value-free typed paths, types and observation counts, and discarded. Each path segment is either `{ "kind": "property", "name": "raw property name" }` or `{ "kind": "array-element" }`; array-element types include primitives and nested arrays. Literal `*` properties remain distinct from array elements. `Network.getResponseBody` is never sent unless JSON body shape capture is selected. A JSON-typed request body that CDP reports through `hasPostData` but omits from `postData`, or that cannot be parsed as JSON, makes `json_body_shapes` unavailable. That request's `body_shapes.status` is `partial`, not `included`, when only its response shape was captured. Base64 response bytes must be valid UTF-8 before JSON interpretation; invalid bytes leave the response shape unavailable and preserve any observed request shape and network metadata. Producer-decoded strings and genuine U+FFFD characters retain their reported meaning. Comparison uses body shapes only when both captures selected them, and compares request/response shapes only where both observations provide those facts. Unavailable or truncated selected coverage makes equivalence unknown; observed differences still report changed.
   For normalized passive inputs with complete request inventories on both sides,
   request additions and removals remain observable even when selected body shapes,
   response metadata, or WebSocket coverage are unavailable. HTTP request and
@@ -578,12 +609,39 @@ Network and console coverage starts only after REA attaches and enables the rele
 
 Source maps are not fetched by inspection. Bundle analysis fetches them only when `fetch_source_maps` is selected, with exact-origin redirect checks and no credentials, cookies, or referrer. Each fetch operation uses `source_map_fetch_timeout_ms` (default 30000) and a 64 MiB aggregate streamed-response budget across redirects. The byte budget has no runtime override. A fetch overrun is an item limitation, not a thrown analysis timeout. A deadline or byte-limit failure remains explicitly unavailable and makes bundle completeness partial. Source-map decoding also bounds raw resolved identities to 64 MiB and aggregate inline evidence to 32 MiB. Failed maps preserve their failure context when it fits; if another context cannot fit, collection stops with the full requested count, the returned processed count, and an explicit unknown-results limitation. Retained mappings and original sources are returned inline. See [source-location limits](web-source-location.md) for the structural decoder bounds. Original source artifacts with `.ts`, `.tsx`, `.mts`, or `.cts` suffixes carry `text/typescript`; other source names retain `text/javascript`.
 
+A fully read response that fails UTF-8, JSON, mapping, or structural validation
+retains `artifact: null`, empty original-source, module-edge, and mapping
+arrays, and an explicit failure limitation. Invalid content is `invalid`;
+decoder or structural capacity refusal is `fetch_failed`. Its optional
+`response_identity` records the complete body's SHA-256 digest, byte count,
+and `fetch-response-body-bytes` representation without retaining malformed
+text or charging that text to the 32 MiB output budget. These are bytes
+delivered by Fetch after HTTP content decoding and before UTF-8 decoding, not
+HTTP wire bytes. The identity is absent when the body was not fully read, and
+older observations may omit it. A response whose text cannot fit the existing
+output budget is likewise `fetch_failed` with text omitted and completed-body
+identity; JSON parsing and source-map decoding are not attempted. Successful and partial maps keep their
+full text artifacts. Their original text, including an initial BOM or XSSI
+line, remains distinct from the parsing view that removes that framing.
+Collection reads the body once and does not raise its response or output limits.
+
 When fetching is selected, source-map `excluded` facts preserve the capture
 ledger's reasons and counts for declarations rejected before download. No
 disallowed URL details are retained or fetched. `requested` and `processed`
 count the admitted fetch requests; exclusions are counted separately. Excluded
 declarations make the collection unavailable, or partial when maps were retained.
 An empty collection with no declarations remains `not_requested`.
+
+If the caller cancels while later source maps are being fetched, the failure's
+partial Evidence retains the captured page and every completed map item. Its
+`normalized_result.kind` is `web-bundle-acquisition` and
+`analysis_status` is `not_performed`: no script-analysis result is claimed.
+`source_maps.requested` remains the admitted request count,
+`source_maps.processed` counts completed items, and any unprocessed requests
+have an explicit unknown-results limitation. Capture exclusions remain in the
+same collection. The cancellation error keeps the caller's exact reason;
+an already observed response resource or cleanup failure keeps its own error
+category and cleanup owner.
 
 Source-map items retain the script's `declared_url` separately from the observed
 `effective_url`. Successful maps use the latter as their source-resolution base.

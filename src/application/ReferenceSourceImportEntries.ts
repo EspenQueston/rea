@@ -3,10 +3,10 @@ import { createHash } from "node:crypto";
 import { posix } from "node:path";
 
 import type { JavaScriptPackageType } from "../domain/javascript/javascriptSourceParser.js";
-import { decodeJavaScriptModuleUrlPath } from "../domain/javascript/javascriptModuleSpecifier.js";
 import { logicalPathEscapesRoot } from "../domain/artifactIdentity.js";
 import {
   createReferenceSourcePathLookup,
+  decodeReferenceSourceModuleUrlPath,
   isPortableAbsoluteReferenceTarget,
   type ReferenceSourcePathLookup,
 } from "../domain/referenceSourcePathIdentity.js";
@@ -269,9 +269,9 @@ const selectPackageMain = (
   // package, and a trailing separator does not make the entry a directory.
   if (posix.isAbsolute(manifest.main))
     return { to: posix.normalize(manifest.main), resolution: "unresolved" };
-  const target = posix
-    .normalize(posix.join(packageDirectory, manifest.main))
-    .replace(/(?<=.)\/+$/u, "");
+  // Joining "." strips the trailing separator run with path semantics; a
+  // lookbehind regex kept separators behind line terminators (main "lib\n/").
+  const target = posix.join(posix.join(packageDirectory, manifest.main), ".");
   // Node would load a declared entry outside the imported root.
   if (logicalPathEscapesRoot(target))
     return { to: target, resolution: "unresolved" };
@@ -322,7 +322,7 @@ const importLookupPath = (
     );
   if (!target.pathname.startsWith("/rea-reference/"))
     return err("The module URL escapes the selected source inventory.");
-  const decoded = decodeJavaScriptModuleUrlPath(
+  const decoded = decodeReferenceSourceModuleUrlPath(
     target.pathname.slice("/rea-reference/".length),
   );
   return decoded.ok
@@ -395,9 +395,15 @@ const resolveInternalSpecifier = (
     return packageMainForDirectory(normalized, context) !== undefined
       ? selectPackageMain(normalized, undefined, context, mode)
       : { to: normalized, resolution: "unresolved" };
+  // posix.normalize preserves the specifier's trailing slash while
+  // dirname(match) never carries one; derive the directory identity with path
+  // semantics (joining "." collapses trailing slashes, including ones a regex
+  // would keep behind a line terminator) so a trailing-slash reference still
+  // reaches package-main selection the same way the plain spelling does.
+  const directory = posix.join(normalized, ".");
   const resolvedThroughIndex =
     posix.basename(match).startsWith("index.") &&
-    posix.dirname(match).normalize("NFC") === normalized.normalize("NFC");
+    posix.dirname(match).normalize("NFC") === directory.normalize("NFC");
   return resolvedThroughIndex
     ? selectPackageMain(posix.dirname(match), match, context, mode)
     : { to: match, resolution: "internal" };
@@ -528,7 +534,6 @@ const appendReadEntry = (
 /** Convert bounded reader observations into graph entries and parsed edges. */
 export const parseReferenceSourceEntries = (
   read: ReferenceSourceRead,
-  filePaths: ReadonlySet<string>,
   exclusions: HistoricalSourceGraphInput["exclusions"],
   signal?: AbortSignal,
 ): ParsedReferenceSourceEntries => {
@@ -544,7 +549,11 @@ export const parseReferenceSourceEntries = (
     );
   const packageInventory = readPackageMetadata(read, exclusions);
   const context: SpecifierContext = {
-    lookupPath: createReferenceSourcePathLookup(filePaths),
+    lookupPath: createReferenceSourcePathLookup(
+      read.entries
+        .filter((entry) => entry.status === "read" && entry.kind === "file")
+        .map((entry) => entry.path),
+    ),
     packages: packageInventory.packages,
     packageManifestPathLookup: packageInventory.pathLookup,
   };

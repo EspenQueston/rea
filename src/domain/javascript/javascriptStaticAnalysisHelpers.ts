@@ -13,7 +13,6 @@ import type {
 } from "./javascriptStaticAnalysisTypes.js";
 import {
   readExactJavaScriptLiteral,
-  runtimeFunctionParameters,
   semanticStaticPropertyKey,
   semanticStaticPropertyName,
   unwrapJavaScriptExpression,
@@ -23,10 +22,17 @@ import {
   compareUnicodeCodePoints,
   compositeKey,
 } from "../unicodeCodePointOrder.js";
+import { unexaminedJavaScriptStaticCoverage } from "./javascriptStaticCoverage.js";
 
 /** Explicit result for source text that Babel cannot parse. */
 export const failedJavaScriptStaticAnalysis = (): JavaScriptStaticAnalysis => ({
   parse_status: "failed",
+  analysis_coverage: {
+    ...unexaminedJavaScriptStaticCoverage(
+      "JavaScript source could not be parsed.",
+    ),
+    syntax: { status: "failed", error_count: null },
+  },
   parse_error_count: 1,
   visited_ast_nodes: 0,
   references: [],
@@ -144,14 +150,6 @@ export const modulePropertyName = (
     : `[unknown@${String(property.start ?? -1)}]`;
 };
 
-/** Read the factory-local bundler require parameter when declared. */
-export const factoryRequireName = (
-  factory: t.FunctionExpression | t.ArrowFunctionExpression | t.ObjectMethod,
-): string | null => {
-  const parameter = runtimeFunctionParameters(factory)[2];
-  return t.isIdentifier(parameter) ? parameter.name : null;
-};
-
 /** Collect all unique static literal values from an array. */
 export const staticArrayValues = (
   array: t.ArrayExpression,
@@ -267,12 +265,6 @@ export interface JavaScriptStaticSourceUrlPath {
   readonly directory: boolean;
 }
 
-/** Read a literal `new URL(relative, import.meta.url)` shape without evaluation. */
-export const staticSourceRelativeUrlPath = (
-  node: t.Node,
-): JavaScriptStaticSourceUrlPath | undefined =>
-  isSourceFileUrl(node) ? sourceRelativeFileUrlPath(node) : undefined;
-
 /** Convert an exact static file URL expression to a POSIX path. */
 export const staticFileUrlPath = (
   node: t.CallExpression | t.NewExpression,
@@ -282,8 +274,8 @@ export const staticFileUrlPath = (
   const rawArgument = argumentNode(node.arguments[0]);
   if (rawArgument === undefined) return undefined;
   const argument = unwrapJavaScriptExpression(rawArgument).node;
-  if (isSourceFileUrl(argument) && pathIntrinsics?.(argument, "source-url"))
-    return sourceRelativeFileUrlPath(argument)?.path;
+  if (t.isNewExpression(argument) && pathIntrinsics?.(argument, "source-url"))
+    return staticSourceRelativeUrlPath(argument)?.path;
   const value = staticPath(argument, pathIntrinsics);
   const rawPath = value?.split(/[?#]/u, 1)[0] ?? "";
   if (
@@ -308,9 +300,9 @@ export const staticFileUrlPath = (
   }
 };
 
-/** Project a known source-relative URL through the actual file URL decoder. */
-const sourceRelativeFileUrlPath = (
-  node: t.CallExpression | t.NewExpression,
+/** Decode a source-relative URL after the caller proves constructor and base identity. */
+export const staticSourceRelativeUrlPath = (
+  node: t.NewExpression,
 ): JavaScriptStaticSourceUrlPath | undefined => {
   const value = stringValue(node.arguments[0]);
   if (
@@ -349,14 +341,6 @@ const sourceRelativeFileUrlPath = (
     return undefined;
   }
 };
-
-const isSourceFileUrl = (
-  node: t.Node,
-): node is t.CallExpression | t.NewExpression =>
-  (t.isCallExpression(node) || t.isNewExpression(node)) &&
-  (calleeName(node.callee) === "URL" ||
-    calleeName(node.callee).endsWith(".URL")) &&
-  isFileIdentity(argumentNode(node.arguments[1]));
 
 const staticResolvedPath = (
   node: t.CallExpression | t.NewExpression,

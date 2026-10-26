@@ -10,11 +10,14 @@ import {
 } from "./ghidraLanguageOverride.js";
 import { ghidraDisabledAnalyzersSchema } from "./ghidraDisabledAnalyzers.js";
 import {
-  DEFAULT_GHIDRA_STARTUP_TIMEOUT_MS,
-  DEFAULT_HOPPER_STARTUP_TIMEOUT_MS,
   DEFAULT_SWIFTC_COMPILE_TIMEOUT_MS,
+  ghidraDecompileTimeoutSchema,
   providerStartupTimeoutSchema,
 } from "./providerStartupTimeout.js";
+import {
+  DEFAULT_GHIDRA_STARTUP_TIMEOUT_MS,
+  DEFAULT_HOPPER_STARTUP_TIMEOUT_MS,
+} from "../domain/analysisResourceLimits.js";
 import { mcpInputSchemaProfileSchema } from "./mcpInputSchemaProfile.js";
 import { mcpOutputSchemaProfileSchema } from "./mcpOutputSchemaProfile.js";
 import { mcpResponseBudgetSchema } from "./mcpResponseBudget.js";
@@ -29,6 +32,7 @@ import {
   mcpInitializeBudgetMsSchema,
   mcpToolsListBudgetMsSchema,
 } from "./mcpStartupBudgets.js";
+import { mcpToolFamiliesSchema } from "./mcpToolFamilies.js";
 import { parseLoaderArgs, parseStringArray } from "./parsers.js";
 import { processStartConfigurationSchema } from "./processStart.js";
 
@@ -46,6 +50,7 @@ const environmentSchema = z.object({
   REA_MCP_FIRST_CATALOG_BUDGET_MS: mcpFirstCatalogBudgetMsSchema.optional(),
   REA_MCP_DOCTOR_DEADLINE_MS: mcpDoctorDeadlineMsSchema.optional(),
   REA_MCP_INPUT_SCHEMA_PROFILE: mcpInputSchemaProfileSchema.optional(),
+  REA_MCP_TOOL_FAMILIES: mcpToolFamiliesSchema.optional(),
   REA_MCP_OUTPUT_SCHEMA_PROFILE: mcpOutputSchemaProfileSchema.optional(),
   REA_IDA_MCP_CONFIG: z
     .string()
@@ -77,6 +82,7 @@ const environmentSchema = z.object({
   REA_SWIFTC_COMPILE_TIMEOUT_MS: providerStartupTimeoutSchema.default(
     DEFAULT_SWIFTC_COMPILE_TIMEOUT_MS,
   ),
+  REA_GHIDRA_DECOMPILE_TIMEOUT_SECONDS: ghidraDecompileTimeoutSchema.optional(),
   REA_GHIDRA_LANGUAGE_ID: ghidraLanguageIdSchema.optional(),
   REA_GHIDRA_COMPILER_SPEC_ID: ghidraCompilerSpecIdSchema.optional(),
   REA_GHIDRA_DISABLED_ANALYZERS: ghidraDisabledAnalyzersSchema.optional(),

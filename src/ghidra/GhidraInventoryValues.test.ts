@@ -5,6 +5,57 @@ import {
   parseGhidraInventoryResult,
 } from "./GhidraInventoryValues.js";
 
+it.each(["other", 42, null, {}])(
+  "rejects an invalid own destination with value %j before admitting any batch naming subset",
+  (value) => {
+    const input = {
+      names: Object.fromEntries([
+        ["0x1000", "entry"],
+        ["__proto__", value],
+      ]),
+    };
+    expect(
+      parseGhidraInventoryInput("set_addresses_names", input),
+    ).toMatchObject({
+      ok: false,
+      error: {
+        _tag: "AnalysisInputError",
+        issues: [{ path: ["names", "__proto__"] }],
+      },
+    });
+    expect(Object.keys(input.names)).toEqual(["0x1000", "__proto__"]);
+  },
+);
+
+it.each(["list_procedures", "search_procedures"] as const)(
+  "preserves real bridge symbol provenance in %s",
+  (operation) => {
+    // Captured from Ghidra 12.1.4 on the source-owned PowerPC DOL fixture.
+    const rows = [
+      {
+        address: "0x80003130",
+        value: "__start",
+        symbol: {
+          primary: true,
+          dynamic: false,
+          external: false,
+          type: "function",
+          source: "user_defined",
+        },
+        ...(operation === "list_procedures"
+          ? {
+              procedure: { external: false, thunk: false, thunk_target: null },
+            }
+          : {}),
+      },
+    ];
+    expect(parseGhidraInventoryResult(operation, rows)).toEqual({
+      ok: true,
+      value: { value: rows },
+    });
+  },
+);
+
 it("validates large masked byte queries at the provider boundary without changing caller spelling", () => {
   const input = {
     pattern: "aA??".repeat(1024 * 1024),
@@ -114,6 +165,7 @@ describe("containing-procedure complete body evidence", () => {
   const identity = () => ({
     address: "0x1000",
     name: "fixture_function",
+    symbol: null,
     classification: {
       external: false,
       thunk: false,

@@ -9,18 +9,23 @@ import {
 } from "../artifacts/AnalysisCleanupLease.js";
 import type { RetainedResourceScope } from "../application/AnalysisProvider.js";
 import type { AnalysisError } from "../domain/analysisErrorBase.js";
-import type { BinaryTarget } from "../domain/binaryTargetTypes.js";
+import type {
+  BinaryTarget,
+  HeaderArchitecture,
+} from "../domain/binaryTargetTypes.js";
 import { BinaryTargetError } from "../domain/configurationErrors.js";
 import { AnalysisCancelledError } from "../domain/analysisErrorCore.js";
 import { ProviderCleanupError } from "../domain/providerCleanupError.js";
 import {
+  findOverlappingFatSlices,
   readFatSliceDeclarations,
+  readFatHeaderPrefix,
   readMachoHeaderPrefixFacts,
   validateFatSlice,
+  validateFatSliceIdentity,
   type FatSliceDeclaration,
 } from "../domain/apple/machoContainer.js";
 import { machoCpuSubtypeBase } from "../domain/apple/machoCpuIdentity.js";
-import type { HeaderArchitecture } from "../domain/binaryTargetTypes.js";
 import {
   HopperCancelledError,
   HopperStartError,
@@ -281,7 +286,9 @@ const inspectHopperMachOImage = async (
     return bytes.subarray(0, bytesRead);
   };
   const header = await read(0, 8);
-  const magic = header.length === 8 ? header.readUInt32BE(0) : 0;
+  const fatPrefix = readFatHeaderPrefix(header);
+  const magic =
+    header.length === 8 && fatPrefix.state !== "unknown" ? fatPrefix.magic : 0;
   if ([0xfeedface, 0xfeedfacf, 0xcefaedfe, 0xcffaedfe].includes(magic)) {
     if (target.format !== "mach-o")
       return invalid("Thin Mach-O source disagrees with its admitted format");
@@ -332,24 +339,17 @@ const inspectHopperMachOImage = async (
       cpu_subtype: facts.identity.cpuSubtype,
     });
   }
-  const isFatMagic = [0xcafebabe, 0xcafebabf, 0xbebafeca, 0xbfbafeca].includes(
-    magic,
-  );
-  if (!isFatMagic)
+  if (fatPrefix.state !== "parsed")
     return invalid(
       "Mach-O source header changed before Hopper image preparation",
     );
-  const wide = magic === 0xcafebabf || magic === 0xbfbafeca;
-  const littleEndian = magic === 0xbebafeca || magic === 0xbfbafeca;
-  const entrySize = wide ? 32 : 20;
-  const count = littleEndian ? header.readUInt32LE(4) : header.readUInt32BE(4);
+  const { wide, littleEndian, count, tableEnd } = fatPrefix;
   const size = (await file.stat()).size;
-  const tableEnd = 8 + count * entrySize;
   if (count === 0 || count > 128 || tableEnd > size)
     return invalid(
       "FAT architecture table is truncated or exceeds the supported 128 entries",
     );
-  const table = await read(8, count * entrySize);
+  const table = await read(8, tableEnd - 8);
   const parsed = readFatSliceDeclarations(table, {
     count,
     wide,
@@ -366,7 +366,6 @@ const inspectHopperMachOImage = async (
   const architecture = target.architecture;
   const cpuTypes = { x86: 7, x86_64: 0x1000007, arm: 12, arm64: 0x100000c };
   const matches = [];
-  const ranges = [];
   for (const slice of parsed.slices) {
     if (signal?.aborted)
       return err(
@@ -374,15 +373,10 @@ const inspectHopperMachOImage = async (
       );
     const rangeError = validateFatSlice(slice, size, tableEnd);
     if (rangeError !== null) return invalid(rangeError);
-    if (wide) {
-      const reserved = littleEndian
-        ? table.readUInt32LE(slice.index * 32 + 28)
-        : table.readUInt32BE(slice.index * 32 + 28);
-      if (reserved !== 0)
-        return invalid(
-          `FAT64 architecture ${slice.index} has a nonzero reserved field`,
-        );
-    }
+    if (slice.reserved !== null && slice.reserved !== 0)
+      return invalid(
+        `FAT64 architecture ${slice.index} has a nonzero reserved field`,
+      );
     if (slice.size < 12)
       return invalid(
         `FAT architecture ${slice.index} has a truncated Mach-O header`,
@@ -395,22 +389,12 @@ const inspectHopperMachOImage = async (
       return invalid(
         `FAT architecture ${slice.index} does not contain a Mach-O image`,
       );
-    const identityError = validateFatSlice(slice, size, tableEnd, identity);
+    const identityError = validateFatSliceIdentity(slice, identity);
     if (identityError !== null) return invalid(identityError);
-    ranges.push(slice);
     if (slice.cpuType === cpuTypes[architecture]) matches.push(slice);
   }
-  ranges.sort((a, b) => a.offset - b.offset);
-  for (let index = 1; index < ranges.length; index++) {
-    const previous = ranges[index - 1];
-    const current = ranges[index];
-    if (
-      previous !== undefined &&
-      current !== undefined &&
-      current.offset < previous.offset + previous.size
-    )
-      return invalid("FAT slices overlap");
-  }
+  if (findOverlappingFatSlices(parsed.slices) !== null)
+    return invalid("FAT slices overlap");
   const selected = selectHopperSlice(matches, architecture);
   if (selected === undefined)
     return invalid(

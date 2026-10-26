@@ -33,18 +33,34 @@ import { createEvidence, parseEvidence } from "../../../src/domain/evidence.js";
 import { createTestTempDirectory } from "../../fixtures/temporaryDirectory.js";
 import { javaClassFile } from "../../fixtures/javaClassFile.js";
 import {
+  MAX_JVM_CLASS_IDENTITY_BYTES,
+  JVM_CLASS_IDENTITY_LIMIT_REASON,
+} from "../../../src/domain/apple/jvmClassFile.js";
+import {
   arArchive,
   CPU,
   fatImage,
   machoImage,
+  rpathCommand,
+  codeSignatureCommand,
 } from "../../../src/artifacts/apple/MachoImage.fixture.js";
 
-it.each([4000, 9000])(
-  "refuses a JVM class with %i unused constant bytes without claiming FAT identity",
-  async (constantBytes) => {
+it.each([
+  [4000, false],
+  [9000, false],
+  [4000, true],
+  [9000, true],
+] as const)(
+  "refuses a JVM class with %i unused constant bytes and CPU lookalike %s without claiming FAT identity",
+  async (constantBytes, fatCpuLookalike) => {
     const directory = await createTestTempDirectory("rea-class-target-");
     const path = join(directory, "input.class");
-    await writeFile(path, javaClassFile(constantBytes));
+    const bytes = javaClassFile(constantBytes, fatCpuLookalike);
+    expect(parseExecutableHeader(bytes, "arm64")).toEqual({
+      ok: false,
+      error: "unsupported binary format",
+    });
+    await writeFile(path, bytes);
     const resolved = await parseBinaryTarget(path);
     expect(resolved).toMatchObject({
       ok: false,
@@ -55,6 +71,35 @@ it.each([4000, 9000])(
       code: "target_unavailable",
       category: "unsupported_target",
       details: { reason: "unsupported binary format" },
+    });
+  },
+);
+
+it.each([MAX_JVM_CLASS_IDENTITY_BYTES, MAX_JVM_CLASS_IDENTITY_BYTES + 1])(
+  "preserves JVM identity uncertainty at the class scan boundary for %i bytes",
+  async (size) => {
+    const directory = await createTestTempDirectory("rea-class-boundary-");
+    const path = join(directory, "input.class");
+    const classPrefix = javaClassFile(4000, true);
+    classPrefix.writeUInt16BE(1, classPrefix.length - 2);
+    const attribute = Buffer.alloc(6);
+    attribute.writeUInt16BE(5, 0);
+    attribute.writeUInt32BE(size - classPrefix.length - attribute.length, 2);
+    const handle = await open(path, "w");
+    try {
+      await handle.write(Buffer.concat([classPrefix, attribute]));
+      await handle.truncate(size);
+    } finally {
+      await handle.close();
+    }
+    expect(await parseBinaryTarget(path)).toMatchObject({
+      ok: false,
+      error: {
+        reason:
+          size === MAX_JVM_CLASS_IDENTITY_BYTES
+            ? "unsupported binary format"
+            : JVM_CLASS_IDENTITY_LIMIT_REASON,
+      },
     });
   },
 );
@@ -777,9 +822,11 @@ describe("binary target I/O: explicit kinds and executable headers", () => {
   it("checks Mach-O load commands against the whole file beyond the probe", async () => {
     const directory = await createTestTempDirectory("rea-target-");
     const path = join(directory, "large-commands");
-    const header = thinMach(0xcffaedfe, 0x0100000c);
-    header.writeUInt32LE(8192, 20);
-    await writeFile(path, Buffer.concat([header, Buffer.alloc(8192)]));
+    const firstCommand = rpathCommand("@loader_path/" + "a".repeat(8192));
+    const bytes = Buffer.from(
+      machoImage({ commands: [firstCommand, codeSignatureCommand()] }),
+    );
+    await writeFile(path, bytes);
     const result = await parseBinaryTarget(path, {
       cwd: directory,
       hostArchitecture: "arm64",
@@ -787,6 +834,22 @@ describe("binary target I/O: explicit kinds and executable headers", () => {
     expect(result.ok && result.value).toMatchObject({
       format: "mach-o",
       architecture: "arm64",
+    });
+
+    // The second command's header lies beyond the initial 4096-byte probe.
+    // Corrupting it must fail admission even though the prefix is unchanged.
+    bytes.writeUInt32LE(0, 32 + firstCommand.length + 4);
+    await writeFile(path, bytes);
+    const malformed = await parseBinaryTarget(path, {
+      cwd: directory,
+      hostArchitecture: "arm64",
+    });
+    expect(malformed).toMatchObject({
+      ok: false,
+      error: {
+        path,
+        reason: `load command 1 at offset ${firstCommand.length} has invalid cmdsize 0`,
+      },
     });
   });
 });
@@ -1156,8 +1219,8 @@ describe("DOS binary target I/O", () => {
     });
   });
 
-  it("retains valid DOS facts while refusing automatic selection for an unresolved pointer", async () => {
-    const directory = await createTestTempDirectory("rea-ambiguous-mz-target-");
+  it("admits original DOS header padding after a relocation table", async () => {
+    const directory = await createTestTempDirectory("rea-dos-header-padding-");
     const path = join(directory, "legacy.exe");
     const bytes = Buffer.alloc(128);
     bytes.write("MZ", 0, "ascii");
@@ -1169,26 +1232,36 @@ describe("DOS binary target I/O", () => {
     bytes.write("ABCD", 60, "ascii");
     await writeFile(path, bytes);
 
-    const result = await parseBinaryTarget(path);
-    expect(result).toMatchObject({
-      ok: false,
-      error: {
-        reason: "MZ Windows new-header candidate is unresolved",
-        diagnostics: {
-          mz_windows_header: {
-            state: "candidate",
-            offset: 0x44434241,
-            signature: "unobserved",
-          },
-          mz_dos: {
-            state: "valid",
-            header_bytes: 64,
-            image_bytes: 128,
-            module_bytes: 64,
-            relocation_count: 2,
-            relocation_table_offset: 28,
-          },
-        },
+    expect(await parseBinaryTarget(path)).toMatchObject({
+      ok: true,
+      value: { format: "dos-mz", architecture: "x86", kind: "executable" },
+    });
+  });
+
+  it("resolves a PE signature beyond the prefix when DOS padding follows a relocation table", async () => {
+    const directory = await createTestTempDirectory(
+      "rea-padded-stub-pe-target-",
+    );
+    const path = join(directory, "padded-stub.dll");
+    const offset = 8192;
+    const stub = Buffer.alloc(offset);
+    stub.write("MZ", 0, "ascii");
+    stub.writeUInt16LE(offset % 512, 2);
+    stub.writeUInt16LE(Math.ceil(offset / 512), 4);
+    stub.writeUInt16LE(2, 6);
+    stub.writeUInt16LE(4, 8);
+    stub.writeUInt16LE(28, 24);
+    stub.writeUInt32LE(offset, 60);
+    const peRecord = pe(0x8664, offset, 0x2002).subarray(offset);
+    const bytes = Buffer.concat([stub, peRecord]);
+    await writeFile(path, bytes);
+
+    expect(await parseBinaryTarget(path)).toMatchObject({
+      ok: true,
+      value: {
+        format: "pe",
+        architecture: "x86_64",
+        executableRole: "shared-library",
       },
     });
   });

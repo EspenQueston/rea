@@ -1,13 +1,18 @@
 import { isSelectedRegularFileError } from "../../filesystem/RegularFile.js";
 import { ArtifactReaderFailure } from "../../artifacts/ArtifactReader.js";
-import { readStableArtifact } from "../../artifacts/readStableArtifact.js";
 import {
-  artifactFilePrimaryFailure,
+  readStableArtifact,
+  completedStableArtifact,
+} from "../../artifacts/readStableArtifact.js";
+import {
+  artifactFilePrimaryFacts,
+  type ArtifactFilePrimaryFacts,
   bindArtifactFileCleanup,
   artifactFileCancellationCause,
 } from "../../artifacts/ArtifactFileOperation.js";
 import { ArtifactResourceScope } from "../../artifacts/ArtifactResourceScope.js";
 import { analysisErrorWithCleanupFailure } from "../../domain/analysisErrorCleanup.js";
+import { fileSnapshotPartialObservationSchema } from "../../domain/fileSnapshotObservation.js";
 import type { ElfNotesPort } from "../../application/binaryDiagnostics/ElfNotesPort.js";
 import type { ExecutionOptions } from "../../application/AnalysisProvider.js";
 import { ArtifactOperationError } from "../../domain/artifactOperationError.js";
@@ -112,9 +117,10 @@ const sectionNameBudgetRemediation = (
     : `The source and decoded ELF section names require ${String(cause.minimumMaxFileBytes)} bytes, above this operation's ${String(MAX_INSPECT_ELF_NOTE_FILE_BYTES)}-byte maximum; select an image with a smaller section-name table.`;
 
 const elfNotesFailurePrimary = (
-  cause: unknown,
+  facts: ArtifactFilePrimaryFacts,
   input: InspectElfNotesInput,
 ) => {
+  const { cause, origin } = facts;
   if (cause instanceof ElfNoteSectionNameBudgetFailure)
     return new AnalysisResourceConstraintError(
       OPERATION,
@@ -145,7 +151,11 @@ const elfNotesFailurePrimary = (
             message: cause.message,
           },
         ]);
-  if (cause instanceof ArtifactReaderFailure && cause.reason === "integrity")
+  if (
+    origin === "owned-or-classified" &&
+    cause instanceof ArtifactReaderFailure &&
+    cause.reason === "integrity"
+  )
     return new AnalysisArtifactChangedError(
       OPERATION,
       input.path,
@@ -154,11 +164,18 @@ const elfNotesFailurePrimary = (
         cause,
       },
     );
-  if (cause instanceof ArtifactReaderFailure && cause.reason === "cancelled")
+  if (
+    origin === "owned-or-classified" &&
+    cause instanceof ArtifactReaderFailure &&
+    cause.reason === "cancelled"
+  )
     return new AnalysisCancelledError(OPERATION, {
       cause: artifactFileCancellationCause(cause),
     });
-  if (cause instanceof ArtifactReaderFailure) {
+  if (
+    origin === "owned-or-classified" &&
+    cause instanceof ArtifactReaderFailure
+  ) {
     if (cause.reason === "limit") {
       // Caller-selected read and entry budgets name the bound to raise.
       // The note text, hash, and scan ceiling equals the admitted image
@@ -213,7 +230,9 @@ const elfNotesFailurePrimary = (
   }
   return new ArtifactOperationError(
     OPERATION,
-    cause instanceof ArtifactReaderFailure ? cause.reason : "io",
+    origin === "owned-or-classified" && cause instanceof ArtifactReaderFailure
+      ? cause.reason
+      : "io",
     undefined,
     cause instanceof Error ? cause.message : "ELF note inspection failed.",
     { cause },
@@ -222,9 +241,19 @@ const elfNotesFailurePrimary = (
 
 const elfNotesFailure = (cause: unknown, input: InspectElfNotesInput) => {
   const primary = elfNotesFailurePrimary(
-    artifactFilePrimaryFailure(cause),
+    artifactFilePrimaryFacts(cause),
     input,
   );
+  const snapshot = completedStableArtifact(cause);
+  if (snapshot !== undefined)
+    primary.retainPartialObservation(
+      fileSnapshotPartialObservationSchema.parse({
+        kind: "file-snapshot-hash",
+        path: input.path,
+        sha256: snapshot.sha256,
+        bytes: snapshot.bytes.length,
+      }),
+    );
   if (!(cause instanceof ArtifactReaderFailure) || cause.cleanup === undefined)
     return primary;
   const cleanup = new ProviderCleanupError(

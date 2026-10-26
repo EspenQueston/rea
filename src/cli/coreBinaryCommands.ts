@@ -18,10 +18,21 @@ import {
   snapshotSelectionOption,
 } from "./options.js";
 import type { CliInstance } from "./types.js";
-import { runCliJavaScriptApplicationAnalysis } from "./javascriptApplicationAnalysis.js";
+import {
+  cliJavaScriptSourcePaths,
+  runCliJavaScriptApplicationAnalysis,
+} from "./javascriptApplicationAnalysis.js";
 import { withCommandCancellation } from "./commandCancellation.js";
+import {
+  analysisEvidenceDeliveryOptions,
+  cliEvidenceDeliveryInputError,
+  publishCliAnalysisEvidence,
+} from "./analysisEvidenceDelivery.js";
+import { projectAnalysisError } from "../domain/analysisErrorProjection.js";
 import { javascriptApplicationOptions } from "../cliObservationOptions.js";
 import { AnalysisInputError } from "../domain/analysisErrorCore.js";
+import { localPathStringSchema } from "../domain/localPath.js";
+import type { ExecutableFormatHint } from "../domain/dosCom.js";
 import { absoluteCallerPath } from "../filesystem/callerPath.js";
 import { registerDecompileDirectoryCommand } from "./decompileDirectoryCommand.js";
 
@@ -84,14 +95,14 @@ const registerOverviewCommands = (
   cli.command(CLI_COMMANDS.analyze, {
     description: "Get an overview of an app",
     args: z.object({
-      path: z
-        .string()
-        .min(1)
-        .describe("App, program, or analysis database path"),
+      path: localPathStringSchema.describe(
+        "App, program, or analysis database path",
+      ),
     }),
     options: overviewOptions.extend({
       integrityPolicy: laneIntegrityPolicy,
       sourcePath: javascriptApplicationOptions.shape.sourcePath,
+      sourcePathsJson: javascriptApplicationOptions.shape.sourcePathsJson,
     }),
     run: async ({ args, options }) => {
       // Route JavaScript targets exactly like analyze-javascript-application,
@@ -99,23 +110,32 @@ const registerOverviewCommands = (
       // code is not replaced by the logged failure status.
       if (await routesToJavaScriptAnalysis(args.path, options))
         return withCommandCancellation((signal) =>
-          logCliCommand(logger, "analyze", () =>
-            runCliJavaScriptApplicationAnalysis(
+          logCliCommand(logger, "analyze", async () => {
+            const sourcePaths = await cliJavaScriptSourcePaths(
+              options.sourcePath,
+              options.sourcePathsJson,
+              signal,
+            );
+            if (!sourcePaths.ok) return sourcePaths.error;
+            return runCliJavaScriptApplicationAnalysis(
               {
                 input_path: absoluteCallerPath(args.path),
                 integrity_policy:
                   options.integrityPolicy ?? defaultIntegrityPolicy,
-                ...(options.sourcePath === undefined
+                ...(sourcePaths.value === undefined
                   ? {}
-                  : { source_paths: options.sourcePath }),
+                  : { source_paths: sourcePaths.value }),
               },
               environment,
               signal,
-            ),
-          ),
+            );
+          }),
         );
       return logCliCommand(logger, "analyze", () => {
-        if (options.sourcePath !== undefined)
+        if (
+          options.sourcePath !== undefined ||
+          options.sourcePathsJson !== undefined
+        )
           throw new AnalysisInputError(
             "analyze_javascript_application",
             undefined,
@@ -234,7 +254,7 @@ const routesToJavaScriptAnalysis = async (
   path: string,
   options: {
     readonly snapshot?: string | undefined;
-    readonly "target-format"?: "dos-com" | "raw-binary" | undefined;
+    readonly "target-format"?: ExecutableFormatHint | undefined;
     readonly architecture?: string | undefined;
     readonly "entry-point"?: string | undefined;
     readonly provider?: string | undefined;
@@ -380,23 +400,37 @@ const registerFunctionCommand = (
           `Procedure name or address; use --procedure=<value> for leading dashes. ${addressOrProcedureGuidance}`,
         ),
       snapshot: snapshotSelectionOption,
+      ...analysisEvidenceDeliveryOptions,
       ...nativeOpenOptionFields,
     }),
     run: ({ args, options }) =>
-      logCliCommand(logger, "function", () =>
-        runDirectAnalysis(
-          args.path,
-          "analyze_function",
-          {
-            procedure: resolveCliAnalysisSelector(
-              args.address,
-              options.procedure,
-              "procedure",
-              "analyze_function",
-            ),
-          },
-          directAnalysisOptionsFromCli(logger, options),
-        ),
+      withCommandCancellation((signal) =>
+        logCliCommand(logger, "function", async () => {
+          const delivery = {
+            providerId: "auto",
+            operation: "analyze_function",
+            signal,
+            detail: options.detail,
+            evidenceOutput: options.evidence_output,
+          };
+          // Fail before analysis when summary delivery lacks its Evidence bundle sink.
+          const inputError = cliEvidenceDeliveryInputError(delivery);
+          if (inputError !== undefined) return projectAnalysisError(inputError);
+          const complete = await runDirectAnalysis(
+            args.path,
+            "analyze_function",
+            {
+              procedure: resolveCliAnalysisSelector(
+                args.address,
+                options.procedure,
+                "procedure",
+                "analyze_function",
+              ),
+            },
+            { ...directAnalysisOptionsFromCli(logger, options), signal },
+          );
+          return publishCliAnalysisEvidence(complete, delivery);
+        }),
       ),
   });
 };

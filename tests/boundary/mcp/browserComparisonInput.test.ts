@@ -15,11 +15,11 @@ import {
 } from "../../../src/domain/browserCaptureComparison.js";
 import { inspectWebPageInputSchema } from "../../../src/domain/browserObservation.js";
 import { browserScenarioCaptureSchema } from "../../../src/domain/browserScenarioCapture.js";
-import { ToolResultDelivery } from "../../../src/server/toolResult.js";
+import { createToolResultDelivery } from "../../../src/server/toolResult.js";
 import { toolRegistrationOptions } from "../../../src/server/toolRegistrationOptions.js";
 import { startFakeCdpBrowser } from "../../fixtures/fakeCdpBrowser.js";
 
-const delivery = new ToolResultDelivery(STDIO_DEFAULT_MAX_BUFFER_SIZE);
+const delivery = createToolResultDelivery(STDIO_DEFAULT_MAX_BUFFER_SIZE);
 
 const contract = toolContract("compare_web_captures");
 
@@ -215,9 +215,11 @@ describe("browser comparison input boundary", () => {
       const parsedScenario =
         browserCaptureComparisonInputSchema.parse(withoutNormalization);
       expect(parsedScenario).toHaveProperty("normalization", { rules: [] });
+      // The public example explicitly marks events missing and equality
+      // ineligible; normalization defaults cannot restore uncaptured evidence.
       expect(compareBrowserCaptures(parsedScenario)).toMatchObject({
         comparison_kind: "browser_scenario",
-        overall_status: "unchanged",
+        overall_status: "unknown",
       });
     } finally {
       await Promise.allSettled([

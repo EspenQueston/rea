@@ -1,6 +1,8 @@
+import { nativeSymbolMetadataSchema } from "../domain/native/nativeSymbol.js";
 import { nativeAddressObservationSchema } from "../domain/native/nativeAddress.js";
 import { nativeByteReadSchema } from "../domain/native/nativeByteRead.js";
 import { z } from "zod";
+import { jsonRecordSchema } from "../domain/jsonRecord.js";
 import {
   bytePatternFields,
   validateBytePattern,
@@ -124,7 +126,7 @@ const inputSchemas = {
   set_addresses_names: z
     .object({
       document,
-      names: z.record(explicitAddress, z.string().min(1)),
+      names: jsonRecordSchema(z.string().min(1), explicitAddress),
     })
     .strict()
     .refine(
@@ -193,6 +195,7 @@ export const ghidraProcedureIdentitySchema = z
   .object({
     address: nativeAddressObservationSchema,
     name: z.string().min(1),
+    symbol: nativeSymbolMetadataSchema.nullable(),
     classification: ghidraFunctionClassificationSchema,
     body: ghidraFunctionBodySchema,
   })
@@ -222,11 +225,11 @@ const baseItem = {
   value: z.string(),
 };
 const symbolItem = z.object({ ...baseItem, symbol: symbolFacts }).strict();
-const procedureItem = z
-  .object({ ...baseItem, procedure: procedureFacts })
+const addressedItem = z
+  .object({ ...baseItem, symbol: symbolFacts.exactOptional() })
   .strict();
+const procedureItem = addressedItem.extend({ procedure: procedureFacts });
 const stringItem = z.object({ ...baseItem, string: stringFacts }).strict();
-const searchItem = z.object(baseItem).strict();
 
 const availablePermissions = z
   .object({
@@ -337,8 +340,8 @@ const resultSchemas = {
   list_strings: z.array(stringItem),
   procedure_address: nativeAddressObservationSchema,
   resolve_containing_procedure: containingProcedure,
-  search_procedures: z.array(searchItem),
-  search_strings: z.array(searchItem),
+  search_procedures: z.array(addressedItem),
+  search_strings: z.array(addressedItem),
   set_address_name: z.boolean(),
   set_addresses_names: z.record(z.string(), z.boolean()),
 } satisfies Readonly<Record<GhidraInventoryOperation, z.ZodType>>;

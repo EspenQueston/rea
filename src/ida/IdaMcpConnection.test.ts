@@ -322,18 +322,20 @@ it("bounds a stalled health poll by the remaining readiness deadline", async () 
     expect(pendingCalls).toBe(2);
     expect(failure).toBeInstanceOf(AnalysisTimeoutError);
     expect(failure).toMatchObject({
-      operation: "server_health: headless worker still busy in config_json_get",
+      operation: "server_health",
       timeoutMs,
       userMessage: expect.stringContaining("800 ms"),
       remediationAction: expect.stringContaining("timeoutMs"),
       cause: busy,
       diagnostics: {
+        busy_tool: "config_json_get",
         health_request_operation: "server_health",
         health_request_timeout_ms: 250,
       },
     });
     if (!(failure instanceof AnalysisTimeoutError))
       throw new Error("Expected the readiness deadline to expire");
+    expect(failure.userMessage).toContain("config_json_get");
     expect(failure.capturedOutput).toBeDefined();
   } finally {
     await connection.close();
@@ -642,4 +644,54 @@ it("keeps a real SDK physical failure when abort arrives during its outer unwind
     spy.mockRestore();
     await connection.close();
   }
+});
+
+it("preserves observed own structured members before deciding whether to unwrap a result", () => {
+  const structured: unknown = JSON.parse(
+    '{"__proto__":{"observed":true},"result":"field","nested":[{"__proto__":"nested fact"}]}',
+  );
+  const decoded = decodeIdaToolResult({
+    content: [],
+    structuredContent: structured,
+  });
+  expect(Object.hasOwn(decoded as object, "__proto__")).toBe(true);
+  expect(JSON.stringify(decoded)).toBe(JSON.stringify(structured));
+  const wrapped: unknown = JSON.parse(
+    '{"result":{"__proto__":{"observed":true},"nested":{"__proto__":"nested fact"}}}',
+  );
+  const value = decodeIdaToolResult({
+    content: [],
+    structuredContent: wrapped,
+  });
+  expect(Object.hasOwn(value as object, "__proto__")).toBe(true);
+  expect(JSON.stringify(value)).toBe(
+    '{"__proto__":{"observed":true},"nested":{"__proto__":"nested fact"}}',
+  );
+});
+
+it("keeps error, truncation and native-text precedence ahead of structured JSON admission", () => {
+  const structuredContent = { result: Infinity };
+  expect(() =>
+    decodeIdaToolResult({
+      isError: true,
+      structuredContent,
+      content: [{ type: "text", text: "engine refused" }],
+    }),
+  ).toThrow(/IDA MCP tool failed: \s*engine refused/u);
+  expect(() =>
+    decodeIdaToolResult({
+      structuredContent,
+      content: [],
+      _meta: { ida_mcp: { output_truncated: true } },
+    }),
+  ).toThrow("IDA MCP truncated its output");
+  expect(
+    decodeIdaToolResult(
+      {
+        structuredContent,
+        content: [{ type: "text", text: '{"complete":true}' }],
+      },
+      "native",
+    ),
+  ).toEqual({ complete: true });
 });
