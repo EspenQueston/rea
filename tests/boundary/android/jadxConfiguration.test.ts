@@ -629,7 +629,6 @@ it("reports the owned-process prerequisite as JADX unavailability, not a probe f
     reason: expect.stringContaining("procps-compatible ps") as unknown,
     diagnostics: { stage: "ownership_preparation" },
   });
-  // Execution keeps the host refusal; only discovery projects it as availability.
   await expect(
     resolveConfiguration(environment, "inspect_android_package"),
   ).rejects.toMatchObject({

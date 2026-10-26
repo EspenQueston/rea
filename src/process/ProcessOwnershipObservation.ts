@@ -1437,15 +1437,10 @@ export const signalProcessWithStartIdentity = async (
 const OWNED_PROCESS_PREREQUISITE_PROVIDER_ID = "process-ownership";
 const OWNED_PROCESS_PREREQUISITE_OPERATION = "prepare_owned_process";
 
-/** Recovery for a Linux host whose `ps` cannot establish process ownership. */
 const LINUX_OWNED_PROCESS_PREREQUISITE_REMEDIATION =
   "Install your distribution's procps or procps-ng package, or put a procps-compatible ps on REA's PATH, then retry.";
 
-/**
- * The refusal raised before any owned child starts when Linux `ps` is missing
- * or incompatible. Every owned launch shares this one prerequisite, so the
- * refusal is produced here and recognized by {@link ownedProcessPrerequisiteFailure}.
- */
+/** Refuse an owned launch when Linux `ps` is missing or incompatible. */
 export const linuxOwnedProcessPrerequisiteRefusal = (
   cause: unknown,
 ): AnalysisCapabilityUnavailableError => {
@@ -1462,11 +1457,6 @@ export const linuxOwnedProcessPrerequisiteRefusal = (
   );
 };
 
-/**
- * Recognize the shared owned-process prerequisite refusal. Availability probes
- * report it as the probed provider's unavailability; execution paths keep it as
- * a capability refusal.
- */
 export const ownedProcessPrerequisiteFailure = (
   cause: unknown,
 ): AnalysisCapabilityUnavailableError | undefined =>

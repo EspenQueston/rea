@@ -1735,7 +1735,6 @@ it("reports the owned-process prerequisite as Apktool unavailability, not a prob
   });
   expect(availability.reason).toContain("procps");
 
-  // Execution keeps the host refusal; only discovery projects it as availability.
   const projected = await refusedBy(providerOver(command), {
     operation: "inspect_apktool_client",
     input: {},

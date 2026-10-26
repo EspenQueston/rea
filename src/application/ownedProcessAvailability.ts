@@ -1,12 +1,7 @@
 import { ownedProcessPrerequisiteFailure } from "../process/ProcessOwnershipObservation.js";
 import type { ProviderAvailability } from "./AnalysisProvider.js";
 
-/**
- * Project the shared owned-process prerequisite refusal as the probed
- * provider's unavailability. The host, not the provider, is missing a
- * prerequisite, so the probe answers instead of failing the discovery call
- * that aggregates every provider's status.
- */
+/** A host prerequisite gap is the probed provider's unavailability, not a probe failure. */
 export const ownedProcessPrerequisiteAvailability = (
   cause: unknown,
 ): ProviderAvailability | undefined => {
