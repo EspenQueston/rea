@@ -12,7 +12,7 @@ import { GHIDRA_FUNCTION_OPERATIONS } from "./GhidraFunctionValues.js";
 import { ghidraExtensionResultSchema } from "./extensions/GhidraExtensions.js";
 import { GHIDRA_MIPS_SOFT_FLOAT_STORAGE } from "./GhidraMipsProfile.js";
 
-/** Exact methods proved by the bridge handshake after auto-analysis. */
+/** Exact methods proved by the selected Program bridge handshake. */
 export const GHIDRA_SESSION_CAPABILITIES = [
   "ping",
   "shutdown",
@@ -108,7 +108,7 @@ const sessionInfoSchema = z
   })
   .strict();
 
-/** Authenticated metadata produced after Ghidra finishes auto-analysis. */
+/** Authenticated Program metadata; original analysis can remain unknown. */
 export type GhidraSessionInfo = z.infer<typeof sessionInfoSchema>;
 
 /** Describe missing PDB authority without claiming all names are generated. */

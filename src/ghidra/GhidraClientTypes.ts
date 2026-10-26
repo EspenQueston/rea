@@ -33,7 +33,7 @@ export type GhidraDiagnostic =
     }
   | { readonly type: "cleanup-incomplete"; readonly reason: string };
 
-/** Dependencies and exact profile commitment for one headless import. */
+/** Dependencies and exact profile commitment for one headless Program session. */
 export interface GhidraClientOptions {
   readonly launcher: GhidraLauncher;
   readonly runId?: string;

@@ -1,6 +1,7 @@
 import {
   existingGhidraAnalysisProfile,
   ghidraPinnedLanguage,
+  resolveGhidraAnalysisProfile,
 } from "./GhidraAnalysisProfile.js";
 import { ProviderAdapterError } from "../domain/providerAdapterError.js";
 import { resolveGhidraProject } from "./GhidraProjectSnapshot.js";
@@ -55,7 +56,6 @@ import {
   type GhidraInstallationHost,
   type GhidraInstallationInspection,
 } from "./GhidraInstallation.js";
-import { resolveGhidraAnalysisProfile } from "./GhidraAnalysisProfile.js";
 import { AnalysisCancelledError } from "../domain/analysisErrorCore.js";
 import { resolveGhidraAnalysisSeeds } from "./GhidraAnalysisSeeds.js";
 import {
@@ -99,7 +99,7 @@ const SUPPORTED_ARCHITECTURES = new Set([
   "hexagon",
 ]);
 
-/** Ghidra candidate backed by an isolated ephemeral headless import. */
+/** Ghidra candidate backed by an isolated ephemeral headless Program session. */
 export class GhidraProvider implements AnalysisProviderCandidate {
   readonly #inspectionResources = new ArtifactResourceScope();
   readonly #inspectionWork = new Set<Promise<unknown>>();
