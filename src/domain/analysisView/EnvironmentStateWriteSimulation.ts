@@ -1,3 +1,4 @@
+import { CapturedWriteCompletion } from "./environmentStateWriteCompletion.js";
 import type { JsonValue } from "../jsonValue.js";
 import {
   at,
@@ -121,6 +122,7 @@ export class EnvironmentStateWriteSimulation {
   readonly #touchedSince: PendingTargets = new Map();
   /** Timeline indexes of writes the gate does not model. */
   readonly #unmodelledAt: number[] = [];
+  readonly #writeCompletion: CapturedWriteCompletion;
   readonly #history: WriteHistory = {
     touched: this.#touched,
     pending: this.#touchedSince,
@@ -144,6 +146,7 @@ export class EnvironmentStateWriteSimulation {
 
   constructor(input: WriteSimulationInput) {
     this.#input = input;
+    this.#writeCompletion = new CapturedWriteCompletion(input.io.retain);
     this.#state = new SimulatedState(input.entities, input.documents);
     this.#unseen = new UnseenEntities(input.entities, {
       state: this.#state,
@@ -251,6 +254,15 @@ export class EnvironmentStateWriteSimulation {
         linked: link.collection,
       });
     }
+    // Reads may finish after writes with the same or a later start: index the
+    // complete capture before replay so ordinal tie-breaking cannot create proof.
+    for (const record of this.#input.records)
+      if (this.#isWrite(record))
+        this.#writeCompletion.write(
+          record.path,
+          this.#input.chronology.endMs(record),
+          this.#input.chronology.startMs(record),
+        );
     this.#input.records.forEach((record, index) => this.#step(record, index));
     const views = new Map(
       this.views([...this.#input.views.values()]).map((view) => [
@@ -320,7 +332,7 @@ export class EnvironmentStateWriteSimulation {
                   : this.#input.io.requestBody(ordinal),
             },
       records: this.#input.records,
-      timed: this.#input.timed,
+      chronology: this.#input.chronology,
       viewOf: (ordinal) => {
         const view = this.#input.views.get(
           this.#toolOf.get(ordinal)?.name ?? "",
@@ -395,7 +407,7 @@ export class EnvironmentStateWriteSimulation {
           index,
           tool: tool.name,
           path: record.path,
-          end: record.end,
+          end: this.#input.chronology.endMs(record),
         });
     };
     // Item deletes use their path; calls outside a built plan's query never interpret their body.
@@ -411,7 +423,7 @@ export class EnvironmentStateWriteSimulation {
       readonly index: number;
       readonly tool: string;
       readonly path: string;
-      readonly end: number;
+      readonly end: number | undefined;
     },
   ): void {
     if (result.kind === "unknown") {
@@ -477,6 +489,7 @@ export class EnvironmentStateWriteSimulation {
   /** Whether an item read shows an entity an unmodelled write made, or one left unknown, again rather than checks it. */
   #resynced(view: StateView, record: StateRecordFacts, index: number): boolean {
     if (view.shape !== "item") return false;
+    if (this.#writeOverlapsRead(record)) return true;
     const adopted = this.#unseen.adopt(view, { record, index });
     if (adopted !== undefined) {
       this.#taint.known(adopted.type, adopted.collection, adopted.id);
@@ -486,7 +499,14 @@ export class EnvironmentStateWriteSimulation {
     if (!this.#taint.unknown(view.type, collection, id)) return false;
     // A read begun while a modelled write to the entity still ran may show either state, so it neither checks nor shows it.
     const target = entityTarget(view.type, collection, id);
-    if (runningAt(this.#touchedSince, target, record.start)) return true;
+    if (
+      runningAt(
+        this.#touchedSince,
+        target,
+        this.#input.chronology.startMs(record),
+      )
+    )
+      return true;
     // A failed read that is no absence shows nothing of the entity, so it stays unknown for a usable read.
     if (!succeeded(record) && !isAbsence(record.status)) return true;
     const entity = this.#state.entity(view.type, collection, id);
@@ -580,6 +600,7 @@ export class EnvironmentStateWriteSimulation {
     if (original === undefined) return;
     let view = this.#sorted.comparisonView(this.omitted.view(original));
     if (projectedRead(view, record, this.#input.io)) return;
+    if (this.#writeOverlapsRead(record)) return;
     const borrowers = this.#observations.get(record.ordinal);
     if (
       this.#viewOf(original).shape !== "recorded" &&
@@ -594,7 +615,11 @@ export class EnvironmentStateWriteSimulation {
       targets.some(
         (key) =>
           this.#taint.tainted(key) ||
-          runningAt(this.#touchedSince, key, record.start),
+          runningAt(
+            this.#touchedSince,
+            key,
+            this.#input.chronology.startMs(record),
+          ),
       );
     if (blocked(keys)) return;
     // A read the gate counts can show the view lists a written array sorted, or rule that out.
@@ -696,10 +721,21 @@ export class EnvironmentStateWriteSimulation {
     });
     for (const name of shown.confirmed) {
       this.#drafts.get(name)!.confirmed.push(record.ordinal);
-      if (showsPlacement(view, outcome, this.#inserted, name))
+      if (showsPlacement(view, outcome, this.#inserted, name)) {
         this.#placed.add(name);
+        if (view.shape === "list") this.#narrowInserts(view, record, name);
+      }
     }
     return shown.unseen;
+  }
+
+  /** An overlapping captured write cannot supply a stable read baseline. */
+  #writeOverlapsRead(read: StateRecordFacts): boolean {
+    return this.#writeCompletion.runningAt(
+      read.path,
+      this.#input.chronology.startMs(read),
+      this.#input.chronology.endMs(read),
+    );
   }
 
   #unmodelled(path: string, index: number): void {
@@ -797,17 +833,12 @@ export class EnvironmentStateWriteSimulation {
       for (const key of failed.keys) this.#taint.fail(key);
   }
 
-  /**
-   * The successful check with the collection sorted by a field an update the read exercised writes, when the read
-   * lists the whole collection in that order and no create of the type was placed by a sort that excludes it; the
-   * type's creates then insert by it, and its updates move their entity by it. A sort the creates chose by a field the
-   * update did not write does not stop this, since both may have fit every earlier read.
-   */
-  #retrySort(
+  /** What `use` makes of a read's items when the read lists the whole collection the state holds, the only read that shows the order it is kept in. */
+  #wholeListing<T>(
     view: Extract<StateView, { shape: "list" }>,
     record: StateRecordFacts,
-    exercised: ReadonlySet<string>,
-  ): CheckOutcome | undefined {
+    use: (items: readonly JsonObject[]) => T,
+  ): T | undefined {
     const line = this.#line(view, record);
     const idField = this.#types.get(view.type)?.id_field;
     if (line === undefined || idField === undefined) return undefined;
@@ -816,6 +847,53 @@ export class EnvironmentStateWriteSimulation {
         .members(view.type, line.collection)
         .map((entity) => entity.id),
     );
+    return this.#input.io.withBody(record.ordinal, (body) => {
+      const items =
+        body === undefined ? undefined : listItems(body, view.pointer);
+      if (
+        items === undefined ||
+        items.length < 2 ||
+        items.length !== held.size ||
+        !items.every((item) =>
+          held.has(scalarText(ownMember(item, idField)) ?? ""),
+        )
+      )
+        return undefined;
+      return use(items);
+    });
+  }
+
+  /** A whole-collection read that placed a create leaves it only the sorted inserts whose order the read follows. */
+  #narrowInserts(
+    view: Extract<StateView, { shape: "list" }>,
+    record: StateRecordFacts,
+    name: string,
+  ): void {
+    const draft = this.#drafts.get(name)!;
+    const kept = this.#wholeListing(view, record, (items) =>
+      draft.candidates.filter(
+        (candidate) =>
+          candidate.rule !== "sorted" ||
+          same(candidate, draft.plan.insert) ||
+          orderedBy(items, candidate.field, candidate.direction),
+      ),
+    );
+    if (kept !== undefined) draft.candidates = kept;
+  }
+
+  /**
+   * The successful check with the collection sorted by a field an update the read exercised writes, when the read
+   * lists the whole collection in that order and no create of the type was placed by a sort that excludes it; the
+   * type's creates then insert by it, and its updates move their entity by it. A sort the creates chose by a field the
+   * update did not write does not stop this when every whole-collection read that placed them followed this order too.
+   */
+  #retrySort(
+    view: Extract<StateView, { shape: "list" }>,
+    record: StateRecordFacts,
+    exercised: ReadonlySet<string>,
+  ): CheckOutcome | undefined {
+    const line = this.#line(view, record);
+    if (line === undefined) return undefined;
     const written = new Set(
       [...exercised].flatMap((name) => {
         const { plan } = this.#drafts.get(name)!;
@@ -834,27 +912,16 @@ export class EnvironmentStateWriteSimulation {
         draft.plan.target === view.type &&
         draft.observed !== undefined,
     );
-    const rules = this.#input.io.withBody(record.ordinal, (body) => {
-      const items =
-        body === undefined ? undefined : listItems(body, view.pointer);
-      // Only a read of the whole collection shows the order it is kept in.
-      if (
-        items === undefined ||
-        items.length < 2 ||
-        items.length !== held.size ||
-        !items.every((item) =>
-          held.has(scalarText(ownMember(item, idField)) ?? ""),
-        )
-      )
-        return [];
-      return [...written].flatMap((field) =>
-        (["ascending", "descending"] as const).flatMap((direction) =>
-          orderedBy(items, field, direction)
-            ? [{ rule: "sorted", field, direction } as const]
-            : [],
+    const rules =
+      this.#wholeListing(view, record, (items) =>
+        [...written].flatMap((field) =>
+          (["ascending", "descending"] as const).flatMap((direction) =>
+            orderedBy(items, field, direction)
+              ? [{ rule: "sorted", field, direction } as const]
+              : [],
+          ),
         ),
-      );
-    });
+      ) ?? [];
     for (const rule of rules.filter(
       (candidate) => current === undefined || !same(candidate, current),
     )) {

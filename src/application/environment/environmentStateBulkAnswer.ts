@@ -172,7 +172,15 @@ export const answerBulk = (
   const answer = writeAnswer(
     serving,
     request,
-    (recorded) => writtenBulkResponse(plan.response!, recorded, written.value),
+    (recorded) =>
+      writtenBulkResponse(
+        plan.response!,
+        recorded,
+        written.value.map((entity, index) => ({
+          ...entity,
+          sent: Object.keys(targets.value[index]!.body ?? {}),
+        })),
+      ),
     {
       source: "state",
       view: update ? "update" : "delete",

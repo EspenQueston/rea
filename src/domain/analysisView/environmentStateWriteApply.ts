@@ -551,6 +551,8 @@ export const writtenResponse = (
     readonly id: string;
     /** Generated clocks keep the response's spelling independently of the stored entity's. */
     readonly clocks?: readonly string[];
+    /** Members the call sent, which the answer shows as stored. */
+    readonly sent?: readonly string[];
   },
   optional: readonly string[] = [],
   /** Fields only later reads showed, which the answer leaves out when the entity does not hold them. */
@@ -593,8 +595,12 @@ export const writtenResponse = (
         fields.map((field) => {
           const value = ownMember(written.fields!, field)!;
           const answered = ownMember(shown, field);
-          // An answer spells an empty list or map as its recording did, whichever spelling the state holds.
-          if (answered !== undefined && emptySpellings(answered, value))
+          // An answer spells an empty list or map the call did not send as its recording did.
+          if (
+            answered !== undefined &&
+            written.sent?.includes(field) !== true &&
+            emptySpellings(answered, value)
+          )
             return [field, answered];
           const clock =
             written.clocks?.includes(field) === true
@@ -614,7 +620,11 @@ export const writtenResponse = (
 export const writtenBulkResponse = (
   response: WriteResponse,
   recorded: JsonValue | undefined,
-  written: readonly { readonly fields: JsonObject; readonly id: string }[],
+  written: readonly {
+    readonly fields: JsonObject;
+    readonly id: string;
+    readonly sent?: readonly string[];
+  }[],
 ): Applied<JsonValue | undefined> => {
   if (response.shape === "empty") return ok(undefined);
   if (response.shape === "recorded") return ok(recorded);

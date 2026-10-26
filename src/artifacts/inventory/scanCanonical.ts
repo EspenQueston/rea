@@ -87,6 +87,7 @@ const scanCanonical = async (
     format: rootFormat,
     digest: rootDigest,
     rootSource,
+    readerAdmission,
   } = await classifyAndHashRootForInventory(
     path,
     metadata.isDirectory(),
@@ -100,7 +101,7 @@ const scanCanonical = async (
       path,
       rootFormat,
       options.environment ?? {},
-      rootSource,
+      readerAdmission,
       options.asarHeaderAdmission,
     );
   } catch (cause: unknown) {
@@ -201,6 +202,7 @@ const scanCanonical = async (
                   ),
             cleanup: cause.cleanup,
             cleanupLeases: cause.cleanupLeases,
+            userMessage: cause.userMessage,
             ...(retained === undefined
               ? {}
               : {

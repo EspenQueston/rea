@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   BULK_RENAMED_LABEL_ROWS,
+  ECHOED_EMPTY_ROWS,
   formLabelRows,
   LISTED_ID_ROWS,
   NOTE_DEFAULT_ROWS,
@@ -41,6 +42,20 @@ describe("served creates and updates modelled on form recordings", () => {
     expect(
       labels.refusal("post_labels", { body: { description: "No name" } }),
     ).toMatchObject({ message: expect.stringContaining('"name"') });
+  });
+
+  it("answers an empty member a call sent as it was sent, whichever spelling the recorded answer used", () => {
+    const labels = servedFrom(ECHOED_EMPTY_ROWS);
+    const tags = (sent: JsonValue) => {
+      const body = labels.answer("post_labels", {
+        body: { name: `Spare ${JSON.stringify(sent)}`, tags: sent },
+      }).body;
+      if (typeof body !== "object" || body === null || Array.isArray(body))
+        throw new Error("Expected an object body");
+      return body["tags"];
+    };
+    expect(tags([])).toEqual([]);
+    expect(tags(null)).toBeNull();
   });
 
   it("moves a renamed entity to where the collection's order puts its new name", () => {
