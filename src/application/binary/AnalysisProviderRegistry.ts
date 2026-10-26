@@ -753,7 +753,11 @@ const candidateStatus = async (
             resourceScope,
           });
   } catch (cause: unknown) {
-    const availability = ownedProcessPrerequisiteAvailability(cause);
+    // Status reports the gap per provider; execution keeps the prerequisite's owner.
+    const availability =
+      operation === "binary_session"
+        ? ownedProcessPrerequisiteAvailability(cause)
+        : undefined;
     if (availability === undefined) throw cause;
     readiness = { availability, capabilities: provider.capabilities() };
   }

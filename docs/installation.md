@@ -413,9 +413,11 @@ only a generic startup error. Check this prerequisite before following
 provider-specific recovery advice.
 
 `binary_session` still returns status on such a host. Providers whose
-readiness check launches an owned child, such as Ghidra's Java probe, JADX and
-Apktool, report themselves unavailable with a reason naming the missing `ps`.
-The other providers keep their own status.
+readiness check reaches the owned-child launch, such as Ghidra's Java probe,
+JADX and Apktool, report themselves unavailable with a reason naming the
+missing `ps`. A provider that fails an earlier configuration check, such as
+JADX without `REA_JADX_MCP_JAR`, keeps that reason. The other providers keep
+their own status. `open_binary` keeps the refusal described above.
 
 ## Diagnose, update, and remove
 

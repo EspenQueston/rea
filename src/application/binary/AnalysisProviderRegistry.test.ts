@@ -148,6 +148,16 @@ it("reports a missing Linux ps as one candidate's unavailability and keeps the o
     },
     { provider: { id: "gamma" }, availability: { status: "available" } },
   ]);
+
+  const selected = await new AnalysisProviderRegistry([refused]).select(
+    DATABASE_TARGET,
+    "alpha",
+  );
+  if (selected.ok) throw new Error("expected the prerequisite refusal");
+  expect(selected.error).toMatchObject({
+    _tag: "AnalysisCapabilityUnavailableError",
+    providerId: "process-ownership",
+  });
 });
 
 it("selects the sole available provider and honors explicit selection precedence", async () => {
