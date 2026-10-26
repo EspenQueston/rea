@@ -23,6 +23,14 @@ again if a hint names a gap, then writes the bundle with
 - Map the application first with `inspect_web_page` (and `capture_web_screenshot`
   when layout matters): the login form's locators, and the API calls behind the
   pages that list and edit the entities the user asked about.
+- `inspect_web_page` cannot sign in. To see pages behind sign-in, run a short
+  `capture_browser_scenario` that signs in and opens them, with
+  `"capture": {"after_each_step": ["accessibility"]}` (`"dom"` for markup).
+  Read a step's tree with `inspect_analysis_view`, `view: {kind:
+  "browser-scenario", collection: "text", step_index, artifact:
+  "accessibility", offset: 0, limit: 2048}`, paging with `offset`. Capture
+  options are only `after_each_step`, `at_end`, `events`, `network` and
+  `limits`.
 
 ## Record a session an environment can learn writes from
 
