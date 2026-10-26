@@ -434,12 +434,7 @@ describe("execFileOutput failure metadata", () => {
         (cause: unknown) => cause,
       );
 
-      expect(failure).toMatchObject({
-        code: "ENOTDIR",
-        syscall: "spawn",
-        path: join(file, "adb"),
-        spawnargs: ["version"],
-      });
+      expect(failure).toMatchObject({ code: "ENOTDIR", syscall: "spawn" });
       expect(execFileOutputFailure(failure)).toEqual({
         stdout: "",
         stderr: "",

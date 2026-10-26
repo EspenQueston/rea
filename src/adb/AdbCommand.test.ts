@@ -280,7 +280,7 @@ it("reports an adb that never started without claiming an exit code", async () =
   const result = await runAdbCapture(
     "list_adb_devices",
     { device: "device" },
-    "/host/adb",
+    { binary: "/host/adb", pathSource: "environment", environment: {} },
     ["devices"],
     { timeoutMs: 100, maxOutputBytes: 1024 },
     undefined,
@@ -311,7 +311,7 @@ it("reports exhausted host capacity rather than an adb protocol failure", async 
   const result = await runAdbCapture(
     "list_adb_devices",
     { device: "device" },
-    "/host/adb",
+    { binary: "/host/adb", pathSource: "environment", environment: {} },
     ["devices"],
     { timeoutMs: 100, maxOutputBytes: 1024 },
     undefined,
