@@ -155,7 +155,7 @@ cliTest.for(["xml", "binary"] as const)(
         status: "resolved",
       }),
     ]);
-    expect(await readFile(path)).toEqual(bytes);
+    expect(Buffer.compare(await readFile(path), bytes)).toBe(0);
   },
 );
 
@@ -244,7 +244,7 @@ cliTest.for(["xml", "binary"] as const)(
     expect(result.limitations).toContain(
       '1 negative-zero real value(s) are reported as { "$plist_type": "real", "value": "-0" } because a JSON number cannot carry the sign of zero.',
     );
-    expect(await readFile(path)).toEqual(bytes);
+    expect(Buffer.compare(await readFile(path), bytes)).toBe(0);
   },
 );
 
@@ -349,7 +349,7 @@ cliTest("preserves binary IEEE non-finite scalar identity", async ({ cli }) => {
       parseEvidence(mcp.structuredContent).normalized_result,
     ),
   ).toEqual(result);
-  expect(await readFile(path)).toEqual(bytes);
+  expect(Buffer.compare(await readFile(path), bytes)).toBe(0);
 });
 
 cliTest(
@@ -422,6 +422,6 @@ cliTest(
     expect(result.limitations).not.toContainEqual(
       expect.stringContaining('"value": null'),
     );
-    expect(await readFile(path)).toEqual(bytes);
+    expect(Buffer.compare(await readFile(path), bytes)).toBe(0);
   },
 );
