@@ -209,6 +209,12 @@ const registerExtractionCommand = (
         .enum(["fail", "record-and-continue"])
         .default("fail")
         .describe("Behavior when declared artifact integrity does not match"),
+      dryRun: z
+        .boolean()
+        .default(false)
+        .describe(
+          "Plan extraction without creating destination files or directories; reports planned, unsupported, and unresolved entries plus declared and observed content-byte estimates (for example: rea extract-artifact ./app.asar --dry-run --json)",
+        ),
     }),
     run: ({ args, options }) =>
       logCliCommand(logger, "extract-artifact", () =>
@@ -217,6 +223,7 @@ const registerExtractionCommand = (
           "extract_artifact",
           {
             integrity_policy: options.integrityPolicy,
+            ...(options.dryRun ? { dry_run: true } : {}),
             output_root: createArtifactExtractionDestination(),
           },
           logger,

@@ -309,6 +309,14 @@ class ArtifactClient implements AnalysisClient {
             inputPath: this.target.sourcePath ?? this.target.path,
             inputFormat: this.target.format,
             outputRoot: parsed.output_root,
+            ...(parsed.dry_run === true ? { dryRun: true } : {}),
+            ...(parsed.plan_offset === undefined
+              ? {}
+              : { planOffset: parsed.plan_offset }),
+            ...(parsed.plan_limit === undefined
+              ? {}
+              : { planLimit: parsed.plan_limit }),
+            platform: this.platform,
             environment: this.environment,
             asarHeaderAdmission: runtimeAsarHeaderAdmission(
               this.environment,
