@@ -640,6 +640,11 @@ const saveValues = (
       throw new ScenarioRequestError(
         `Step ${stepId}: the response has no string or number at ${json_pointer} to save as ${name}.`,
       );
+    // A number past what JSON spells back, such as 1e400, would be sent as null or Infinity.
+    if (typeof value === "number" && !Number.isFinite(value))
+      throw new ScenarioRequestError(
+        `Step ${stepId}: the number at ${json_pointer} is not finite, so ${name} cannot be saved from it.`,
+      );
     // JSON parsing rounds an integer past 2^53, so a later step would name another object.
     if (Number.isInteger(value) && !Number.isSafeInteger(value))
       throw new ScenarioRequestError(

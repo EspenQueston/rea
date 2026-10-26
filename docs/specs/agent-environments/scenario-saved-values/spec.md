@@ -25,10 +25,10 @@ values.
   JSON. The wait starts before the step acts, and the step fails, saving
   nothing, unless such a response arrives and is read before its timeout or
   cancellation.
-- A pointer that names no string or number, a response that is not JSON or is
-  larger than 4,000,000 characters (a UI step reads none received as more than
-  12,000,000 bytes, three per character), and a non-2xx `save_response` fail the
-  step.
+- A pointer that names no string or number, a number that is not finite (such as
+  `1e400`), a response that is not JSON or is larger than 4,000,000 characters
+  (a UI step reads none received as more than 12,000,000 bytes, three per
+  character), and a non-2xx `save_response` fail the step.
 - `{saved:name}` sends a saved value, percent-encoded, in a request path and its
   query and in a goto URL, and in a request's JSON body: a string that is only
   the placeholder becomes the saved value with its JSON type, and a placeholder

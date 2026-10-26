@@ -514,7 +514,8 @@ id the application assigns:
   braces that way.
 - Validation refuses a saved value that no earlier step saves. A later save of
   the same name replaces the value. An integer past 2^53, which JSON parsing
-  would round to another number, fails the step that saves it.
+  would round to another number, and a number that is not finite, such as
+  `1e400`, fail the step that saves it.
 - A value saved with `secret: true` is redacted however short, as a declared
   secret is, as `[REDACTED:page:<step_id>.<name>]`, from records made after it
   is saved. The

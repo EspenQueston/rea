@@ -957,6 +957,27 @@ describe("saved value credentials and limits", () => {
   });
 });
 
+describe("saved numbers JSON cannot spell back", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it.each(["1e400", "-1e400"])(
+    "saves no number JSON cannot spell back (%s)",
+    async (number) => {
+      stubFetch(201, [`{"id":${number}}`]);
+      const parsed = scenario([
+        requestStep({ save: [{ name: "folder", json_pointer: "/id" }] }),
+      ]);
+      const secrets = resolved(parsed);
+      await expect(
+        perform(fakePage({}), parsed.actions[0]!, secrets),
+      ).rejects.toThrow("not finite");
+      expect(() => secrets.savedValue("folder")).toThrow();
+    },
+  );
+});
+
 describe("values a URL path or Basic header cannot carry", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
