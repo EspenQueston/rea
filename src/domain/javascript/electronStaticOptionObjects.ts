@@ -46,12 +46,7 @@ const optionObjectCandidate = (
         initializer.node,
         index.bindings.parentsByNode,
       ) ||
-        exportedModuleBinding(
-          binding.name,
-          initializer.node,
-          index.bindings.program,
-          index.bindings.parentsByNode,
-        ))
+        exportsLocalBindings(index.bindings.program))
     )
       return undefined;
     references.push({ node, sameActivation });
@@ -87,33 +82,18 @@ const initializedBeforeEnclosingFunction = (
   );
 };
 
-/** Importers can change an exported object before a later activation reads it. */
-const exportedModuleBinding = (
-  name: string,
-  initializer: t.Node,
-  program: t.Program,
-  parents: WeakMap<t.Node, t.Node>,
-): boolean => {
-  let declaration = parents.get(initializer);
-  while (declaration !== undefined && !t.isVariableDeclaration(declaration))
-    declaration = parents.get(declaration);
-  const owner =
-    declaration === undefined ? undefined : parents.get(declaration);
-  if (t.isExportNamedDeclaration(owner)) return true;
-  if (owner !== program) return false;
-  return program.body.some(
+/**
+ * ESM exports are not escapes in the shared mutation index, and an importer
+ * can reach an object through an exported alias, container or function. Keep
+ * nested-function reads unknown in any module that exports local bindings.
+ */
+const exportsLocalBindings = (program: t.Program): boolean =>
+  program.body.some(
     (statement) =>
-      (t.isExportNamedDeclaration(statement) &&
-        statement.source == null &&
-        statement.specifiers.some(
-          (specifier) =>
-            t.isExportSpecifier(specifier) && specifier.local.name === name,
-        )) ||
-      (t.isExportDefaultDeclaration(statement) &&
-        t.isIdentifier(statement.declaration) &&
-        statement.declaration.name === name),
+      (t.isExportNamedDeclaration(statement) && statement.source == null) ||
+      t.isExportDefaultDeclaration(statement) ||
+      t.isTSExportAssignment(statement),
   );
-};
 
 /** Avoid building mutation facts for parameters, missing or unresolved objects. */
 export const hasElectronOptionObjectCandidate = (

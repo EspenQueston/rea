@@ -288,8 +288,15 @@ describe("Electron constant options read from nested functions", () => {
     "export const preferences = { nodeIntegration: true };",
     "const preferences = { nodeIntegration: true }; export { preferences };",
     "const preferences = { nodeIntegration: true }; export default preferences;",
+    "const preferences = { nodeIntegration: true }; export const shared = preferences;",
+    "const preferences = { nodeIntegration: true }; const shared = preferences; export { shared };",
+    "const preferences = { nodeIntegration: true }; export const box = { preferences };",
+    "const preferences = { nodeIntegration: true }; export default [preferences];",
+    "const preferences = { nodeIntegration: true }; export function get() { return preferences; }",
+    // Exporting only the window factory still exports local bindings.
+    "const preferences = { nodeIntegration: true }; export { create };",
   ])(
-    "keeps exported constants unknown because importers may change them: %s",
+    "keeps ES module constants unknown because importers may reach them: %s",
     (declaration) => {
       const analysis = analyzeJavaScriptStaticSource(`
       import { BrowserWindow } from "electron";
@@ -301,6 +308,44 @@ describe("Electron constant options read from nested functions", () => {
       ]);
     },
   );
+
+  it.each([
+    "module.exports = { preferences };",
+    "const shared = preferences; module.exports.shared = shared;",
+    "exports.box = { value: preferences };",
+    "module.exports.get = () => preferences;",
+    "function get() { return preferences; } module.exports = { get };",
+  ])("keeps CommonJS-exposed constants unknown: %s", (exposure) => {
+    const analysis = analyzeJavaScriptStaticSource(`
+      const { BrowserWindow } = require("electron");
+      const preferences = { nodeIntegration: true };
+      ${exposure}
+      function create() { new BrowserWindow({ webPreferences: preferences }); }
+    `);
+    expect(analysis.electron.browser_windows).toMatchObject([
+      { web_preferences_status: "dynamic", web_preferences: [] },
+    ]);
+  });
+
+  it("resolves a CommonJS module that exports only the window factory", () => {
+    const analysis = analyzeJavaScriptStaticSource(`
+      const { BrowserWindow } = require("electron");
+      const preferences = { nodeIntegration: true };
+      function create() { new BrowserWindow({ webPreferences: preferences }); }
+      module.exports = { create };
+    `);
+    expect(analysis.electron.browser_windows).toMatchObject([
+      {
+        web_preferences_status: "object-literal",
+        web_preferences: [
+          {
+            name: "nodeIntegration",
+            value: { status: "literal", value: true },
+          },
+        ],
+      },
+    ]);
+  });
 });
 
 describe("Electron option evidence", () => {
