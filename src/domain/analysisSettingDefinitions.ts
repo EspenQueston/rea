@@ -137,6 +137,7 @@ export const ANALYSIS_SETTINGS = {
       "inspect_android_class",
       "inspect_android_method",
       "trace_android_references",
+      "trace_android_resource_references",
     ],
   },
   "regex.matching_deadline_ms": {

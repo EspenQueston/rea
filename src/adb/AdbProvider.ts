@@ -88,6 +88,7 @@ import {
   runtimeControlCapabilityError,
 } from "../process/RuntimeControlUnavailableError.js";
 import {
+  ADB_TRANSIENT_DEVICE_STATE,
   adbCommandOutputFailure,
   adbArguments,
   runAdb,
@@ -3132,9 +3133,7 @@ export class AdbProvider {
         // failure (unauthorized, permissions, missing adb) keeps its tagged error.
         const transient =
           ran.error instanceof AnalysisTimeoutError ||
-          /device[^\n]*not found|device offline|still authorizing|still connecting|no devices|error: closed/iu.test(
-            ran.error.message,
-          );
+          ADB_TRANSIENT_DEVICE_STATE.test(ran.error.message);
         if (!transient) return ran;
         lastError = ran.error.message;
       } else {
