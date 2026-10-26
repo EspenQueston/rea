@@ -498,13 +498,24 @@ Do not rename `index.cjs` to `index.mjs` or disable protection to make startup p
 `rea update` installs the exact resolved
 release into the npm prefix or Bun global directory that owns the running
 package, then checks the new executable's version before reporting success.
-That verification covers the CLI version; it does not establish readiness of
-optional native providers such as Frida. Updates keep dependency lifecycle
-scripts disabled, so a native binding that needs an install or build step may
-remain unavailable. A later provider command reports its own load failure;
-retain that diagnostic and the owning installation path before choosing a manual
-repair. The updater does not download or rebuild the binding. It does not reopen
-onboarding. For npm installations, release lookup and
+That verification covers the CLI version. Separately, `optionalProviderReadiness`
+reports whether the installed Frida module loads in a fresh Node process, in
+both human and structured output. Loading the module does not establish device
+access or instrumentation readiness. An unavailable optional provider keeps a
+verified update successful (`updated`, exit 0). An already-current owned
+installation is checked again without reinstalling; an unidentified installation
+has no readiness result.
+
+Updates keep dependency lifecycle scripts disabled. If Frida cannot load,
+inspect the returned diagnostic, recovery arguments and working directory.
+The manual recovery command runs only the resolved Frida package's install
+script, including when the dependency is hoisted; it may download or build the
+native binding. The updater never runs that command. Rerun `rea update` after
+repair to check readiness. An absent optional dependency requires reinstalling
+REA with optional dependencies included. A failed or unparseable probe remains
+`unknown` and does not imply that a binding is missing.
+
+The updater does not reopen onboarding. For npm installations, release lookup and
 installation both use npm's configured registry. Bun global updates require
 Bun 1.2.17 or later, which introduced `bun info`. The updater checks `bun --version`
 first and stops with an instruction to upgrade Bun manually if the version is
