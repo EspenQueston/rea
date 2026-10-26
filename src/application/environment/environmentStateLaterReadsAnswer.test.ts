@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  LATER_BULK_ROWS,
   LATER_FIELD_ROWS,
   SOFT_DELETED_ROWS,
 } from "../../../tests/fixtures/environmentStateLaterReads.js";
@@ -36,5 +37,13 @@ describe("served writes modelled on later reads", () => {
       body: { done: true },
     }).body;
     expect(body).toEqual({ id: 1, title: "Trim the wicks", done: true });
+  });
+
+  it("answers a bulk update of an initial entity without the field only created entities show", () => {
+    const tasks = servedFrom(LATER_BULK_ROWS);
+    const body = tasks.answer("patch_tasks", {
+      body: [{ id: 1, done: true }],
+    }).body;
+    expect(body).toEqual([{ id: 1, title: "Trim the wicks", done: true }]);
   });
 });

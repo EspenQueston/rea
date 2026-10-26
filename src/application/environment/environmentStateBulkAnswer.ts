@@ -4,6 +4,8 @@ import {
 } from "../../domain/analysisView/environmentStateWriteAddress.js";
 import {
   bodyProblem,
+  laterItemFields,
+  optionalFields,
   updatedEntity,
   updatedFields,
   writtenBulkResponse,
@@ -180,6 +182,12 @@ export const answerBulk = (
           ...entity,
           sent: Object.keys(targets.value[index]!.body ?? {}),
         })),
+        optionalFields(plan),
+        laterItemFields(
+          serving.store.state.views.values(),
+          serving.store.state.entities,
+          plan.target,
+        ),
       ),
     {
       source: "state",

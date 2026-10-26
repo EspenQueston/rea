@@ -24,8 +24,8 @@ each write back:
   membership and for a list query's `limit` role.
 - **Fields only later reads show.** An item view also shows the members that reads after its type's first write show
   of the entities they name, when no initial entity holds them. They are never required. An update or delete that
-  answers with the entity leaves such a field out when the entity does not hold it, and the field no longer makes the
-  write `incomplete-entities`. A field some initial entity holds keeps the existing rule: an answer showing it is
+  answers with the entity, a bulk update's answer included, leaves such a field out when the entity does not hold it,
+  and the field no longer makes the write `incomplete-entities`. A field some initial entity holds keeps the existing rule: an answer showing it is
   refused for an entity without it.
 - **Skill.** Updates change the fields a person would change (a name, an email address, a status, a due date) rather
   than only a description, since a served update accepts only the members a recorded update stored, and a deleted

@@ -86,3 +86,43 @@ export const LATER_FIELD_ROWS: readonly TimedCaptureRow[] = (() => {
     ],
   ];
 })();
+
+/** The same seeded and created tasks, then one bulk update marking both created tasks done, whose answer shows their subscriptions. */
+export const LATER_BULK_ROWS: readonly TimedCaptureRow[] = (() => {
+  const seed = task(1, "Trim the wicks");
+  const [first, second] = [
+    task(2, "Order lamp oil"),
+    task(3, "Paint the rail"),
+  ];
+  const created = (entity: Entity) => ({
+    ...entity,
+    ...subscribed(Number(entity["id"])),
+  });
+  const done = (entity: Entity) => ({ ...created(entity), done: true });
+  return [
+    ["GET", "/api/tasks", [seed]],
+    ["GET", "/api/tasks/1", seed],
+    ["POST", "/api/tasks", first, 201, { title: "Order lamp oil" }],
+    ["GET", "/api/tasks/2", created(first)],
+    ["POST", "/api/tasks", second, 201, { title: "Paint the rail" }],
+    ["GET", "/api/tasks/3", created(second)],
+    ["GET", "/api/tasks", [seed, first, second]],
+    [
+      "PATCH",
+      "/api/tasks",
+      [done(first), done(second)],
+      200,
+      [
+        { id: 2, done: true },
+        { id: 3, done: true },
+      ],
+    ],
+    ["GET", "/api/tasks/2", done(first)],
+    ["GET", "/api/tasks/3", done(second)],
+    [
+      "GET",
+      "/api/tasks",
+      [seed, { ...first, done: true }, { ...second, done: true }],
+    ],
+  ];
+})();

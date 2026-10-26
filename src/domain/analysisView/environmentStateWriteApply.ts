@@ -616,7 +616,7 @@ export const writtenResponse = (
   );
 };
 
-/** The shared bulk renderer: fixed acknowledgements, or one first-template element per written entity. */
+/** The shared bulk renderer: fixed acknowledgements, or one first-template element per written entity, each with the single answer's optional and later fields. */
 export const writtenBulkResponse = (
   response: WriteResponse,
   recorded: JsonValue | undefined,
@@ -625,6 +625,8 @@ export const writtenBulkResponse = (
     readonly id: string;
     readonly sent?: readonly string[];
   }[],
+  optional: readonly string[] = [],
+  later: ReadonlySet<string> = new Set(),
 ): Applied<JsonValue | undefined> => {
   if (response.shape === "empty") return ok(undefined);
   if (response.shape === "recorded") return ok(recorded);
@@ -637,6 +639,8 @@ export const writtenBulkResponse = (
       { ...response, pointer: "" },
       template,
       entity,
+      optional,
+      later,
     );
     if (!element.ok) return element;
     elements.push(element.value ?? null);

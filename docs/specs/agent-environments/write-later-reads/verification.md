@@ -21,8 +21,8 @@ Ubuntu 24.04 VMs for the task runs.
   the list; only a `true` `deleted`, `isDeleted` or `is_deleted` marks an object deleted; a delete is confirmed by a
   list read paged with `maxSize`; a field only created tasks show joins the task item view without being required; a
   task update whose answers show it is served.
-- Serving: a deleted contact leaves the served list; an update of a seeded task answers without the field only created
-  tasks show.
+- Serving: a deleted contact leaves the served list; an update of a seeded task, single or bulk, answers without the
+  field only created tasks show (the bulk case fails on `4515a000`, before the review fix).
 - The six behaviour tests fail on `053264bd`.
 - The existing serving test that refuses to give chapter rows to a book the state holds without them still passes. A
   first version of the answer rule left out every field the item view does not require, which served that update; the
