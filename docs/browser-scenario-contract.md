@@ -541,6 +541,14 @@ id the application assigns:
   environments model them. The environment build warns about saved values
   named like credentials that are not marked secret
   (`credential-named-saved-values`).
+- Screenshots are withheld as `missing` from the start when the scenario plans
+  any response save marked `secret: true`, page-derived or Basic authentication
+  header values, or whenever nonempty sensitive values
+  are already known. Raw pixels cannot be safely text-redacted, so the provider
+  does not request pixels in those cases. This also protects earlier steps and
+  partial failures without retaining an image to scrub later. Other requested
+  artifacts remain available; affected screenshot/aggregate completeness is
+  partial and is not eligible for equality.
 - Saved URLs and expanded request JSON are admitted before building their expanded strings or
   serializing. Its allowance is the smaller of Node's string limit and
   one sixteenth of current V8 available heap bytes, allowing for the expanded

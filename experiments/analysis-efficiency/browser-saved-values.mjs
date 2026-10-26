@@ -522,6 +522,11 @@ try {
       capture: {
         ...sourceScenario.capture,
         events: [...sourceScenario.capture.events, "console"],
+        after_each_step: [
+          ...sourceScenario.capture.after_each_step,
+          "screenshot",
+        ],
+        at_end: [...sourceScenario.capture.at_end, "screenshot"],
       },
       actions: [
         {
@@ -552,6 +557,20 @@ try {
         record.evidence_id === followup.normalized_result.parent_evidence_id,
     );
     assert.ok(followupParent);
+    assert.equal(await page.locator("#sensitive").innerText(), "source-token");
+    assert.equal(followupParent.normalized_result.steps.length, 3);
+    assert.ok(
+      followupParent.normalized_result.steps.every(
+        (step) =>
+          step.artifacts.screenshot.state === "missing" &&
+          step.completeness.missing_sections.includes("screenshot"),
+      ),
+    );
+    assert.ok(
+      followupParent.normalized_result.completeness.missing_sections.includes(
+        "screenshot",
+      ),
+    );
     const consoleEvents = followupParent.normalized_result.events.items.filter(
       (event) => event.kind === "console" && event.text.includes("REDACTED"),
     );
@@ -590,6 +609,43 @@ try {
       (await (await fetch(countUrl)).json()).totalItems,
       beforeCount,
     );
+    const publicScreenshot = await invoke("capture_browser_scenario", {
+      ...sourceScenario,
+      start_url: { url: origin + "/immediate-followup.html" },
+      actions: [
+        { step_id: "settle", action: "wait_for_timeout", duration_ms: 1 },
+      ],
+      capture: {
+        ...sourceScenario.capture,
+        events: [],
+        network: {
+          request_body: false,
+          response_body: false,
+          header_values: false,
+        },
+        after_each_step: [],
+        at_end: ["screenshot"],
+      },
+    });
+    const publicPath = join(output, "public-screenshot-evidence.json");
+    await invoke("export_evidence_bundle", { path: publicPath });
+    const publicBundle = JSON.parse(await readFile(publicPath, "utf8"));
+    const publicParent = publicBundle.records.find(
+      (record) =>
+        record.evidence_id ===
+        publicScreenshot.normalized_result.parent_evidence_id,
+    );
+    assert.ok(publicParent);
+    assert.equal(await page.locator("#sensitive").innerText(), "");
+    const png =
+      publicParent.normalized_result.steps.at(-1).artifacts.screenshot;
+    assert.equal(png.state, "captured");
+    assert.equal(
+      Buffer.from(png.value.data_base64, "base64")
+        .subarray(0, 8)
+        .toString("hex"),
+      "89504e470d0a1a0a",
+    );
     runs.push({
       verification: "source-and-later-JSON-spellings",
       verified_bodies: bodies.length,
@@ -597,6 +653,8 @@ try {
       whole_json_secret_withheld: true,
       immediate_followup_protected: true,
       immediate_console_protected: true,
+      rendered_secret_screenshots_withheld: true,
+      nonsecret_screenshot_captured: true,
       whole_json_status: postResponse.status,
     });
   }

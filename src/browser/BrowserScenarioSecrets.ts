@@ -278,12 +278,20 @@ export class BrowserScenarioSecrets {
   private redactionCostPerCharacter = 8;
   private learnedSecrets = false;
 
+  /** Pixel privacy is established before the scenario can render a future marked response. */
+  withholdsScreenshots(): boolean {
+    return this.plansSensitiveValues || this.textPatterns.length > 0;
+  }
+
   /** Runtime redaction facts are independent of source request identity/readiness. */
   hasLearnedSecrets(): boolean {
     return this.learnedSecrets;
   }
 
-  private constructor(private readonly values: Map<string, string>) {
+  private constructor(
+    private readonly values: Map<string, string>,
+    private readonly plansSensitiveValues: boolean,
+  ) {
     this.compile();
   }
 
@@ -398,7 +406,19 @@ export class BrowserScenarioSecrets {
         );
       values.set(declaration.secret_id, value);
     }
-    return ok(new BrowserScenarioSecrets(values));
+    const plansSensitiveValues = scenario.actions.some((action) =>
+      action.action === "request"
+        ? action.save.some((entry) => entry.secret) ||
+          action.headers.some(
+            ({ value }) =>
+              value.source === "cookie" ||
+              value.source === "local_storage" ||
+              value.source === "basic_credentials",
+          )
+        : (action.action === "click" || action.action === "press") &&
+          (action.save_response?.save.some((entry) => entry.secret) ?? false),
+    );
+    return ok(new BrowserScenarioSecrets(values, plansSensitiveValues));
   }
 
   /** Values steps saved from JSON responses, by name, as strings or numbers. */
