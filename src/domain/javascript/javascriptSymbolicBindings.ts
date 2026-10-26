@@ -9,7 +9,7 @@ import {
   unwrapJavaScriptExpression,
 } from "./javascriptAstValues.js";
 import { createSemanticExpressionShapeResolver } from "./javascriptSemanticExpressionShapes.js";
-import { isUnmodifiedGlobalReference } from "./javascriptSemanticAmbientWrites.js";
+import { createGlobalReferenceReader } from "./javascriptSemanticAmbientWrites.js";
 import { javascriptBootstrapAt } from "./javascriptBootstrap.js";
 import { ELECTRON_MODULE } from "./javascriptElectronMemberWrites.js";
 import {
@@ -128,6 +128,10 @@ export class JavaScriptSymbolicBindings {
   ) {
     this.#electronIdentity = electronIdentity;
     const shapes = createSemanticExpressionShapeResolver(state);
+    const defineProperty = createGlobalReferenceReader(state, [
+      "Object",
+      "defineProperty",
+    ]);
     this.#indexBindingAliases();
     traverseJavaScriptAst(program, {
       enter: (node) => {
@@ -138,20 +142,34 @@ export class JavaScriptSymbolicBindings {
       enter: (node) => {
         const target = semanticWriteSiteTarget(node);
         if (target !== null) this.#indexWriteSite(target, node);
-        if (
-          t.isCallExpression(node) &&
-          t.isMemberExpression(node.callee) &&
-          isUnmodifiedGlobalReference(node.callee, state, [
-            "Object",
-            "defineProperty",
-          ])
-        ) {
+        if (t.isCallExpression(node) && t.isMemberExpression(node.callee)) {
+          const intrinsic = defineProperty(node.callee);
+          if (intrinsic.status === "unrelated") return;
           const [target, key, descriptor] = node.arguments;
           if (
             t.isIdentifier(target) &&
             t.isStringLiteral(key) &&
             descriptor !== undefined
           ) {
+            if (intrinsic.status !== "unmodified") {
+              const replacement =
+                intrinsic.status === "replacement"
+                  ? unwrapJavaScriptExpression(intrinsic.value).node
+                  : undefined;
+              const unchanged =
+                (t.isFunctionExpression(replacement) ||
+                  t.isArrowFunctionExpression(replacement)) &&
+                t.isBlockStatement(replacement.body) &&
+                replacement.body.body.length === 0 &&
+                runtimeFunctionParameters(replacement).every(
+                  (parameter) =>
+                    t.isIdentifier(parameter) ||
+                    (t.isRestElement(parameter) &&
+                      t.isIdentifier(parameter.argument)),
+                );
+              if (!unchanged) this.#addWrite(target, [key.value], node, node);
+              return;
+            }
             const properties = staticObjectPropertyReader(
               unwrapJavaScriptExpression(descriptor).node,
               shapes.isNullish,

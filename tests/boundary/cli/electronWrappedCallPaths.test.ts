@@ -889,6 +889,9 @@ const descriptorCases: readonly (readonly [
   ["mixed-getter", `{get:()=>0,...{value:${descriptorSender}}}`, false, true],
   ["mixed-setter", `{value:${descriptorSender},...{set:()=>{}}}`, false, true],
   ["string-spread", `{value:${descriptorSender},..."x"}`, true],
+  ["patch-after", `{value:${descriptorNoop}}`, false],
+  ["outer-patch-after", `{value:${descriptorNoop}}`, false],
+  ["mutating-intrinsic", `{value:${descriptorSender}}`, false],
   ["null-prototype", `{__proto__:null,value:${descriptorSender}}`, true],
   ["function-spread", `{value:${descriptorSender},...function(){}}`, true],
   ["regexp-spread", `{value:${descriptorSender},.../x/}`, true],
@@ -1013,9 +1016,10 @@ cliTest.for(["CLI", "stdio MCP"] as const)(
           2(module) { module.exports = require("electron"); },
           5(module, exports, load) {
             const electron = load(2);
-            ${name === "patched-intrinsic" ? "Object.defineProperty=()=>{};" : ""}
-            exports.sender = ${name === "accessor-noop" || name === "patched-intrinsic" ? descriptorSender : descriptorNoop};
+            ${name === "patched-intrinsic" ? "Object.defineProperty=()=>{};" : name === "mutating-intrinsic" ? "Object.defineProperty=(target,key)=>{target[key]=" + descriptorNoop + ";};" : ""}
+            exports.sender = ${["accessor-noop", "patched-intrinsic", "patch-after", "outer-patch-after", "mutating-intrinsic"].includes(name) ? descriptorSender : descriptorNoop};
             Object.defineProperty(exports, "sender", ${descriptor});
+            ${name === "patch-after" ? "Object.defineProperty=()=>{};" : ""}
             function send(channel, ...args) { electron.ipcRenderer.send(channel, ...args); }
           },
           9(module, exports, load) {
@@ -1025,6 +1029,7 @@ cliTest.for(["CLI", "stdio MCP"] as const)(
         };
         function load(id) { const m = {exports:{}}; modules[id].call(m.exports,m,m.exports,load); return m.exports; }
         load(9);
+        ${name === "outer-patch-after" ? "Object.defineProperty=()=>{};" : ""}
       })();`;
         // Node executes only this test-owned fixture with a recording Electron
         // substitute: an independent descriptor-semantics oracle, not provider proof.

@@ -868,3 +868,34 @@ it("reads a literal prototype only from its actual prototype setter", () => {
     ),
   ).toEqual({ kind: "external", path: ["electron"] });
 });
+
+it.each(["local", "outer"])(
+  "does not resurrect an export when the intrinsic changes %s after replacement",
+  (position) => {
+    const value = inspectOne(`(() => {
+    const modules = {
+      1(module,exports) {
+        exports.api = require("electron");
+        Object.defineProperty(exports,"api",{value:null});
+        ${position === "local" ? "Object.defineProperty=()=>{};" : ""}
+      },
+      2(module,exports,load) {inspect(load(1).api);}
+    };
+    function load(id){const m={exports:{}};modules[id](m,m.exports,load);return m.exports;}
+    load(2);
+    ${position === "outer" ? "Object.defineProperty=()=>{};" : ""}
+  })();`);
+    expect(value.kind).not.toBe("external");
+  },
+);
+
+it("does not preserve a sender through a possibly mutating intrinsic replacement", () => {
+  const value = inspectOne(`(() => {
+    const modules={
+      1(module,exports){exports.api=require("electron");Object.defineProperty=(target,key)=>{target[key]=null;};Object.defineProperty(exports,"api",{value:require("electron")});},
+      2(module,exports,load){inspect(load(1).api);}
+    };
+    function load(id){const m={exports:{}};modules[id](m,m.exports,load);return m.exports;}load(2);
+  })();`);
+  expect(value.kind).toBe("unknown");
+});
