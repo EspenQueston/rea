@@ -29,6 +29,12 @@ export const registerCaptureCommands = (
     options: z
       .object({
         ...inspectPacketFieldsInputSchema.shape,
+        kind: inspectPacketFieldsInputSchema.shape.kind.describe(
+          "Return protocol registrations or field definitions",
+        ),
+        offset: inspectPacketFieldsInputSchema.shape.offset.describe(
+          "Number of matching records to skip",
+        ),
         limit: z
           .number()
           .int()
@@ -75,6 +81,10 @@ export const registerCaptureCommands = (
     options: z
       .object({
         ...packetCaptureOptionsSchema.shape,
+        match_offset:
+          packetCaptureOptionsSchema.shape.match_offset.describe(
+            "Skip this many matching packets after filtering",
+          ),
         match_limit: z
           .number()
           .int()
