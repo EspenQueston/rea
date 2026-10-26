@@ -17,6 +17,8 @@ import {
   type UpdateInstallation,
 } from "./Update.js";
 import { planIntegrationMaintenance } from "./UpdateMaintenance.js";
+import { withoutPackageRunnerIdentity } from "./ClientRegistrationIdentity.js";
+import { fridaBindingReadiness } from "../frida/FridaBindingReadiness.js";
 import { UpdateCommandRunner } from "./UpdateCommandRunner.js";
 
 /** npm filesystem queries used to identify the installation being updated. */
@@ -302,6 +304,13 @@ export const systemUpdateHost = (
         ],
         environment,
       ),
+    optionalProviderReadiness: async (installation) => [
+      await fridaBindingReadiness(
+        installation.packageRoot,
+        installation.manager,
+        withoutPackageRunnerIdentity(environment),
+      ),
+    ],
     planMaintenance: (installation) =>
       planIntegrationMaintenance(
         home ?? homeDirectoryFromEnvironment(environment, process.platform),
