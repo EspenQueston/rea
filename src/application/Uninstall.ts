@@ -620,6 +620,7 @@ export const systemUninstallHost = (
 const uninstallConfigPaths = (client: SetupClient): readonly string[] => [
   ...new Set([
     ...(client.configPaths ?? [client.configPath]),
+    ...(client.projectConfigPaths ?? []),
     ...(client.msixPackage === undefined
       ? []
       : [
