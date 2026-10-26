@@ -71,6 +71,7 @@ import { resolveGhidraExtensions } from "./extensions/GhidraExtensions.js";
 import {
   CAPABILITIES,
   existingProjectCapabilities,
+  EXISTING_PROJECT_WINDOWS_UNAVAILABLE,
   windowsP0Capabilities,
   GHIDRA_PROVIDER_IDENTITY,
   WINDOWS_P0_NATIVE_PE_ARCHITECTURES,
@@ -145,11 +146,12 @@ export class GhidraProvider implements AnalysisProviderCandidate {
   }
 
   capabilities(): readonly CapabilityDescriptor[] {
-    return (this.installationHost?.platform ?? process.platform) === "win32"
-      ? windowsP0Capabilities()
-      : this.config.ghidraExistingProject === undefined
-        ? CAPABILITIES
-        : existingProjectCapabilities();
+    const platform = this.installationHost?.platform ?? process.platform;
+    return this.config.ghidraExistingProject !== undefined
+      ? existingProjectCapabilities(platform)
+      : platform === "win32"
+        ? windowsP0Capabilities()
+        : CAPABILITIES;
   }
 
   async inspectAvailability(
@@ -189,11 +191,11 @@ export class GhidraProvider implements AnalysisProviderCandidate {
     return {
       availability,
       capabilities:
-        readiness === undefined
-          ? this.config.ghidraExistingProject === undefined
+        this.config.ghidraExistingProject !== undefined
+          ? existingProjectCapabilities(installation.platform)
+          : readiness === undefined
             ? CAPABILITIES
-            : existingProjectCapabilities()
-          : windowsP0Capabilities(readiness),
+            : windowsP0Capabilities(readiness),
     };
   }
 
@@ -202,6 +204,16 @@ export class GhidraProvider implements AnalysisProviderCandidate {
     readiness: WindowsNativeReadiness | undefined,
   ): ProviderAvailability {
     const diagnostics = ghidraInstallationDiagnostics(installation);
+    if (
+      this.config.ghidraExistingProject !== undefined &&
+      installation.platform === "win32"
+    )
+      return {
+        status: "unavailable",
+        code: "unsupported_host",
+        reason: EXISTING_PROJECT_WINDOWS_UNAVAILABLE,
+        diagnostics,
+      };
     if (installation.status === "available" && readiness?.available === false)
       return {
         status: "unavailable",
@@ -417,7 +429,7 @@ export class GhidraProvider implements AnalysisProviderCandidate {
         );
       const project = await resolveGhidraProject(
         this.config.ghidraExistingProject,
-        target.sourcePath ?? target.path,
+        target,
         this.#inspectionResources,
         options?.signal,
       );

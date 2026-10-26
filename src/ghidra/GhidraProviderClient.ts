@@ -1,3 +1,5 @@
+import { ghidraProjectHistoryEvidence } from "./GhidraProjectHistory.js";
+import type { Evidence, EvidenceLocation } from "../domain/evidence.js";
 import { ghidraProjectCommitmentSchema } from "./GhidraProjectSnapshot.js";
 import { analysisSettingLimit } from "../domain/analysisSettingDefinitions.js";
 import { z } from "zod";
@@ -54,7 +56,6 @@ import {
   resourceConstraintRecovery,
 } from "../domain/analysisErrorCore.js";
 import type { AnalysisError } from "../domain/analysisErrorBase.js";
-import type { EvidenceLocation } from "../domain/evidence.js";
 import type { RelationshipCoverage } from "../domain/relationshipCoverage.js";
 import {
   providerRetryAction,
@@ -134,6 +135,7 @@ export type GhidraProviderClientFactory = (
 type GhidraProviderClientInstance = ReturnType<GhidraProviderClientFactory>;
 
 interface GhidraExecutionMetadata {
+  readonly sourceEvidence?: readonly Evidence[];
   readonly cachePolicy?: "live";
   readonly rawResult?: JsonValue;
   readonly limitations?: readonly string[];
@@ -509,6 +511,7 @@ export const createGhidraProviderClient = (input: {
   let providerStarted = false;
   const lostProviderHealth = (): ProviderOperationHealth | undefined =>
     providerStarted ? client.operationHealthSnapshot?.() : undefined;
+  let projectHistory: Evidence | undefined;
   const checkSessionObservations = async (
     operation: AnalysisOperation,
     info: GhidraSessionInfo,
@@ -520,48 +523,62 @@ export const createGhidraProviderClient = (input: {
         ...ghidraPePdbLimitations(target, info.pdb),
       );
     }
-    const softFloatReason = ghidraMipsSoftFloatFailure(
-      softFloat,
-      info.mips_soft_float_storage,
-    );
-    extensionFailure =
-      ghidraExtensionFailure(
+    if (project !== undefined) {
+      extensionFailure = ghidraExtensionFailure(
         extensions,
         info.analysis_extensions ?? [],
         operation,
-      ) ??
-      ghidraSeedFailure(seeds, info.analysis_seeds, operation) ??
-      ghidraDisabledAnalyzerFailure(
-        disabledAnalyzers,
-        info.disabled_analyzers,
-        operation,
-      ) ??
-      (softFloatReason === undefined
-        ? undefined
-        : new ProviderAdapterError("ghidra", operation, {
-            diagnostics: { reason: softFloatReason },
-          }));
-    if (extensionFailure === undefined && info.analysis_seeds !== undefined)
-      seedLimitations.splice(
-        0,
-        seedLimitations.length,
-        ...ghidraSeedLimitations(seeds, info.analysis_seeds),
       );
-    if (extensionFailure === undefined)
-      softFloatLimitations.splice(
-        0,
-        softFloatLimitations.length,
-        ...ghidraMipsSoftFloatLimitations(
-          softFloat,
-          info.mips_soft_float_storage,
-        ),
+      if (extensionFailure === undefined)
+        projectHistory ??= ghidraProjectHistoryEvidence(
+          target,
+          committedProfile,
+          info,
+        );
+    } else {
+      const softFloatReason = ghidraMipsSoftFloatFailure(
+        softFloat,
+        info.mips_soft_float_storage,
       );
-    if (extensionFailure === undefined)
-      disabledAnalyzerLimitations.splice(
-        0,
-        disabledAnalyzerLimitations.length,
-        ...ghidraDisabledAnalyzerLimitations(info.disabled_analyzers),
-      );
+      extensionFailure =
+        ghidraExtensionFailure(
+          extensions,
+          info.analysis_extensions ?? [],
+          operation,
+        ) ??
+        ghidraSeedFailure(seeds, info.analysis_seeds, operation) ??
+        ghidraDisabledAnalyzerFailure(
+          disabledAnalyzers,
+          info.disabled_analyzers,
+          operation,
+        ) ??
+        (softFloatReason === undefined
+          ? undefined
+          : new ProviderAdapterError("ghidra", operation, {
+              diagnostics: { reason: softFloatReason },
+            }));
+      if (extensionFailure === undefined && info.analysis_seeds !== undefined)
+        seedLimitations.splice(
+          0,
+          seedLimitations.length,
+          ...ghidraSeedLimitations(seeds, info.analysis_seeds),
+        );
+      if (extensionFailure === undefined)
+        softFloatLimitations.splice(
+          0,
+          softFloatLimitations.length,
+          ...ghidraMipsSoftFloatLimitations(
+            softFloat,
+            info.mips_soft_float_storage,
+          ),
+        );
+      if (extensionFailure === undefined)
+        disabledAnalyzerLimitations.splice(
+          0,
+          disabledAnalyzerLimitations.length,
+          ...ghidraDisabledAnalyzerLimitations(info.disabled_analyzers),
+        );
+    }
     if (extensionFailure === undefined) return undefined;
     const closed = await client.close();
     return closed.ok
@@ -621,6 +638,14 @@ export const createGhidraProviderClient = (input: {
   ) => {
     return createAnalysisExecution(normalized, committedProfile.provider, {
       ...observation,
+      ...(projectHistory === undefined
+        ? {}
+        : {
+            sourceEvidence: [
+              ...(observation.sourceEvidence ?? []),
+              projectHistory,
+            ],
+          }),
       analysisProfile: committedProfile,
       limitations: [
         ...limitationsFor(operation, project !== undefined),
@@ -726,6 +751,7 @@ export const createGhidraProviderClient = (input: {
         : parseGhidraInventoryInput(operation, parameters);
       if (!input.ok) return input;
       if (
+        project !== undefined ||
         target.format === "pe" ||
         extensions.length > 0 ||
         seeds !== undefined ||

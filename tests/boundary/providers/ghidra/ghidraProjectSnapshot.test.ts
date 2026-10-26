@@ -35,7 +35,7 @@ it.skipIf(process.platform === "win32")(
     await symlink("unrelated-missing-project", join(source, "unrelated.gpr"));
     const commitment = await resolveGhidraProject(
       { path: join(source, "selected.gpr"), programName: "target.elf" },
-      "/tmp/target.elf",
+      { path: "/tmp/target.elf" },
       resources,
     );
     await copyExistingGhidraProject(source, destination, {
@@ -73,7 +73,10 @@ it("rejects a project whose copied content differs from the committed analysis p
       expectedSha256: original,
       resources,
     }),
-  ).rejects.toMatchObject({ name: "RegularFileChangedError" });
+  ).rejects.toMatchObject({
+    _tag: "AnalysisArtifactChangedError",
+    cause: { name: "RegularFileChangedError" },
+  });
 });
 
 it("parses an opt-in project once for shared CLI/MCP configuration and rejects import overrides", () => {
@@ -106,7 +109,7 @@ it("reports an invalid derived program name at its selection boundary", async ()
   await expect(
     resolveGhidraProject(
       { path: join(source, "selected.gpr") },
-      "/tmp/*",
+      { path: "/tmp/*" },
       resources,
     ),
   ).rejects.toMatchObject({
@@ -114,3 +117,56 @@ it("reports an invalid derived program name at its selection boundary", async ()
     settings: [{ setting: "REA_GHIDRA_PROGRAM_NAME" }],
   });
 });
+
+it("derives a bundle program from the resolved executable while preserving explicit names", async () => {
+  const { source } = await fixture();
+  const target = {
+    path: join(source, "Demo.app", "Contents", "MacOS", "ActualExecutable"),
+    sourcePath: join(source, "Demo.app"),
+  };
+  const selection = { path: join(source, "selected.gpr") };
+  expect(
+    (await resolveGhidraProject(selection, target, resources)).program_name,
+  ).toBe("ActualExecutable");
+  expect(
+    (
+      await resolveGhidraProject(
+        { ...selection, programName: "CallerSelected" },
+        target,
+        resources,
+      )
+    ).program_name,
+  ).toBe("CallerSelected");
+});
+
+it("allows selected project files beside an owned runtime under the same parent", async () => {
+  const { source } = await fixture();
+  const destination = join(source, "owned-runtime", "project");
+  await mkdir(destination, { recursive: true });
+  const sha256 = await fingerprintGhidraProject(source, "selected", resources);
+  await copyExistingGhidraProject(source, destination, {
+    projectName: "selected",
+    expectedSha256: sha256,
+    resources,
+  });
+  expect((await readdir(destination)).sort()).toEqual([
+    "selected.gpr",
+    "selected.rep",
+  ]);
+});
+
+it.each([null, "caller stopped", { kind: "stop-project-read" }])(
+  "preserves project cancellation and its exact reason: %j",
+  async (reason) => {
+    const controller = new AbortController();
+    controller.abort(reason);
+    await expect(
+      resolveGhidraProject(
+        { path: join(process.cwd(), "absent.gpr") },
+        { path: "/tmp/target" },
+        resources,
+        controller.signal,
+      ),
+    ).rejects.toMatchObject({ _tag: "AnalysisCancelledError", cause: reason });
+  },
+);

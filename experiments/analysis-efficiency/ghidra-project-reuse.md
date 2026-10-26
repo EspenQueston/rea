@@ -90,7 +90,7 @@ source content and cleanup outcomes are verified separately. The actual compiled
 CLI `decompile` selected the same project/profile and returned the same pseudocode
 as MCP for `0x10a420`.
 
-Final focused validation: 34 files, 948 passed / 5 platform skips; typecheck/lint,
+Final focused validation: 35 files, 958 passed / 4 platform skips; typecheck/lint,
 build, 9 documentation cases and full formatting passed. No real macOS, Windows,
 PE or Mach-O reuse claim is made. Windows and special fresh-import profiles remain
 explicitly unsupported for this mode. Very large project trees and interrupted
@@ -124,3 +124,19 @@ so use a disposable source copy. The driver retains full wire messages, catalog,
 report, exported Evidence and normalized comparison facts in its output directory.
 Resource receipts were collected with an external bounded process-family sampler;
 its method and limits are described above. Actual model-token usage remains unmeasured.
+
+## Review boundary regressions
+
+After the measurement runs, review coverage adds resolved-executable defaults for
+`.app` inputs (caller bundle paths remain provenance), early unavailable Windows
+existing-project discovery, exact cancellation reasons from both checkpoints and
+owned file reads, and selected-pair overlap checks that allow a project directly
+under `/tmp`. The ambiguous Windows properties fixture cases were removed; the
+test now covers its actual two distinct release-directory inputs.
+
+A real Ghidra test copy saved seed and disabled-analyzer reports with REA's actual
+pre-scripts. Reopening it through production MCP preserved both as one immutable
+historical Evidence record, linked it from function observations, returned the
+same function/pseudocode facts, and left source content unchanged. Fresh-import
+checks still validate fresh requested work. No real macOS/Windows reuse claim is
+implied by simulated platform boundary tests.

@@ -979,17 +979,11 @@ describe("Ghidra Windows batch command construction", () => {
 });
 
 describe("Ghidra Windows release configuration", () => {
-  it.skipIf(process.platform !== "win32").each([
-    {
-      properties:
-        "application.version=12.1.4\napplication.release.name=PUBLIC\n",
-      release: "ghidra_12.1.4_PUBLIC",
-    },
-    { properties: undefined, release: "renamed-install" },
-    { properties: "application.version=12.1.4\n", release: "renamed-install" },
-  ])(
-    "prepares the release directory through the Windows runtime ($release)",
-    async ({ properties, release }) => {
+  it
+    .skipIf(process.platform !== "win32")
+    .each(["ghidra_12.1.4_PUBLIC", "renamed-install"])(
+    "prepares the %s release directory through the Windows runtime",
+    async (release) => {
       const parent = await createTestTempDirectory("rea-launch-config-");
       const installRoot = join(parent, "renamed-install");
       const runtime = await createGhidraTestRuntime(parent);

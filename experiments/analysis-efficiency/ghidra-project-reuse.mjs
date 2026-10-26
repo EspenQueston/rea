@@ -29,6 +29,7 @@ const { values } = parseArgs({
       "control",
       "expected",
       "heap",
+      "history",
     ].map((key) => [key, { type: "string" }]),
   ),
 });
@@ -168,7 +169,7 @@ try {
             ? {}
             : { programName: values.program }),
         },
-        values.target,
+        { path: values.target },
         projectResources,
       );
     } finally {
@@ -274,6 +275,20 @@ try {
       (record) => record.evidence_id === parentId,
     );
     assert.ok(parent);
+    if (values.history === "required") {
+      const historical = bundle.records.filter(
+        (record) =>
+          record.operation === "health" &&
+          record.parameters.facet === "historical-project-analysis-reports",
+      );
+      assert.equal(historical.length, 1);
+      assert.equal(historical[0].normalized_result.origin, "caller-project");
+      assert.ok(historical[0].normalized_result.analysis_seeds);
+      assert.ok(historical[0].normalized_result.disabled_analyzers);
+      report.historical_evidence_id = historical[0].evidence_id;
+      report.historical_evidence_linked =
+        parent.evidence_links?.includes(historical[0].evidence_id) ?? false;
+    }
     assert.equal(parent.normalized_result.length, count);
     const facts = {
       procedures: parent.normalized_result,
@@ -332,7 +347,7 @@ try {
             ? {}
             : { programName: values.program }),
         },
-        values.target,
+        { path: values.target },
         resources,
       );
     } finally {

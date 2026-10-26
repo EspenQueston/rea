@@ -231,26 +231,39 @@ export const CAPABILITIES: readonly CapabilityDescriptor[] = Object.freeze(
   }),
 );
 
+/** The selected database mode is not part of Windows P0 authority. */
+export const EXISTING_PROJECT_WINDOWS_UNAVAILABLE =
+  "An existing Ghidra project cannot be opened on the Windows launch path.";
+
 /** Read-only project mode retains precise unavailable mutation capabilities. */
-export const existingProjectCapabilities =
-  (): readonly CapabilityDescriptor[] =>
-    CAPABILITIES.map((capability): CapabilityDescriptor => {
-      const limitations = limitationsFor(
-        capability.operation === "binary_overview"
-          ? "read_binary_inventory_summary"
-          : capability.operation,
-        true,
-      );
-      if (capability.effects.mutatesArtifact)
-        return {
-          ...capability,
-          limitations,
-          available: false,
-          reason: "Existing Ghidra project sessions are read-only.",
-          availabilityCode: "open_options_invalid",
-        };
-      return { ...capability, limitations };
-    });
+export const existingProjectCapabilities = (
+  platform: NodeJS.Platform,
+): readonly CapabilityDescriptor[] =>
+  CAPABILITIES.map((capability): CapabilityDescriptor => {
+    const limitations = limitationsFor(
+      capability.operation === "binary_overview"
+        ? "read_binary_inventory_summary"
+        : capability.operation,
+      true,
+    );
+    if (platform === "win32")
+      return {
+        ...capability,
+        limitations,
+        available: false,
+        reason: EXISTING_PROJECT_WINDOWS_UNAVAILABLE,
+        availabilityCode: "unsupported_host",
+      };
+    if (capability.effects.mutatesArtifact)
+      return {
+        ...capability,
+        limitations,
+        available: false,
+        reason: "Existing Ghidra project sessions are read-only.",
+        availabilityCode: "open_options_invalid",
+      };
+    return { ...capability, limitations };
+  });
 /** Capabilities advertised for the experimental Windows x64 P0 boundary. */
 export const windowsP0Capabilities = (
   readiness: WindowsNativeReadiness = inspectWindowsNativeReadiness("win32"),

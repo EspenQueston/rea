@@ -1,3 +1,6 @@
+import { AnalysisError } from "../domain/analysisErrorBase.js";
+import { ghidraFileFailure } from "./GhidraFileArtifacts.js";
+import type { BinaryTarget } from "../domain/binaryTargetTypes.js";
 import { createHash } from "node:crypto";
 import { cp, lstat, mkdir, readdir, realpath } from "node:fs/promises";
 import {
@@ -11,7 +14,10 @@ import {
 } from "node:path";
 import { z } from "zod";
 import type { ArtifactResourceScope } from "../artifacts/ArtifactResourceScope.js";
-import { withArtifactRegularFile } from "../artifacts/ArtifactFileOperation.js";
+import {
+  assertArtifactReadActive,
+  withArtifactRegularFile,
+} from "../artifacts/ArtifactFileOperation.js";
 import {
   sameRegularFileState,
   RegularFileChangedError,
@@ -20,6 +26,20 @@ import { ConfigurationError } from "../domain/configurationErrors.js";
 import { compareUnicodeCodePoints } from "../domain/unicodeCodePointOrder.js";
 import type { GhidraProjectSelection } from "../config/ghidraExistingProject.js";
 import { ghidraProgramNameSchema } from "../config/ghidraExistingProject.js";
+
+/** Classify file cancellation/cleanup before the generic provider boundary. */
+const projectFileOperation = async <Value>(
+  path: string,
+  operation: string,
+  work: () => Promise<Value>,
+): Promise<Value> => {
+  try {
+    return await work();
+  } catch (cause: unknown) {
+    if (cause instanceof AnalysisError) throw cause;
+    throw ghidraFileFailure(cause, operation, { path });
+  }
+};
 
 /** The selected project content, committed before provider or snapshot admission. */
 export const ghidraProjectCommitmentSchema = z.strictObject({
@@ -69,7 +89,7 @@ const visitProject = async (
   signal?: AbortSignal,
 ): Promise<void> => {
   const walk = async (path: string): Promise<void> => {
-    signal?.throwIfAborted();
+    assertArtifactReadActive(signal);
     const metadata = await lstat(join(root, path));
     if (!metadata.isFile() && !metadata.isDirectory())
       throw selectionFailure(
@@ -92,6 +112,7 @@ export const fingerprintGhidraProject = async (
   resources: ArtifactResourceScope,
   signal?: AbortSignal,
 ): Promise<string> => {
+  assertArtifactReadActive(signal);
   await validateProject(root, name);
   const hash = createHash("sha256");
   const buffer = Buffer.allocUnsafe(64 * 1024);
@@ -114,7 +135,7 @@ export const fingerprintGhidraProject = async (
         async ({ handle, initial }) => {
           hash.update(String(initial.size) + "\n");
           for (let offset = 0; offset < initial.size;) {
-            signal?.throwIfAborted();
+            assertArtifactReadActive(signal);
             const { bytesRead } = await handle.read(
               buffer,
               0,
@@ -137,30 +158,40 @@ export const fingerprintGhidraProject = async (
 
 export const resolveGhidraProject = async (
   selection: GhidraProjectSelection,
-  targetPath: string,
+  target: Pick<BinaryTarget, "path">,
   resources: ArtifactResourceScope,
   signal?: AbortSignal,
 ): Promise<GhidraProjectCommitment> => {
-  const projectName = basename(selection.path, ".gpr");
-  const projectPath = await realpath(dirname(selection.path));
-  const program = ghidraProgramNameSchema.safeParse(
-    selection.programName ?? basename(targetPath),
+  return projectFileOperation(
+    selection.path,
+    "resolve_analysis_profile",
+    async () => {
+      assertArtifactReadActive(signal);
+      const projectName = basename(selection.path, ".gpr");
+      const projectPath = await realpath(dirname(selection.path));
+      const program = ghidraProgramNameSchema.safeParse(
+        selection.programName ?? basename(target.path),
+      );
+      if (!program.success)
+        throw selectionFailure(
+          program.error.message,
+          "REA_GHIDRA_PROGRAM_NAME",
+        );
+      const programName = program.data;
+      return {
+        configured_path: selection.path,
+        project_path: projectPath,
+        project_name: projectName,
+        program_name: programName,
+        sha256: await fingerprintGhidraProject(
+          projectPath,
+          projectName,
+          resources,
+          signal,
+        ),
+      };
+    },
   );
-  if (!program.success)
-    throw selectionFailure(program.error.message, "REA_GHIDRA_PROGRAM_NAME");
-  const programName = program.data;
-  return {
-    configured_path: selection.path,
-    project_path: projectPath,
-    project_name: projectName,
-    program_name: programName,
-    sha256: await fingerprintGhidraProject(
-      projectPath,
-      projectName,
-      resources,
-      signal,
-    ),
-  };
 };
 
 const pathsOverlap = (first: string, second: string): boolean => {
@@ -187,55 +218,62 @@ export const copyExistingGhidraProject = async (
     readonly resources?: ArtifactResourceScope | undefined;
   } = {},
 ): Promise<void> => {
-  const {
-    signal,
-    projectName = "rea-project",
-    expectedSha256,
-    resources,
-  } = options;
-  signal?.throwIfAborted();
-  const source = await realpath(sourcePath).catch(() => undefined);
-  const runtime = await realpath(dirname(destinationRoot)).catch(() =>
-    resolve(dirname(destinationRoot)),
-  );
-  if (source !== undefined && pathsOverlap(source, runtime))
-    throw selectionFailure(
-      `Existing Ghidra project directory overlaps the REA runtime directory; select a project outside the runtime: ${sourcePath}`,
+  return projectFileOperation(sourcePath, "open_binary", async () => {
+    const {
+      signal,
+      projectName = "rea-project",
+      expectedSha256,
+      resources,
+    } = options;
+    assertArtifactReadActive(signal);
+    const source = await realpath(sourcePath).catch(() => undefined);
+    const runtime = await realpath(dirname(destinationRoot)).catch(() =>
+      resolve(dirname(destinationRoot)),
     );
-  if (source === undefined)
-    throw selectionFailure(
-      `Existing Ghidra project directory does not exist: ${sourcePath}`,
-    );
-  await validateProject(source, projectName);
-  await visitProject(
-    source,
-    projectName,
-    async (path, directory) => {
-      const destination = join(destinationRoot, path);
-      if (directory) await mkdir(destination, { mode: 0o700 });
-      else
-        await cp(join(source, path), destination, {
-          dereference: true,
-          errorOnExist: true,
-          force: false,
-        });
-      signal?.throwIfAborted();
-    },
-    signal,
-  );
-  if (expectedSha256 !== undefined) {
-    if (resources === undefined)
-      throw selectionFailure(
-        "Existing project verification requires an owned resource scope.",
-      );
     if (
-      (await fingerprintGhidraProject(
-        destinationRoot,
-        projectName,
-        resources,
-        signal,
-      )) !== expectedSha256
+      source !== undefined &&
+      entriesFor(projectName).some((entry) =>
+        pathsOverlap(join(source, entry), runtime),
+      )
     )
-      throw new RegularFileChangedError(sourcePath);
-  }
+      throw selectionFailure(
+        `Existing Ghidra project directory overlaps the REA runtime directory; select a project outside the runtime: ${sourcePath}`,
+      );
+    if (source === undefined)
+      throw selectionFailure(
+        `Existing Ghidra project directory does not exist: ${sourcePath}`,
+      );
+    await validateProject(source, projectName);
+    await visitProject(
+      source,
+      projectName,
+      async (path, directory) => {
+        const destination = join(destinationRoot, path);
+        if (directory) await mkdir(destination, { mode: 0o700 });
+        else
+          await cp(join(source, path), destination, {
+            dereference: true,
+            errorOnExist: true,
+            force: false,
+          });
+        assertArtifactReadActive(signal);
+      },
+      signal,
+    );
+    if (expectedSha256 !== undefined) {
+      if (resources === undefined)
+        throw selectionFailure(
+          "Existing project verification requires an owned resource scope.",
+        );
+      if (
+        (await fingerprintGhidraProject(
+          destinationRoot,
+          projectName,
+          resources,
+          signal,
+        )) !== expectedSha256
+      )
+        throw new RegularFileChangedError(sourcePath);
+    }
+  });
 };
