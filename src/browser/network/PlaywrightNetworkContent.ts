@@ -3,6 +3,7 @@ import {
   mediaTypeEssence,
 } from "../../domain/analysisView/recordedMediaType.js";
 import { createHash } from "node:crypto";
+import { safeParseJson } from "../../domain/safeJson.js";
 
 import {
   AnalysisCancelledError,
@@ -197,11 +198,6 @@ export const captureNetworkBody = async (
     const jsonBody =
       protection !== undefined ||
       (contentType !== undefined && isJson(mediaTypeEssence(contentType)));
-    if (protection === undefined && jsonBody)
-      sourceBody = secrets.redactJsonBody(observed, {
-        maxBytes: options.maxBodyBytes,
-        maxAllocationBytes: options.maxBodyAllocationBytes,
-      });
     const admission = await preflight?.({
       observedBytes: observed.length,
       allocationBytes: observedBodyAllocationBytes,
@@ -209,7 +205,27 @@ export const captureNetworkBody = async (
     });
     if (admission?.status === "omitted")
       return { state: "omitted", reason: admission.reason };
-    const retained = jsonBody ? sourceBody : secrets.redactBytes(sourceBody);
+    if (protection === undefined && jsonBody)
+      sourceBody = secrets.redactJsonBody(observed, {
+        maxBytes: options.maxBodyBytes,
+        maxAllocationBytes: options.maxBodyAllocationBytes,
+      });
+    const retained = secrets.redactBytes(sourceBody);
+    if (
+      jsonBody &&
+      !retained.equals(sourceBody) &&
+      !safeParseJson(
+        new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(
+          retained,
+        ),
+      ).ok
+    )
+      return {
+        state: "unavailable",
+        reason: "body-read-failed",
+        message:
+          "Whole-body secret matching changed JSON syntax; the body was withheld.",
+      };
     if (retained.length > maxBodyBytes)
       return {
         state: "unavailable",

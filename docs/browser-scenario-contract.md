@@ -530,7 +530,11 @@ id the application assigns:
   secret is, as `[REDACTED:page:<step_id>.<name>]`. The selected source
   response is protected before retaining its body or header values, including
   when only headers were requested. If that body cannot be read safely, its
-  body and header values remain unavailable. Subsequent records use the same
+  body and header values remain unavailable. Before publishing the capture,
+  the selected source transaction's earlier URL, request headers and request
+  body are also protected using the admitted values. Unresolved source values
+  withhold that transaction's affected metadata/content with an explicit
+  limitation. Subsequent records use the same
   redaction spellings; earlier unrelated records are not rewritten. A token
   read later from local storage may therefore remain in its earlier login
   response. Other saved values, such as ids, stay visible, since

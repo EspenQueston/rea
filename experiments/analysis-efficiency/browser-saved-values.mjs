@@ -57,6 +57,7 @@ const env = {
   REA_MCP_INPUT_SCHEMA_PROFILE: "compact",
   REA_TEST_EMAIL: credentials.email,
   REA_TEST_PASSWORD: credentials.password,
+  REA_TEST_WHOLE_JSON: JSON.stringify({ token: "private-token-729d" }),
 };
 const calls = [];
 const runs = [];
@@ -333,30 +334,28 @@ try {
   }
   if (values["source-only"]) {
     assert.equal(values.mode, "after");
-    const captured = await invoke(
-      "capture_browser_scenario",
-      scenario(
-        [
-          {
-            step_id: "source",
-            action: "request",
-            method: "GET",
-            path: "/escaped-values.json",
-            save: [
-              { name: "token", json_pointer: "/token", secret: true },
-              { name: "code", json_pointer: "/code", secret: true },
-            ],
-          },
-          {
-            step_id: "later",
-            action: "request",
-            method: "GET",
-            path: "/escaped-values.json",
-          },
-        ],
-        [],
-      ),
+    const sourceScenario = scenario(
+      [
+        {
+          step_id: "source",
+          action: "request",
+          method: "GET",
+          path: "/escaped-values.json?credential=source-token",
+          save: [
+            { name: "token", json_pointer: "/token", secret: true },
+            { name: "code", json_pointer: "/code", secret: true },
+          ],
+        },
+        {
+          step_id: "later",
+          action: "request",
+          method: "GET",
+          path: "/escaped-values.json",
+        },
+      ],
+      [],
     );
+    const captured = await invoke("capture_browser_scenario", sourceScenario);
     assert.ok(
       captured.normalized_result.summary.steps.every(
         (step) => step.status === "completed",
@@ -370,6 +369,22 @@ try {
         record.evidence_id === captured.normalized_result.parent_evidence_id,
     );
     assert.ok(parent);
+    const sourceRequests = parent.normalized_result.events.items.filter(
+      (event) =>
+        event.kind === "request" &&
+        event.step_index === 1 &&
+        event.url.url.includes("/escaped-values.json"),
+    );
+    assert.equal(sourceRequests.length, 1);
+    const transaction = sourceRequests[0].transaction_id;
+    const sourceEvents = parent.normalized_result.events.items.filter(
+      (event) => event.transaction_id === transaction,
+    );
+    assert.ok(sourceEvents.some((event) => event.kind === "response"));
+    assert.ok(
+      !JSON.stringify(sourceEvents).includes("source-token"),
+      "Source transaction metadata must not retain the value learned from its response",
+    );
     const bodies = decodeBodies(parent.normalized_result).filter(
       (body) =>
         Object.hasOwn(body ?? {}, "token") && Object.hasOwn(body, "code"),
@@ -392,9 +407,121 @@ try {
       2,
       "Both source bodies must preserve the unmarked numeric spelling exactly",
     );
+    const metadata = await invoke("capture_browser_scenario", {
+      ...sourceScenario,
+      capture: {
+        ...sourceScenario.capture,
+        network: {
+          request_body: false,
+          response_body: false,
+          header_values: false,
+        },
+      },
+    });
+    assert.ok(
+      metadata.normalized_result.summary.steps.every(
+        (step) => step.status === "completed",
+      ),
+    );
+    const metadataPath = join(output, "metadata-evidence.json");
+    await invoke("export_evidence_bundle", { path: metadataPath });
+    const metadataBundle = JSON.parse(await readFile(metadataPath, "utf8"));
+    const metadataParent = metadataBundle.records.find(
+      (record) =>
+        record.evidence_id === metadata.normalized_result.parent_evidence_id,
+    );
+    assert.ok(metadataParent);
+    const metadataRequest = metadataParent.normalized_result.events.items.find(
+      (event) =>
+        event.kind === "request" &&
+        event.step_index === 1 &&
+        event.url.url.includes("/escaped-values.json"),
+    );
+    assert.ok(metadataRequest);
+    assert.equal(metadataRequest.url.origin, origin);
+    assert.ok(metadataRequest.url.url.includes("/escaped-values.json"));
+    assert.ok(!metadataRequest.url.url.includes("source-token"));
+    assert.ok(
+      !metadataParent.normalized_result.events.items.some(
+        (event) => event.kind === "network-content",
+      ),
+    );
+    const countUrl = `${origin}/api/collections/rea_items/records?perPage=1`;
+    const beforeCount = (await (await fetch(countUrl)).json()).totalItems;
+    assert.ok(Number.isSafeInteger(beforeCount));
+    const whole = await invoke("capture_browser_scenario", {
+      ...sourceScenario,
+      start_url: { url: origin + "/whole-json.html" },
+      secrets: [
+        {
+          secret_id: "whole_json",
+          environment_variable: "REA_TEST_WHOLE_JSON",
+        },
+      ],
+      storage: {
+        local_storage: [
+          {
+            origin,
+            entries: [
+              {
+                name: "whole_json",
+                value: { source: "secret", secret_id: "whole_json" },
+              },
+            ],
+          },
+        ],
+      },
+      actions: [
+        {
+          step_id: "settled",
+          action: "wait_for",
+          locator: { kind: "css", selector: '#result[data-ready="yes"]' },
+          state: "visible",
+          timeout_ms: 10000,
+        },
+      ],
+    });
+    assert.ok(
+      whole.normalized_result.summary.steps.every(
+        (step) => step.status === "completed",
+      ),
+    );
+    const wholePath = join(output, "whole-json-evidence.json");
+    await invoke("export_evidence_bundle", { path: wholePath });
+    const wholeBundle = JSON.parse(await readFile(wholePath, "utf8"));
+    const wholeParent = wholeBundle.records.find(
+      (record) =>
+        record.evidence_id === whole.normalized_result.parent_evidence_id,
+    );
+    assert.ok(wholeParent);
+    const post = wholeParent.normalized_result.events.items.find(
+      (event) => event.kind === "request" && event.method === "POST",
+    );
+    assert.ok(post);
+    const postEvents = wholeParent.normalized_result.events.items.filter(
+      (event) => event.transaction_id === post.transaction_id,
+    );
+    assert.ok(
+      postEvents.some(
+        (event) =>
+          event.kind === "network-content" &&
+          event.phase === "request" &&
+          event.body.state === "unavailable",
+      ),
+    );
+    const postResponse = postEvents.find((event) => event.kind === "response");
+    assert.ok(postResponse && [400, 401, 403].includes(postResponse.status));
+    assert.ok(!JSON.stringify(wholeParent).includes("private-token-729d"));
+    assert.equal(
+      (await (await fetch(countUrl)).json()).totalItems,
+      beforeCount,
+    );
     runs.push({
       verification: "source-and-later-JSON-spellings",
       verified_bodies: bodies.length,
+      metadata_only_source_url: true,
+      whole_json_secret_withheld: true,
+      whole_json_status: postResponse.status,
     });
   }
   await writeFile(join(output, "calls.json"), JSON.stringify(calls), {

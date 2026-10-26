@@ -138,3 +138,26 @@ it("checks the JSON decoding budget before invoking its decoder", async () => {
   });
   expect(decode).not.toHaveBeenCalled();
 });
+
+it.each(['{"token":"private-token-729d"}', 'A","B'])(
+  "withholds JSON when an explicitly declared secret spans tokens: %s",
+  async (secret) => {
+    const held = resolveScenarioSecrets(scenario, { SECRET: secret });
+    const body = secret.startsWith("{") ? secret : '{"x":"A","B":"C"}';
+    const captured = await captureNetworkBody(
+      async () => Buffer.from(body),
+      "request",
+      {
+        headers: () => ({ "content-type": "application/json" }),
+        headersArray: async () => [],
+      },
+      held,
+      { ...options, maxBodyBytes: 4096 },
+    );
+    expect(captured).toMatchObject({
+      state: "unavailable",
+      reason: "body-read-failed",
+    });
+    expect(JSON.stringify(captured)).not.toContain(secret);
+  },
+);

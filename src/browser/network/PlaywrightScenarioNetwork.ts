@@ -395,6 +395,22 @@ export class PlaywrightScenarioNetwork {
     return [...this.gaps];
   }
 
+  /** Source identity and readiness for the retained-event owner's final privacy pass. */
+  sourcePrivacy(): ReadonlyMap<string, boolean> {
+    return new Map(
+      [...this.transactions].flatMap(([request, transaction]) =>
+        this.options.secrets.hasResponseProtection(request)
+          ? [
+              [
+                transaction.id,
+                this.options.secrets.responseSecretsReady(request),
+              ] as const,
+            ]
+          : [],
+      ),
+    );
+  }
+
   omittedTransactionRange(): {
     readonly first_transaction_id: string;
     readonly last_transaction_id: string;

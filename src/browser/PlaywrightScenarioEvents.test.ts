@@ -110,6 +110,7 @@ const captureNetworkBudgetFixture = async (
   });
   const secrets = resolveScenarioSecrets(scenario, {});
   const redactBytes = vi.spyOn(secrets, "redactBytes");
+  const redactJson = vi.spyOn(secrets, "redactJsonBody");
   const capture = new PlaywrightScenarioEvents({
     page,
     context,
@@ -155,6 +156,7 @@ const captureNetworkBudgetFixture = async (
   return {
     result: capture.result(),
     redactedByteValues: redactBytes.mock.calls.length,
+    processedJsonBodies: redactJson.mock.calls.length,
   };
 };
 
@@ -174,12 +176,12 @@ describe("PlaywrightScenarioEvents", () => {
     expect(
       baseline.result.omissions.network_transactions.length,
     ).toBeGreaterThan(0);
-    expect(baseline.redactedByteValues).toBe(
-      2 *
-        baseline.result.items.filter(
-          (event) => event.kind === "network-content",
-        ).length,
-    );
+    const retainedBodies = baseline.result.items.filter(
+      (event) =>
+        event.kind === "network-content" && event.body.state === "captured",
+    ).length;
+    expect(baseline.processedJsonBodies).toBe(retainedBodies);
+    expect(baseline.redactedByteValues).toBe(2 * retainedBodies);
     expect(raised.result).toMatchObject({
       dropped: 0,
       omissions: { network_transactions: [] },
@@ -400,4 +402,184 @@ it("caps live descendant listeners and reuses capacity after closure", () => {
   expect(sockets[0]?.off).toHaveBeenCalledTimes(3);
   listeners.get("websocket")?.(sockets[2048]);
   expect(sockets[2048]?.on).toHaveBeenCalledTimes(3);
+});
+
+/** Emit the request before attaching the source policy, matching Playwright listener order. */
+const sourceTransactionCapture = async (
+  options: {
+    fail?: boolean;
+    value?: string;
+    padding?: number;
+    metadataLimit?: number;
+  } = {},
+) => {
+  const listeners = new Map<string, (value: unknown) => void>();
+  const context = {
+    on: (name: string, listener: (value: unknown) => void) =>
+      listeners.set(name, listener),
+    off: vi.fn(),
+  } as unknown as BrowserContext;
+  const page = {
+    context: () => context,
+    on: vi.fn(),
+    off: vi.fn(),
+  } as unknown as Page;
+  const value = options.value ?? "credential-82ea";
+  const url = `https://example.test/exchange?token=${value.repeat(options.padding ?? 1)}&safe=visible`;
+  const body = JSON.stringify({ token: value, public: "kept" });
+  const parsed = browserScenarioSchema.parse({
+    browser: { mode: "launch", executable_path: "/fixture/browser" },
+    start_url: { url: "https://example.test/" },
+    actions: [{ step_id: "click", action: "wait_for_timeout", duration_ms: 1 }],
+    capture: {
+      events: ["network"],
+      network: { request_body: true, response_body: true, header_values: true },
+      ...(options.metadataLimit === undefined
+        ? {}
+        : {
+            limits: {
+              max_network_metadata_allocation_bytes: options.metadataLimit,
+            },
+          }),
+    },
+  });
+  const secrets = resolveScenarioSecrets(parsed, {});
+  const capture = new PlaywrightScenarioEvents({
+    page,
+    context,
+    ownsContext: true,
+    enabled: new Set(["network"]),
+    network: parsed.capture.network,
+    limits: parsed.capture.limits,
+    secrets,
+  });
+  const request = {
+    method: () => "POST",
+    url: () => url,
+    resourceType: () => "fetch",
+    redirectedFrom: () => null,
+    postDataBuffer: () => Buffer.from(body),
+    failure: () => null,
+    sizes: async () => ({ responseBodySize: Buffer.byteLength(body) }),
+    headers: () => ({
+      "content-type": "application/json",
+      "x-source-token": value,
+    }),
+    headersArray: async () => [
+      { name: "Content-Type", value: "application/json" },
+      { name: "X-Source-Token", value },
+    ],
+  };
+  listeners.get("request")!(request);
+  await vi.waitFor(() =>
+    expect(capture.result().items).toContainEqual(
+      expect.objectContaining({ kind: "network-content", phase: "request" }),
+    ),
+  );
+  const sourceId = capture
+    .result()
+    .items.find((event) => event.kind === "request")!.transaction_id;
+  // This same-URL transaction has no source policy and must keep its earlier facts.
+  const unrelated = { ...request };
+  listeners.get("request")!(unrelated);
+  listeners.get("requestfinished")!(unrelated);
+  secrets.responseProtector("click", [
+    { name: "token", json_pointer: "/token", secret: true },
+  ])?.(request);
+  listeners.get("response")!({
+    request: () => request,
+    url: () => url,
+    status: () => 200,
+    headers: () => ({ "content-type": "application/json" }),
+    headersArray: async () => [],
+    body: async () => {
+      if (options.fail) throw new Error(`Read failed for ${url}`);
+      return Buffer.from(body);
+    },
+  });
+  listeners.get("requestfinished")!(request);
+  await capture.finish();
+  return { capture, sourceId, value, url };
+};
+
+it("redacts earlier source transaction metadata and request content before publishing", async () => {
+  const { capture, sourceId, value, url } = await sourceTransactionCapture();
+  const source = capture
+    .result()
+    .items.filter(
+      (event) => "transaction_id" in event && event.transaction_id === sourceId,
+    );
+  expect(source.filter((event) => event.kind === "request")).toHaveLength(1);
+  expect(source).toContainEqual(
+    expect.objectContaining({
+      kind: "request",
+      url: expect.objectContaining({
+        origin: "https://example.test",
+        query_parameter_names: ["token", "safe"],
+        redacted: true,
+        url: expect.stringContaining("safe=visible"),
+      }),
+    }),
+  );
+  expect(JSON.stringify(source)).not.toContain(value);
+  for (const event of source)
+    if (event.kind === "network-content" && event.body.state === "captured") {
+      const text = Buffer.from(event.body.content, "base64").toString();
+      expect(text).not.toContain(value);
+      expect(JSON.parse(text).token).toBe("[REDACTED:page:click.token]");
+    }
+  expect(capture.result().items).toContainEqual(
+    expect.objectContaining({
+      kind: "request",
+      transaction_id: expect.not.stringMatching(new RegExp(`^${sourceId}$`)),
+      url: expect.objectContaining({ url }),
+    }),
+  );
+  const finished = JSON.stringify(capture.result());
+  await capture.finish();
+  expect(JSON.stringify(capture.result())).toBe(finished);
+});
+
+it("withholds source URLs and earlier content if source values cannot be read", async () => {
+  const { capture, sourceId, value } = await sourceTransactionCapture({
+    fail: true,
+  });
+  const source = capture
+    .result()
+    .items.filter(
+      (event) => "transaction_id" in event && event.transaction_id === sourceId,
+    );
+  expect(JSON.stringify(source)).not.toContain(value);
+  expect(source).toContainEqual(
+    expect.objectContaining({
+      kind: "request",
+      url: { url: "", origin: null, query_parameter_names: [], redacted: true },
+    }),
+  );
+  expect(source).toContainEqual(
+    expect.objectContaining({
+      kind: "network-content",
+      phase: "request",
+      body: expect.objectContaining({ state: "unavailable" }),
+    }),
+  );
+  expect(capture.limitations().join(" ")).toContain(
+    "marked response values were unavailable",
+  );
+});
+
+it("accounts for source metadata redaction expansion before publishing replacements", async () => {
+  const { capture, sourceId } = await sourceTransactionCapture({
+    value: "a",
+    padding: 1000,
+    metadataLimit: 50_000,
+  });
+  expect(capture.result().omissions.network_transactions).toContainEqual(
+    expect.objectContaining({
+      transaction_id: sourceId,
+      reasons: expect.arrayContaining([
+        "max-network-metadata-allocation-bytes",
+      ]),
+    }),
+  );
 });

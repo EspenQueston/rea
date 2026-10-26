@@ -193,3 +193,43 @@ failed the same assertion. These source/control files are unchanged by this PR.
 The initial real-browser, agentenv, static, documentation, package build and
 Linux native baseline lanes passed. Cancelled shard coverage remains incomplete;
 final CI/review outcomes and any authorized bypass are recorded in the PR.
+
+## Source transaction publication follow-up
+
+A later review identified two additional producing-boundary gaps: source URLs
+could retain values learned only from their responses, and a declared whole
+JSON string could span tokens rather than match an individual decoded value.
+Three source-transaction regressions fail on `92b1f1cc8`; two spanning-secret
+regressions fail before restoring the whole-body byte check.
+
+The retained-event owner now finalizes only explicitly selected source
+transaction IDs after network reads drain, including the source request's URL,
+headers and already retained body. Unknown source values withhold the affected
+URL/content and add a limitation. Replacements reserve working/retained capacity,
+preserve sequence and transaction IDs, report omissions, and finalize once so
+cleanup retry cannot repeat accounting. Same-URL unrelated transactions retain
+their earlier facts. Two retained request identities suffice to detect UI
+ambiguity; successful uniquely observed request bindings also establish privacy
+readiness without requiring network body retention.
+
+JSON decoding runs after event admission. Whole-body secret matching remains
+alongside decoded-token matching; if a spanning replacement would break JSON,
+the body is unavailable with a fixed diagnostic. The source-test run passed
+**218 cases across seven browser/network/session suites**, including normal and
+failed source reads, late response ambiguity, cleanup retry, capacity expansion,
+shared-context ownership and the two whole-JSON cases. The prior CI's event
+budget assertion exposed a stale byte-operation assumption; its replacement
+checks both JSON processing and whole-body/MIME checks occur only for admitted
+bodies, preserving its original no-work-for-omitted-content invariant.
+
+The expanded real MCP source probe passed: two exact redacted source/later
+bodies; an earlier source URL query containing the returned token; metadata-only
+capture preserving the redacted source URL without retaining any content; and
+an explicitly declared whole JSON payload seeded into local storage and POSTed
+by the committed owned frontend. PocketBase returned **403**, retained request
+body content was unavailable, the complete parent contained no payload token,
+and the backend record count stayed unchanged. The probe took **9.200 s**,
+**10.288 s CPU**, and **1,617,293,312 B** sampled family peak; backend costs remain
+unmeasured. Serve `whole-json.html` alongside the original frontend when
+reproducing `--source-only`. These are transport/retention checks on an owned
+fixture, not claims of application-specific token issuance or Basic-auth support.

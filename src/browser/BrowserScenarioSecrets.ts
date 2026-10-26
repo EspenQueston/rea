@@ -390,6 +390,16 @@ export class BrowserScenarioSecrets {
     }
   >();
 
+  private readonly readyResponses = new WeakSet<object>();
+
+  responseSecretsReady(request: object): boolean {
+    return this.readyResponses.has(request);
+  }
+
+  markResponseSecretsReady(request: object): void {
+    this.readyResponses.add(request);
+  }
+
   responseProtector(
     stepId: string,
     entries: readonly BrowserScenarioSaveEntry[],
@@ -429,6 +439,8 @@ export class BrowserScenarioSecrets {
         entry.name,
       );
     }
+    if (selected.value.values.length === source.entries.length)
+      this.markResponseSecretsReady(request);
     if (retention === undefined) return body;
     const redacted = redactResponseSource(
       selected.value.text,

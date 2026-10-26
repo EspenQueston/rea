@@ -353,9 +353,14 @@ export const performScenarioRequest = async (input: {
   const matchesRequest = (sent: Request): boolean =>
     sent.method() === request.method &&
     sent.postData() === (request.body ?? null);
+  let observedRequest: Request | undefined;
+  let ambiguousRequest = false;
   const watch = (sent: Request): void => {
-    if (sent.url() === dispatchUrl.href && matchesRequest(sent))
+    if (sent.url() === dispatchUrl.href && matchesRequest(sent)) {
+      if (observedRequest === undefined) observedRequest = sent;
+      else if (observedRequest !== sent) ambiguousRequest = true;
       protectResponse?.(sent);
+    }
   };
   const gate = async (route: Route): Promise<void> => {
     const sent = route.request();
@@ -400,8 +405,11 @@ export const performScenarioRequest = async (input: {
     throw new ScenarioRequestError(
       `Request step ${action.step_id} answered ${String(response.status)}; expected ${action.expected_status.join(" or ")}.`,
     );
-  if (action.save.length > 0)
+  if (action.save.length > 0) {
     saveValues(action.step_id, response.body, action.save, secrets);
+    if (observedRequest !== undefined && !ambiguousRequest)
+      secrets.markResponseSecretsReady(observedRequest);
+  }
 };
 
 /** A URL path segment a URL parser drops or folds into its parent: `.`, `..` or a percent-encoded spelling of one. */
@@ -537,7 +545,7 @@ export const awaitSavedResponse = (
         url: request.url(),
       })
     ) {
-      started.add(request);
+      if (started.size < 2) started.add(request);
       protectResponse?.(request);
     }
   };
@@ -578,6 +586,7 @@ export const awaitSavedResponse = (
       throw new ScenarioRequestError(`Step ${stepId}: ${body.error.message}`);
     assertUnambiguous();
     saveValues(stepId, body.value, spec.save, secrets);
+    secrets.markResponseSecretsReady(response.request());
   };
   return { saved, stop: () => page.off("request", watch) };
 };
