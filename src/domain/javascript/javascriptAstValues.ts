@@ -1,6 +1,7 @@
 import * as t from "@babel/types";
 import type { JavaScriptSemanticPrimitive } from "./javascriptSemanticValueTypes.js";
 import { SEMANTIC_EXPRESSION_DEPTH_LIMIT } from "./javascriptSemanticResourceLimits.js";
+import { semanticArrayIndex } from "./javascriptSemanticPropertyPaths.js";
 
 /** Type-only class fields neither initialize own slots nor shadow inherited members. */
 export const isRuntimeJavaScriptClassProperty = (
@@ -167,6 +168,7 @@ type StaticObjectProperty =
 type StaticObjectMember =
   | { readonly kind: "unknown" }
   | { readonly kind: "prototype-setter" }
+  | { readonly kind: "string-indices"; readonly length: number }
   | {
       readonly kind: "property";
       readonly property: t.ObjectProperty | t.ObjectMethod;
@@ -216,7 +218,15 @@ const appendStaticObjectMembers = (
       appendStaticObjectMembers(members, spread, nextDepth, isNullish);
       continue;
     }
-    // These primitive boxes have no own keys; strings can own index keys.
+    const literal = readExactJavaScriptLiteral(spread);
+    if (literal.found && typeof literal.value === "string") {
+      // Keep UTF-16 index writes symbolically, without expanding a string into
+      // synthetic source properties or allocating an entry for every character.
+      if (literal.value.length > 0)
+        members.push({ kind: "string-indices", length: literal.value.length });
+      continue;
+    }
+    // These primitive boxes have no own keys.
     if (
       t.isBooleanLiteral(spread) ||
       t.isNumericLiteral(spread) ||
@@ -238,21 +248,39 @@ const staticObjectMembers = (
   return members;
 };
 
-/** Find the effective explicit property, preserving unresolved overrides. */
-export const staticObjectProperty = (
+type StaticObjectPropertySource =
+  | readonly StaticObjectMember[]
+  | "missing"
+  | "dynamic";
+
+const staticObjectPropertySource = (
   object: t.Node | undefined,
-  name: string,
   isNullish?: (node: t.Node) => boolean,
+): StaticObjectPropertySource =>
+  object === undefined
+    ? "missing"
+    : t.isObjectExpression(object)
+      ? staticObjectMembers(object, 0, isNullish)
+      : "dynamic";
+
+const readStaticObjectProperty = (
+  source: StaticObjectPropertySource,
+  name: string,
 ): StaticObjectProperty => {
-  if (object === undefined) return { status: "missing" };
-  if (!t.isObjectExpression(object)) return { status: "dynamic" };
+  if (typeof source === "string") return { status: source };
   let prototypeMaySupply = false;
-  for (const member of staticObjectMembers(object, 0, isNullish).toReversed()) {
+  for (let index = source.length - 1; index >= 0; index--) {
+    const member = source[index]!;
     if (member.kind === "prototype-setter") {
       prototypeMaySupply = true;
       continue;
     }
     if (member.kind === "unknown") return { status: "dynamic" };
+    if (member.kind === "string-indices") {
+      const index = semanticArrayIndex(name);
+      if (index !== null && index < member.length) return { status: "dynamic" };
+      continue;
+    }
     const { property } = member;
     const key = semanticStaticPropertyKey(property.key, property.computed);
     if (key === null) return { status: "dynamic" };
@@ -263,6 +291,23 @@ export const staticObjectProperty = (
   }
   return prototypeMaySupply ? { status: "dynamic" } : { status: "missing" };
 };
+
+/** Parse ordered members once for related property queries within one boundary. */
+export const staticObjectPropertyReader = (
+  object: t.Node | undefined,
+  isNullish?: (node: t.Node) => boolean,
+): ((name: string) => StaticObjectProperty) => {
+  const source = staticObjectPropertySource(object, isNullish);
+  return (name) => readStaticObjectProperty(source, name);
+};
+
+/** Find the effective explicit property, preserving unresolved overrides. */
+export const staticObjectProperty = (
+  object: t.Node | undefined,
+  name: string,
+  isNullish?: (node: t.Node) => boolean,
+): StaticObjectProperty =>
+  readStaticObjectProperty(staticObjectPropertySource(object, isNullish), name);
 
 export type StaticObjectPropertyNames =
   | { readonly status: "missing" | "dynamic" }
@@ -280,7 +325,9 @@ export const staticObjectPropertyNames = (
   let complete = true;
   for (const member of staticObjectMembers(object, 0, isNullish)) {
     if (member.kind === "prototype-setter") continue;
-    if (member.kind === "unknown") {
+    if (member.kind === "unknown" || member.kind === "string-indices") {
+      // Indexed string keys remain unenumerated; never claim a complete name
+      // inventory or expand the input into a potentially much larger key set.
       complete = false;
       continue;
     }

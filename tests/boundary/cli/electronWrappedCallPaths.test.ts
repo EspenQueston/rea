@@ -2,6 +2,7 @@ import { expect } from "vitest";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { runInNewContext } from "node:vm";
+import { stripTypeScriptTypes } from "node:module";
 import { z } from "zod";
 import { createTestTempDirectory } from "../../fixtures/temporaryDirectory.js";
 import { connectLocalToolsMcp } from "../../fixtures/localToolsMcp.js";
@@ -873,9 +874,18 @@ cliTest(
 
 const descriptorSender = `function(channel) { return (...args) => send(channel, ...args); }`;
 const descriptorNoop = `function() { return () => {}; }`;
-const descriptorCases = [
+const descriptorCases: readonly (readonly [
+  string,
+  string,
+  boolean,
+  boolean?,
+])[] = [
   ["control", `{value:${descriptorSender}}`, true],
   ["accessor-noop", `{get:function(){return ${descriptorNoop}}}`, false],
+  ["mixed-getter", `{get:()=>0,...{value:${descriptorSender}}}`, false, true],
+  ["mixed-setter", `{value:${descriptorSender},...{set:()=>{}}}`, false, true],
+  ["string-spread", `{value:${descriptorSender},..."x"}`, true],
+  ["typescript-assertion", `({value:${descriptorSender}} as const)`, true],
   [
     "duplicate-noop",
     `{value:${descriptorSender},value:${descriptorNoop}}`,
@@ -913,13 +923,13 @@ cliTest.for(["CLI", "stdio MCP"] as const)(
     const workspace = await createTestTempDirectory("rea-descriptor-values-");
     const root = join(workspace, "路径-'values");
     const files = Object.fromEntries(
-      descriptorCases.map(([name, descriptor, sends]) => {
+      descriptorCases.map(([name, descriptor, sends, throws]) => {
         const source = `(() => {
         const modules = {
           2(module) { module.exports = require("electron"); },
           5(module, exports, load) {
             const electron = load(2);
-            exports.sender = ${descriptorSender};
+            exports.sender = ${name === "accessor-noop" ? descriptorSender : descriptorNoop};
             Object.defineProperty(exports, "sender", ${descriptor});
             function send(channel, ...args) { electron.ipcRenderer.send(channel, ...args); }
           },
@@ -934,23 +944,31 @@ cliTest.for(["CLI", "stdio MCP"] as const)(
         // Node executes only this test-owned fixture with a recording Electron
         // substitute: an independent descriptor-semantics oracle, not provider proof.
         const channels: string[] = [];
-        runInNewContext(
-          source,
-          {
-            require: () => ({
-              ipcRenderer: {
-                send: (channel: string) => channels.push(channel),
-              },
-              contextBridge: {
-                exposeInMainWorld: (_key: string, api: { copy(): void }) =>
-                  api.copy(),
-              },
-            }),
-          },
-          { timeout: 1_000 },
-        );
+        const run = () =>
+          runInNewContext(
+            name === "typescript-assertion"
+              ? stripTypeScriptTypes(source)
+              : source,
+            {
+              require: () => ({
+                ipcRenderer: {
+                  send: (channel: string) => channels.push(channel),
+                },
+                contextBridge: {
+                  exposeInMainWorld: (_key: string, api: { copy(): void }) =>
+                    api.copy(),
+                },
+              }),
+            },
+            { timeout: 1_000 },
+          );
+        if (throws) expect(run).toThrow(/Invalid property descriptor/u);
+        else run();
         expect(channels, name).toEqual(sends ? [`${name}:copy`] : []);
-        return [`${name}.cjs`, source];
+        return [
+          `${name}.${name === "typescript-assertion" ? "cts" : "cjs"}`,
+          source,
+        ];
       }),
     );
     await writeFixtureFiles(root, files);

@@ -1,6 +1,6 @@
 import * as t from "@babel/types";
 import {
-  staticObjectProperty,
+  staticObjectPropertyReader,
   semanticStaticPropertyKey,
   semanticWriteSiteTarget,
   semanticWriteTargets,
@@ -160,23 +160,19 @@ export class JavaScriptSymbolicBindings {
             t.isStringLiteral(key) &&
             descriptor !== undefined
           ) {
-            const value = staticObjectProperty(
-              descriptor,
-              "value",
+            const properties = staticObjectPropertyReader(
+              unwrapJavaScriptExpression(descriptor).node,
               shapes.isNullish,
             );
-            if (value.status === "explicit")
+            const value = properties("value");
+            const hasAccessor =
+              properties("get").status !== "missing" ||
+              properties("set").status !== "missing";
+            if (value.status === "explicit" && !hasAccessor)
               this.#addWrite(target, [key.value], value.property.value, node);
-            else if (
-              value.status === "dynamic" ||
-              ["get", "set"].some(
-                (name) =>
-                  staticObjectProperty(descriptor, name, shapes.isNullish)
-                    .status !== "missing",
-              )
-            )
-              // Unknown values and accessor replacements invalidate an earlier
-              // data export. Only a descriptor omitting value/get/set leaves it.
+            else if (value.status !== "missing" || hasAccessor)
+              // Unknown values, accessor replacements and invalid mixed
+              // descriptors cannot preserve an earlier data export.
               this.#addWrite(target, [key.value], node, node);
           }
         }

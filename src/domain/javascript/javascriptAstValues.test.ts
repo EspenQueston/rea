@@ -5,9 +5,53 @@ import {
   semanticMemberChain,
   semanticStaticPropertyKey,
   staticObjectProperty,
+  staticObjectPropertyReader,
   staticObjectPropertyNames,
 } from "./javascriptAstValues.js";
 import { SEMANTIC_EXPRESSION_DEPTH_LIMIT } from "./javascriptSemanticResourceLimits.js";
+
+it("keeps string spread indices separate from named descriptor fields", () => {
+  for (const text of ["", "x", "😀", "x".repeat(1_000_000)]) {
+    const original = t.objectProperty(
+      t.identifier("value"),
+      t.identifier("sender"),
+    );
+    const object = t.objectExpression([
+      original,
+      t.spreadElement(t.stringLiteral(text)),
+    ]);
+    const read = staticObjectPropertyReader(object);
+    expect(read("value")).toEqual({ status: "explicit", property: original });
+    expect(read("get")).toEqual({ status: "missing" });
+    expect(read("set")).toEqual({ status: "missing" });
+    expect(read("0").status).toBe(text.length > 0 ? "dynamic" : "missing");
+    expect(read("1").status).toBe(text.length > 1 ? "dynamic" : "missing");
+    for (const key of ["00", "-0", "1.0", "length"])
+      expect(read(key)).toEqual({ status: "missing" });
+    // Nonempty strings keep their indexed inventory partial without expanding
+    // it into character-sized AST nodes or a potentially huge key-name array.
+    expect(staticObjectPropertyNames(object)).toEqual({
+      status: text.length > 0 ? "partial" : "complete",
+      names: ["value"],
+    });
+  }
+});
+
+it("keeps numeric overwrite order and constant template string spread keys", () => {
+  const property = t.objectProperty(
+    t.stringLiteral("0"),
+    t.identifier("original"),
+  );
+  const spread = t.spreadElement(
+    t.templateLiteral([t.templateElement({ raw: "x", cooked: "x" }, true)], []),
+  );
+  expect(
+    staticObjectProperty(t.objectExpression([property, spread]), "0").status,
+  ).toBe("dynamic");
+  expect(
+    staticObjectProperty(t.objectExpression([spread, property]), "0"),
+  ).toEqual({ status: "explicit", property });
+});
 
 it("copies ordinary members without proving requested methods or getter effects", () => {
   const method = (name: string, computed = false) =>

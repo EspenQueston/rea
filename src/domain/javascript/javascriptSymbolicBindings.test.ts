@@ -761,6 +761,22 @@ it.each([
 it.each([
   ["unknown spread", `{value:require("electron"),...input}`, "unknown"],
   ["unknown descriptor", `input`, "unknown"],
+  [
+    "mixed getter and spread value",
+    `{get:()=>0,...{value:require("electron")}}`,
+    "unknown",
+  ],
+  [
+    "mixed setter and value",
+    `{value:require("electron"),set:()=>{}}`,
+    "unknown",
+  ],
+  [
+    "erased descriptor assertion",
+    `({value:require("electron")} as const)`,
+    "external",
+  ],
+  ["string spread", `{value:require("electron"),..."x"}`, "external"],
   ["accessor getter", `{get(){return replacement}}`, "unknown"],
   ["accessor setter", `{set(value){replacement=value}}`, "unknown"],
   ["absent accessor", `{get:undefined}`, "unknown"],
@@ -770,7 +786,16 @@ it.each([
     `{value:require("electron"),get value(){return replacement}}`,
     "unknown",
   ],
-  ["explicit after spread", `{...input,value:require("electron")}`, "external"],
+  [
+    "unknown spread may supply accessors",
+    `{...input,value:require("electron")}`,
+    "unknown",
+  ],
+  [
+    "known spread before value",
+    `{...{enumerable:true},value:require("electron")}`,
+    "external",
+  ],
   ["null spread", `{value:require("electron"),...null}`, "external"],
   ["undefined spread", `{value:require("electron"),...undefined}`, "external"],
   ["void spread", `{value:require("electron"),...void 0}`, "external"],
