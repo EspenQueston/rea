@@ -13,7 +13,9 @@ import {
 } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join } from "node:path";
 import type { Readable } from "node:stream";
+import { OwnedDirectoryHandle } from "../filesystem/OwnedDirectoryHandle.js";
 import { OwnedFileHandle } from "../filesystem/OwnedFileHandle.js";
+import { ArtifactResourceScope } from "./ArtifactResourceScope.js";
 import { streamChunkToBuffer } from "./StreamBytes.js";
 
 import {
@@ -149,6 +151,7 @@ export class SafeOutputTree {
   /** Read-only early admission; create() still rechecks and acquires exclusively. */
   static async checkDestination(
     outputRoot: string,
+    options: { readonly resourceScope?: ArtifactResourceScope } = {},
   ): Promise<{ readonly caseSensitivity: DestinationCaseSensitivity }> {
     const { canonicalOutput } = await this.#resolveDestination(outputRoot);
     const existing = await lstat(canonicalOutput).catch((cause: unknown) => {
@@ -185,7 +188,10 @@ export class SafeOutputTree {
       },
     );
     return {
-      caseSensitivity: await observeDirectoryCaseSensitivity(parent),
+      caseSensitivity: await observeDirectoryCaseSensitivity(
+        parent,
+        options.resourceScope,
+      ),
     };
   }
 
@@ -788,21 +794,32 @@ const MAX_CASE_PROBE_ENTRIES = 256;
  */
 const observeDirectoryCaseSensitivity = async (
   directory: string,
+  resourceScope?: ArtifactResourceScope,
 ): Promise<DestinationCaseSensitivity> => {
   const dir = await opendir(directory).catch(() => undefined);
   if (dir === undefined) return "unknown";
+  const owner = new OwnedDirectoryHandle(dir);
+  let caseSensitivity: DestinationCaseSensitivity = "unknown";
   try {
     let scanned = 0;
     let remainingMatch: string | undefined;
     while (true) {
-      const dirent = await dir.read();
+      const dirent = await owner.handle.read();
       if (dirent === null) {
-        return remainingMatch === undefined ? "unknown" : "case-insensitive";
+        caseSensitivity =
+          remainingMatch === undefined ? "unknown" : "case-insensitive";
+        break;
       }
-      if (scanned >= MAX_CASE_PROBE_ENTRIES) return "unknown";
+      if (scanned >= MAX_CASE_PROBE_ENTRIES) {
+        caseSensitivity = "unknown";
+        break;
+      }
       scanned += 1;
       if (remainingMatch !== undefined) {
-        if (dirent.name === remainingMatch) return "case-sensitive";
+        if (dirent.name === remainingMatch) {
+          caseSensitivity = "case-sensitive";
+          break;
+        }
         continue;
       }
       const toggled = toggleFirstAsciiLetter(dirent.name);
@@ -821,15 +838,23 @@ const observeDirectoryCaseSensitivity = async (
         candidate.dev !== original.dev ||
         candidate.ino !== original.ino
       ) {
-        return "case-sensitive";
+        caseSensitivity = "case-sensitive";
+        break;
       }
       remainingMatch = toggled;
     }
   } catch {
-    return "unknown";
-  } finally {
-    await dir.close().catch(() => undefined);
+    caseSensitivity = "unknown";
   }
+  const scope = resourceScope ?? new ArtifactResourceScope();
+  const cleanup = await scope.release({
+    kind: "directory-handle",
+    resource: directory,
+    handle: owner,
+  });
+  if (cleanup.kind === "failed")
+    throw scope.cleanupFailure({ kind: "completed" }, [cleanup]);
+  return caseSensitivity;
 };
 
 const abortIfNeeded = (signal?: AbortSignal): void => {

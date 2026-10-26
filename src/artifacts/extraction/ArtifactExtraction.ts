@@ -7,8 +7,10 @@ import type {
   ArtifactResourceOwner,
   ArtifactResourceScope,
 } from "../ArtifactResourceScope.js";
+import { createHash } from "node:crypto";
 import { lstat, realpath } from "node:fs/promises";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
+import type { Readable } from "node:stream";
 import { absoluteCallerPath } from "../../filesystem/callerPath.js";
 import { isPathWithinRoot } from "../../domain/localPath.js";
 import { SafeOutputTreeDestinationRefusal } from "../SafeOutputTreeAdmission.js";
@@ -31,6 +33,7 @@ import {
 } from "../ArtifactReader.js";
 import { ArtifactTraversalObservation } from "../ArtifactTraversalObservation.js";
 import { abortIfNeeded } from "../ArtifactHash.js";
+import { streamChunkToBuffer } from "../StreamBytes.js";
 import { DirectoryArtifactReader } from "../DirectoryArtifactReader.js";
 import { SafeOutputTree, normalizeDestinationPath } from "../SafeOutputTree.js";
 import { SafeOutputTreeCreationFailure } from "../SafeOutputTreeCreationFailure.js";
@@ -329,6 +332,7 @@ const materializeSelection = async ({
     if (dryRun) {
       const destination = await SafeOutputTree.checkDestination(
         input.outputRoot,
+        { resourceScope: input.resourceScope },
       );
       destinationCaseSensitivity = destination.caseSensitivity;
     } else {
@@ -344,12 +348,19 @@ const materializeSelection = async ({
       status: inventory.coverage.status,
       limitations: inventory.limitations,
     });
-    let unresolvedCaseReasons: ReadonlyMap<string, string> = new Map();
+    let unresolvedPlan: UnresolvedDryRunPlan = {
+      byOccurrenceId: new Map(),
+      limitations: [],
+    };
     if (dryRun) {
-      unresolvedCaseReasons = await planSelectedEntries({
+      const containerVerified =
+        zipSource !== undefined || reader.prepareContainer !== undefined;
+      unresolvedPlan = await planSelectedEntries({
         reader,
+        outputRoot: input.outputRoot,
         platform,
         caseSensitivity: destinationCaseSensitivity,
+        verifyContent: !containerVerified,
         byPath,
         extracted,
         traversal,
@@ -394,8 +405,7 @@ const materializeSelection = async ({
       extracted,
       traversal.snapshot(),
       reader.provenance(),
-      unresolvedCaseReasons,
-      destinationCaseSensitivity,
+      unresolvedPlan,
     );
     if (output !== undefined) await output.commit(signal);
     return completed;
@@ -421,23 +431,93 @@ const materializeSelection = async ({
   }
 };
 
+interface UnresolvedDryRunPlan {
+  readonly byOccurrenceId: ReadonlyMap<string, string>;
+  readonly limitations: readonly string[];
+}
+
+const MAX_PORTABLE_NAME_BYTES = 255;
+const MAX_PORTABLE_PATH_BYTES = 4095;
+
+const overLimitDestinationReason = (
+  outputRoot: string,
+  destinationPath: string,
+): string | undefined => {
+  const segments = destinationPath.split("/");
+  for (const segment of segments) {
+    const byteLength = Buffer.byteLength(segment, "utf8");
+    if (byteLength > MAX_PORTABLE_NAME_BYTES)
+      return `Destination filesystem component length limit (such as 255-byte NAME_MAX) is not observed without creating files; segment of ${String(byteLength)} UTF-8 bytes in ${destinationPath} remains unresolved during dry-run.`;
+  }
+  const fullDestination = join(absoluteCallerPath(outputRoot), ...segments);
+  const fullBytes = Buffer.byteLength(fullDestination, "utf8");
+  if (fullBytes > MAX_PORTABLE_PATH_BYTES)
+    return `Destination filesystem path length limit (such as 4095-byte PATH_MAX) is not observed without creating files; destination path of ${String(fullBytes)} UTF-8 bytes for ${destinationPath} remains unresolved during dry-run.`;
+  return undefined;
+};
+
+const verifyPlannedEntry = async (
+  path: string,
+  source: Readable,
+  expected: { readonly sha256: string; readonly bytes: number },
+  signal?: AbortSignal,
+): Promise<void> => {
+  try {
+    const hash = createHash("sha256");
+    let bytes = 0;
+    for await (const raw of source) {
+      abortIfNeeded(signal);
+      const chunk = streamChunkToBuffer(raw);
+      if (chunk.length > expected.bytes - bytes)
+        throw new ArtifactReaderFailure(
+          "integrity",
+          `Extracted content exceeds the inventoried size: ${path}`,
+        );
+      bytes += chunk.length;
+      hash.update(chunk);
+    }
+    if (bytes !== expected.bytes)
+      throw new ArtifactReaderFailure(
+        "integrity",
+        `Extracted content size disagrees with inventory: ${path}`,
+      );
+    const sha256 = hash.digest("hex");
+    if (sha256 !== expected.sha256)
+      throw new ArtifactReaderFailure(
+        "integrity",
+        `Extracted content disagrees with inventory: ${path}`,
+      );
+  } catch (cause: unknown) {
+    try {
+      source.destroy();
+    } catch {
+      // Preserve the verification failure as the caller-visible error.
+    }
+    throw cause;
+  }
+};
+
 const planSelectedEntries = async ({
   reader,
+  outputRoot,
   platform,
   caseSensitivity,
+  verifyContent,
   byPath,
   extracted,
   traversal,
   signal,
 }: {
   readonly reader: ArtifactReader;
+  readonly outputRoot: string;
   readonly platform: NodeJS.Platform;
   readonly caseSensitivity: DestinationCaseSensitivity;
+  readonly verifyContent: boolean;
   readonly byPath: Map<string, SelectedOccurrence>;
   readonly extracted: ExtractedOccurrence[];
   readonly traversal: ArtifactTraversalObservation;
   readonly signal: AbortSignal | undefined;
-}): Promise<ReadonlyMap<string, string>> => {
+}): Promise<UnresolvedDryRunPlan> => {
   const readerRegistry = new ArtifactPathRegistry();
   const outputRegistry = new ArtifactPathRegistry({
     caseInsensitive: caseSensitivity === "case-insensitive",
@@ -468,6 +548,18 @@ const planSelectedEntries = async ({
       );
     const destinationPath = normalizeDestinationPath(path, platform);
     outputRegistry.add(destinationPath, "file");
+    if (verifyContent) {
+      const stream = await reader.open(entry, signal);
+      await verifyPlannedEntry(
+        path,
+        stream,
+        {
+          sha256: selectedItem.node.sha256,
+          bytes: selectedItem.node.size,
+        },
+        signal,
+      );
+    }
     staged.push({ selectedItem, destinationPath });
     byPath.delete(path);
   }
@@ -477,6 +569,9 @@ const planSelectedEntries = async ({
       `Inventoried regular artifact entries were not materialized: ${[...byPath.keys()].sort(compareUnicodeCodePoints).join(", ")}`,
     );
   const unresolvedByOccurrenceId = new Map<string, string>();
+  const limitations: string[] = [];
+  let hasCaseLimitation = false;
+  let hasOverLimitLimitation = false;
   const unresolvedCollisions =
     caseSensitivity === "case-sensitive"
       ? undefined
@@ -484,6 +579,18 @@ const planSelectedEntries = async ({
           staged.map(({ destinationPath }) => destinationPath),
         );
   for (const { selectedItem, destinationPath } of staged) {
+    const overLimitReason = overLimitDestinationReason(
+      outputRoot,
+      destinationPath,
+    );
+    if (overLimitReason !== undefined) {
+      unresolvedByOccurrenceId.set(
+        selectedItem.occurrence.occurrence_id,
+        overLimitReason,
+      );
+      hasOverLimitLimitation = true;
+      continue;
+    }
     const collision = unresolvedCollisions?.get(destinationPath)?.[0];
     if (collision !== undefined) {
       unresolvedByOccurrenceId.set(
@@ -492,6 +599,7 @@ const planSelectedEntries = async ({
           ? `Destination directory case sensitivity is unknown without creating files; case-colliding path ${collision.prefix} vs ${collision.other} cannot be verified as distinct during dry-run.`
           : `Destination filesystem case table for non-ASCII path ${collision.prefix} vs ${collision.other} is not observed without creating files; collision status remains unresolved during dry-run.`,
       );
+      hasCaseLimitation = true;
       continue;
     }
     extracted.push({
@@ -502,7 +610,17 @@ const planSelectedEntries = async ({
       created: false,
     });
   }
-  return unresolvedByOccurrenceId;
+  if (hasOverLimitLimitation)
+    limitations.push(
+      "Destination filesystem component and path length limits (such as 255-byte NAME_MAX) cannot be verified without creating files; over-limit paths remain unresolved in the dry-run plan.",
+    );
+  if (hasCaseLimitation)
+    limitations.push(
+      caseSensitivity === "unknown"
+        ? "Destination directory case sensitivity is unknown because the destination parent has no observable cased entry; case-colliding paths remain unresolved in the dry-run plan."
+        : "Non-ASCII case-folding paths depend on the destination filesystem case table and cannot be verified without creating files; affected paths remain unresolved in the dry-run plan.",
+    );
+  return { byOccurrenceId: unresolvedByOccurrenceId, limitations };
 };
 
 const createDryRunPlan = (
@@ -705,8 +823,10 @@ const createExtractionResult = (
   extracted: readonly ExtractedOccurrence[],
   traversal: ArtifactReaderTraversal,
   materializationProvenance: readonly ArtifactCommand[],
-  unresolvedCaseReasons: ReadonlyMap<string, string> = new Map(),
-  destinationCaseSensitivity: DestinationCaseSensitivity = "case-sensitive",
+  unresolvedPlan: UnresolvedDryRunPlan = {
+    byOccurrenceId: new Map(),
+    limitations: [],
+  },
 ): ArtifactExtractionResult => {
   const selectedIds = new Set(
     selected.map(({ occurrence }) => occurrence.occurrence_id),
@@ -733,7 +853,11 @@ const createExtractionResult = (
     ...(dryRun
       ? {
           dry_run: true,
-          plan: createDryRunPlan(inventory, selected, unresolvedCaseReasons),
+          plan: createDryRunPlan(
+            inventory,
+            selected,
+            unresolvedPlan.byOccurrenceId,
+          ),
         }
       : {}),
     artifacts: extracted,
@@ -760,13 +884,7 @@ const createExtractionResult = (
       dryRun
         ? "Dry-run byte totals are declared and observed content-byte estimates, not guaranteed disk usage."
         : "Publication verifies the selected inventoried regular files; it does not establish complete content decoding.",
-      ...(unresolvedCaseReasons.size === 0
-        ? []
-        : [
-            destinationCaseSensitivity === "unknown"
-              ? "Destination directory case sensitivity is unknown because the destination parent has no observable cased entry; case-colliding paths remain unresolved in the dry-run plan."
-              : "Non-ASCII case-folding paths depend on the destination filesystem case table and cannot be verified without creating files; affected paths remain unresolved in the dry-run plan.",
-          ]),
+      ...unresolvedPlan.limitations,
       ...(integrityContradictions.length === 0
         ? []
         : [

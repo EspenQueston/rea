@@ -18,6 +18,7 @@ import { asarHeaderBytes } from "../../../tests/fixtures/asarHeader.js";
 import { DestinationCaseCollisionFailure } from "../ArtifactPaths.js";
 import { ArtifactReaderFailure } from "../ArtifactReader.js";
 import { ArtifactResourceScope } from "../ArtifactResourceScope.js";
+import { OwnedDirectoryHandle } from "../../filesystem/OwnedDirectoryHandle.js";
 import { OwnedFileHandle } from "../../filesystem/OwnedFileHandle.js";
 import { openRegularFile } from "../../filesystem/RegularFile.js";
 import { SafeOutputTree } from "../SafeOutputTree.js";
@@ -952,5 +953,130 @@ it("retains observed_bytes on unsupported nested ASAR members without adding the
     });
   } finally {
     await resourceScope.close();
+  }
+});
+
+it("rejects directory source content modified between inventory and dry-run planning", async () => {
+  const directory = await createTestTempDirectory(
+    "rea-extraction-dry-run-dir-freshness-",
+  );
+  const source = join(directory, "source");
+  await mkdir(source, { recursive: true });
+  const targetFile = join(source, "alpha.txt");
+  await writeFile(targetFile, "alpha-v1");
+  const originalClose = DirectoryArtifactReader.prototype.close;
+  let inventoryClosed = false;
+  const closeSpy = vi
+    .spyOn(DirectoryArtifactReader.prototype, "close")
+    .mockImplementation(async function (this: DirectoryArtifactReader) {
+      await originalClose.call(this);
+      if (!inventoryClosed) {
+        inventoryClosed = true;
+        await writeFile(targetFile, "alpha-v2");
+      }
+    });
+  const resourceScope = new ArtifactResourceScope();
+  try {
+    await expect(
+      extractArtifact({
+        inputPath: source,
+        inputFormat: "asar",
+        outputRoot: join(directory, "dry-out"),
+        dryRun: true,
+        environment: {},
+        integrityPolicy: "fail",
+        resourceScope,
+      }),
+    ).rejects.toMatchObject({
+      reason: "integrity",
+      message: "Extracted content disagrees with inventory: alpha.txt",
+    });
+  } finally {
+    closeSpy.mockRestore();
+    await resourceScope.close();
+  }
+});
+
+it("classifies over-limit destination path segments as unresolved in dry-run plans", async () => {
+  const directory = await createTestTempDirectory(
+    "rea-extraction-dry-run-over-limit-segment-",
+  );
+  const archive = join(directory, "over-limit.zip");
+  const overLimitName = `${"a".repeat(256)}.txt`;
+  const writer = new ZipWriter(new Uint8ArrayWriter());
+  await writer.add(overLimitName, new TextReader("payload"));
+  await writer.add("short.txt", new TextReader("ok"));
+  await writeFile(archive, Buffer.from(await writer.close()));
+  const resourceScope = new ArtifactResourceScope();
+  try {
+    const outputRoot = join(directory, "dry-out");
+    const planned = await extractArtifact({
+      ...zipInput(archive, outputRoot, resourceScope),
+      dryRun: true,
+    });
+    expect(planned.artifacts).toEqual([
+      expect.objectContaining({
+        relative_path: "short.txt",
+        bytes_written: 0,
+        created: false,
+      }),
+    ]);
+    expect(planned.plan?.totals).toMatchObject({
+      planned_files: 1,
+      unsupported_entries: 0,
+      unresolved_entries: 1,
+      observed_bytes_estimate: 2,
+      declared_bytes_estimate: 2,
+    });
+    expect(
+      planned.plan?.entries.map(({ logical_path, status }) => ({
+        logical_path,
+        status,
+      })),
+    ).toEqual([
+      { logical_path: overLimitName, status: "unresolved" },
+      { logical_path: "short.txt", status: "planned" },
+    ]);
+    expect(planned.limitations).toContain(
+      "Destination filesystem component and path length limits (such as 255-byte NAME_MAX) cannot be verified without creating files; over-limit paths remain unresolved in the dry-run plan.",
+    );
+    await expect(stat(outputRoot)).rejects.toMatchObject({ code: "ENOENT" });
+  } finally {
+    await resourceScope.close();
+  }
+});
+
+it("retains ownership and surfaces an owned cleanup failure when the case-probe directory close fails", async () => {
+  const directory = await createTestTempDirectory(
+    "rea-extraction-dry-run-case-probe-close-",
+  );
+  const archive = join(directory, "archive.zip");
+  await writeFile(archive, await zipBytes("alpha"));
+  const parentDir = join(directory, "parent");
+  await mkdir(parentDir, { recursive: true });
+  await writeFile(join(parentDir, "ProbeFile"), "probe");
+  const closeFailure = new Error("case-probe directory close failed");
+  const closeSpy = vi
+    .spyOn(OwnedDirectoryHandle.prototype, "close")
+    .mockRejectedValueOnce(closeFailure);
+  const resourceScope = new ArtifactResourceScope();
+  try {
+    const error = await extractArtifact({
+      ...zipInput(archive, join(parentDir, "dry-out"), resourceScope),
+      dryRun: true,
+    }).catch((cause: unknown) => cause);
+    expect(error).toBeInstanceOf(ArtifactReaderFailure);
+    expect((error as ArtifactReaderFailure).cleanup).toEqual({
+      reason: "case-probe directory close failed",
+      resources: [expect.stringContaining("parent")],
+    });
+    expect((error as ArtifactReaderFailure).cleanupLeases).toHaveLength(1);
+    expect(resourceScope.hasPending).toBe(true);
+    expect(resourceScope.cleanupResources).toEqual([
+      expect.stringContaining("parent"),
+    ]);
+  } finally {
+    closeSpy.mockRestore();
+    await resourceScope.close().catch(() => undefined);
   }
 });
