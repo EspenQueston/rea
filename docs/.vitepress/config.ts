@@ -100,6 +100,10 @@ export default defineConfig({
             text: "Admission limits and recovery",
             link: "/design/limits-and-recovery",
           },
+          {
+            text: "PostgreSQL inspection design",
+            link: "/design/postgresql-inspection",
+          },
           { text: "Testing", link: "/testing" },
           { text: "Client verification", link: "/client-verification" },
           {
