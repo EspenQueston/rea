@@ -3,12 +3,13 @@ import type { CdpCaptureEvents } from "./CdpCaptureEvents.js";
 import {
   admitRecords,
   allowedSanitizedUrl,
-  isHttpUrl,
   recordValue,
   cdpStringValue,
 } from "./CdpCaptureValues.js";
 import type { CaptureContext } from "./CdpPageCapture.js";
 import { optionalCdpCommand } from "./CdpOptionalCommand.js";
+import { workerTargetOwnership } from "./CdpWorkerTargetOwnership.js";
+import { exclusionReasonForUrl } from "./CdpCaptureEventHelpers.js";
 
 interface CaptureWorkersInput {
   readonly context: CaptureContext;
@@ -23,6 +24,9 @@ export const captureWorkers = async (
 ): Promise<WebPageInspection["workers"]> => {
   const { context, allowedOrigins, limitations, events } = input;
   const completeness = events.completeness;
+  // This final target snapshot cannot establish worker lifetimes or observed
+  // worker-session activity during the preceding page observation window.
+  completeness.attachLimited("workers");
   const result = await optionalCdpCommand(
     { ...context, sessionId: undefined },
     "Target.getTargets",
@@ -59,39 +63,28 @@ export const captureWorkers = async (
       malformedEntries += 1;
       continue;
     }
-    const openerId =
-      target.openerId === undefined
-        ? undefined
-        : cdpStringValue(target.openerId);
-    const parentFrameId =
-      target.parentFrameId === undefined
-        ? undefined
-        : cdpStringValue(target.parentFrameId);
-    if (
-      (target.openerId !== undefined && openerId === undefined) ||
-      (target.parentFrameId !== undefined && parentFrameId === undefined)
-    ) {
+    const ownership = workerTargetOwnership(
+      target,
+      context.target.id,
+      frameIds,
+    );
+    if (!ownership.ok) {
       malformedEntries += 1;
       continue;
     }
-    const url = allowedSanitizedUrl(target.url, allowedOrigins);
-    const relatedToPage =
-      openerId === context.target.id ||
-      (parentFrameId !== undefined && frameIds.has(parentFrameId));
-    if (!relatedToPage) {
-      completeness.exclude("workers", "out_of_target_scope");
-      continue;
-    }
-    if (url === undefined) {
-      const rawUrl = cdpStringValue(target.url);
+    if (ownership.value.scope !== "selected") {
       completeness.exclude(
         "workers",
-        rawUrl === undefined || rawUrl === ""
-          ? "unattributed_origin"
-          : isHttpUrl(rawUrl)
-            ? "disallowed_origin"
-            : "unsupported_url",
+        ownership.value.scope === "unknown"
+          ? "unattributed_target"
+          : "out_of_target_scope",
       );
+      continue;
+    }
+    const url = allowedSanitizedUrl(target.url, allowedOrigins);
+    if (url === undefined) {
+      const rawUrl = cdpStringValue(target.url);
+      completeness.exclude("workers", exclusionReasonForUrl(rawUrl));
       continue;
     }
     items.push({
@@ -100,8 +93,8 @@ export const captureWorkers = async (
       url: url.url,
       origin: url.origin,
       attached: target.attached,
-      opener_target_id: openerId ?? null,
-      parent_frame_id: parentFrameId ?? null,
+      opener_target_id: ownership.value.openerTargetId,
+      parent_frame_id: ownership.value.parentFrameId,
     });
   }
   if (malformedEntries > 0)

@@ -1,6 +1,5 @@
 import { closeOwnedWebResources } from "./closeOwnedWebResources.js";
 import { isDeepStrictEqual } from "node:util";
-import { isAbsolute } from "node:path";
 import { z } from "zod";
 import type { AnalysisError } from "../domain/analysisErrorBase.js";
 import {
@@ -11,7 +10,6 @@ import {
 } from "../domain/analysisErrorCore.js";
 import { createEvidence, type Evidence } from "../domain/evidence.js";
 import { jsonObjectSchema } from "../domain/jsonValue.js";
-import { analysisInputErrorFromIssues } from "../domain/inputIssueProjection.js";
 import { err, ok, type Result } from "../domain/result.js";
 import {
   collectWebModuleImports,
@@ -38,7 +36,10 @@ import type {
   WebModuleResolutionPort,
 } from "./WebModulePorts.js";
 
-import { completeProviderEvidence } from "./ProviderOperationExecution.js";
+import {
+  completeProviderEvidence,
+  parseProviderOperationInput,
+} from "./ProviderOperationExecution.js";
 
 const OPERATION = "trace_web_module_imports";
 const artifactsSchema = selectedWebScriptArtifactsSchema.extend({
@@ -82,27 +83,14 @@ export class WebModuleTraceService {
     rawInput: unknown,
     options?: ExecutionOptions,
   ): Promise<Result<Evidence, AnalysisError>> {
-    if (options?.signal?.aborted)
-      return err(
-        new AnalysisCancelledError(OPERATION, { cause: options.signal.reason }),
-      );
-    const parsed = webModuleTraceInputSchema.safeParse(rawInput);
-    if (!parsed.success)
-      return err(
-        analysisInputErrorFromIssues(OPERATION, parsed.error.issues, rawInput, {
-          cause: parsed.error,
-        }),
-      );
-    const input = parsed.data;
-    for (const [path, value] of [
-      ["manifest_path", input.manifest_path],
-      ["import_map.path", input.import_map?.path],
-    ] as const)
-      if (value !== undefined && !isAbsolute(value))
-        return invalid(
-          path.split("."),
-          "Expected an absolute filesystem path on this host.",
-        );
+    const parsed = parseProviderOperationInput(
+      OPERATION,
+      rawInput,
+      webModuleTraceInputSchema,
+      options?.signal,
+    );
+    if (!parsed.ok) return parsed;
+    const input = parsed.value;
     for (const [path, value] of [
       ["importer_url", input.importer_url],
       ["import_map.base_url", input.import_map?.base_url],
@@ -137,9 +125,11 @@ export class WebModuleTraceService {
     if (!bound.ok) return bound;
     const selected = bound.value;
     const importerUrl = input.importer_url ?? selected.url;
-    const importerAdmission = admitContext(importerUrl, ["importer_url"]);
-    if (!importerAdmission.ok) return importerAdmission;
-    const syntax = collectWebModuleImports(data.source);
+    if (input.importer_url === undefined) {
+      const importerAdmission = admitContext(importerUrl);
+      if (!importerAdmission.ok) return importerAdmission;
+    }
+    const syntax = collectWebModuleImports(data.source, data.sourceFile.path);
     const literals = syntax.imports
       .filter((reference) => reference.specifier !== null)
       .map((reference) => reference.specifier ?? "");
@@ -269,7 +259,7 @@ export class WebModuleTraceService {
       },
       {
         operation: OPERATION,
-        parameters: jsonObjectSchema.parse(input),
+        parameters: input,
         result: normalized.data,
         rawResult: resolution?.rawResult ?? null,
         confidence: "derived",
@@ -295,34 +285,50 @@ export class WebModuleTraceService {
 
 const admitContext = (
   value: string,
-  path: readonly string[],
+  path?: readonly string[],
 ): Result<null, AnalysisError> => {
+  const reportedUnavailable = () =>
+    err(
+      new AnalysisCapabilityUnavailableError(
+        "web-module-resolution",
+        OPERATION,
+        "reported_source_context_unavailable",
+        {
+          userMessage:
+            "The manifest's reported source URL is not a usable HTTP(S) module context. Select importer_url explicitly for this script.",
+        },
+      ),
+    );
   let url: URL;
   try {
     url = new URL(value);
   } catch (cause: unknown) {
     void cause;
+    if (path === undefined) return reportedUnavailable();
     return invalid(
       path,
       "Expected an absolute context URL. Select importer_url explicitly when the reported source URL is unknown.",
     );
   }
-  if (url.username !== "" || url.password !== "")
+  if (url.username !== "" || url.password !== "") {
+    if (path === undefined) return reportedUnavailable();
     return invalid(
       path,
       "Module context URLs must not contain username/password userinfo.",
     );
-  if (url.protocol !== "http:" && url.protocol !== "https:")
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
     return err(
       new AnalysisCapabilityUnavailableError(
         "web-module-resolution",
         OPERATION,
         "unsupported_context_scheme",
         {
-          userMessage: `${path.join(".")} ${value} uses unsupported ${url.protocol} context. This trace currently supports HTTP(S) importer/map contexts; select a supported context explicitly when appropriate.`,
+          userMessage: `${path?.join(".") ?? "The reported source URL"} ${value} uses unsupported ${url.protocol} context. This trace currently supports HTTP(S) importer/map contexts; select a supported context explicitly when appropriate.`,
         },
       ),
     );
+  }
   return ok(null);
 };
 const invalid = (path: readonly string[], message: string) =>

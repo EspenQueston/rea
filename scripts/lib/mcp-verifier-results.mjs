@@ -1,3 +1,5 @@
+import { isDeepStrictEqual } from "node:util";
+import { authenticateParsedEvidenceBundle } from "../../dist/domain/evidenceBundle.js";
 import { analysisErrorProjectionSchema } from "../../dist/contracts/errorSchemas.js";
 import { toolContract } from "../../dist/contracts/toolContracts.js";
 import {
@@ -45,13 +47,19 @@ const operationResultKey = (contract) => {
   return evidence ? "normalized_result" : "result";
 };
 
-/** Expand compact session metadata once at the verifier boundary. */
+/**
+ * Expand compact session metadata once at the verifier boundary. The caller
+ * has validated the status against the binary_session contract, so a summary
+ * carries summary candidates without capability sets; complete detail must
+ * still expand every candidate's capabilities.
+ */
 export const expandMcpSessionStatus = (status) => ({
   ...status,
   capabilities: expandProviderCapabilities(status.capabilities),
-  analysis_provider_candidates: expandProviderCandidates(
-    status.analysis_provider_candidates,
-  ),
+  analysis_provider_candidates:
+    status.detail === "summary"
+      ? status.analysis_provider_candidates
+      : expandProviderCandidates(status.analysis_provider_candidates),
   tool_availability: expandToolAvailability(status.tool_availability),
 });
 
@@ -100,6 +108,27 @@ export const requireMcpLifecycleResult = (result, operation) => {
   return operation === "binary_session"
     ? expandMcpSessionStatus(projected)
     : projected;
+};
+
+/** Require an authenticated complete bundle without changing summary-capable readers. */
+export const requireMcpEvidenceBundle = (result) => {
+  const operation = "get_evidence_bundle";
+  const contract = toolContract(operation);
+  const bundle = requireOutput(result, operation, contract).result;
+  if (bundle.kind === "evidence-bundle-summary")
+    throw new Error(
+      "get_evidence_bundle returned summary metadata instead of complete Evidence",
+    );
+  if (result.structuredContent !== undefined) {
+    const structured = contract.outputSchema.parse(
+      result.structuredContent,
+    ).result;
+    if (!isDeepStrictEqual(bundle, structured))
+      throw new Error(
+        "get_evidence_bundle text and structured results disagree",
+      );
+  }
+  return authenticateParsedEvidenceBundle(bundle);
 };
 
 /** Project a mixed verifier call using its exact named canonical output schema. */
