@@ -767,13 +767,23 @@ it.each([
     "unknown",
   ],
   ["explicit after spread", `{...input,value:require("electron")}`, "external"],
+  ["null spread", `{value:require("electron"),...null}`, "external"],
+  ["undefined spread", `{value:require("electron"),...undefined}`, "external"],
+  ["void spread", `{value:require("electron"),...void 0}`, "external"],
+  [
+    "shadowed undefined",
+    `{value:require("electron"),...undefined}`,
+    "unknown",
+    "const undefined=input;",
+  ],
   ["unchanged value", `{enumerable:true}`, "external"],
 ])(
   "preserves effective descriptor value uncertainty for %s",
-  (_name, descriptor, kind) => {
+  (_name, descriptor, kind, setup = "") => {
     const value = inspectOne(`(() => {
       const modules = {
         1(module,exports) {
+          ${setup}
           exports.api = require("electron");
           Object.defineProperty(exports,"api",${descriptor});
         },

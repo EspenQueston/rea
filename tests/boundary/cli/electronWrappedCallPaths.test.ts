@@ -900,6 +900,10 @@ const descriptorCases = [
     `{value:${descriptorNoop},["value"]:${descriptorSender}}`,
     true,
   ],
+  ["null-spread", `{value:${descriptorSender},...null}`, true],
+  ["undefined-spread", `{value:${descriptorSender},...undefined}`, true],
+  ["void-spread", `{value:${descriptorSender},...void 0}`, true],
+  ["nested-null-spread", `{value:${descriptorSender},...{...null}}`, true],
 ] as const;
 
 cliTest.for(["CLI", "stdio MCP"] as const)(

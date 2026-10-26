@@ -7,6 +7,7 @@ import {
   runtimeFunctionParameters,
   unwrapJavaScriptExpression,
 } from "./javascriptAstValues.js";
+import { createSemanticExpressionShapeResolver } from "./javascriptSemanticExpressionShapes.js";
 import { javascriptBootstrapAt } from "./javascriptBootstrap.js";
 import { ELECTRON_MODULE } from "./javascriptElectronMemberWrites.js";
 import {
@@ -132,6 +133,7 @@ export class JavaScriptSymbolicBindings {
     ),
   ) {
     this.#electronIdentity = electronIdentity;
+    const shapes = createSemanticExpressionShapeResolver(state);
     this.#indexBindingAliases();
     traverseJavaScriptAst(program, {
       enter: (node) => {
@@ -158,7 +160,11 @@ export class JavaScriptSymbolicBindings {
             t.isStringLiteral(key) &&
             t.isObjectExpression(descriptor)
           ) {
-            const value = staticObjectProperty(descriptor, "value");
+            const value = staticObjectProperty(
+              descriptor,
+              "value",
+              shapes.isNullish,
+            );
             if (value.status === "explicit")
               this.#addWrite(target, [key.value], value.property.value, node);
             else if (value.status === "dynamic")

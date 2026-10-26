@@ -43,5 +43,7 @@ linuxX64("allows a symlink to a regular Wakaru resource limiter", async () => {
       REA_WAKARU_COMMAND: command,
       REA_JAVASCRIPT_PRLIMIT_COMMAND: limiter,
     }),
-  ).resolves.toMatchObject({ limiter });
+  ).resolves.toMatchObject({
+    limiter: { invocationPath: limiter, resolvedPath: target },
+  });
 });
