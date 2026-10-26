@@ -61,10 +61,12 @@ Claude Code (`claude-sonnet-5-5`) recordings from earlier rounds, rebuilt by eac
 
 No recording passes fewer tasks with this branch.
 
-- **EspoCRM:** the contact delete passes with both models on all five recordings. The contact update, whose plan is
-  the same in both builds, passes with gpt-oss on all five and still fails with GLM. Its contact list now answers any
-  page size from the state where #7260's answered only the recorded `maxSize`, which is the likely cause; the
-  trajectories were not kept.
+- **EspoCRM:** the contact delete passes with both models on all five recordings. The contact update passes with
+  gpt-oss on all five only by replacing the contact: the served update refuses `emailAddress`, which no recorded update
+  stored, so the agent created a contact with the new address and deleted the old one, which the task's check, by name
+  and address, accepts. The update itself is refused in both builds, as is a read of a seeded contact by id, since the
+  state knows seeded contacts only from list reads, which lack fields the item reads show. GLM's update fails in both
+  builds the same way, and it often ends a turn at the eval agent's 1,024-token completion limit.
 - **EspoCRM, leftover contact:** the recording started with a contact an earlier attempt left, held as seeded data, so
   every "nothing else changed" check fails in both builds.
 - **Vikunja:** the newly served task update accepts the members the recorded update stored (`title`, `description`,
@@ -77,4 +79,3 @@ No recording passes fewer tasks with this branch.
 - An application answering `deleted: true` for a record it still lists, as a trash view might: such a read counts as
   absent. No recorded capture does this.
 - The skill's update wording, which no fresh recording has used yet.
-- Why GLM's EspoCRM contact update fails in both builds.
