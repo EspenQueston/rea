@@ -2237,6 +2237,29 @@ it("probes again at the deadline when the interval exceeds the timeout", async (
   expect(result.waited_ms).toBeGreaterThanOrEqual(1_000);
 });
 
+it("keeps the caller's abort reason when cancelled between boot probes", async () => {
+  const { binary } = await writeAdbStub(bootStub(""));
+  const controller = new AbortController();
+  const reason = new Error("caller stopped waiting");
+  setTimeout(() => {
+    controller.abort(reason);
+  }, 400);
+  const cancelled = await providerOver(binary).execute(
+    {
+      operation: "wait_adb_boot",
+      input: {
+        serial: "emulator-5554",
+        timeout_ms: 10_000,
+        poll_interval_ms: 5_000,
+      },
+    },
+    { signal: controller.signal },
+  );
+  expect(cancelled.ok).toBe(false);
+  if (cancelled.ok) return;
+  expect(cancelled.error.cause).toBe(reason);
+});
+
 it("keeps waiting through an unreachable device until the deadline", async () => {
   const { binary } = await writeAdbStub(
     () => `if [ "$1" = "version" ]; then ${VERSION_BLOCK}; exit 0; fi

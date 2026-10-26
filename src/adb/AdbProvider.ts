@@ -3183,7 +3183,11 @@ export class AdbProvider {
           signal === undefined ? {} : { signal },
         );
       } catch (cause) {
-        return err(new AnalysisCancelledError(operation, { cause }));
+        return err(
+          new AnalysisCancelledError(operation, {
+            cause: signal?.aborted ? signal.reason : cause,
+          }),
+        );
       }
     }
   }

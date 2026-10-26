@@ -50,6 +50,7 @@ jobs:
             "$android_root/ApiDemos-debug.apk" \
             "$GITHUB_WORKSPACE/tests/fixtures/android/static-initializers" \
             "$classes" "$GITHUB_WORKSPACE/tests/fixtures/android/direct-invokes" \
+            "$GITHUB_WORKSPACE/tests/fixtures/android/resource-references" \
             | tee "$android_root/metadata.log"
           grep -F 'RAW_CLASS_SELECTOR_REGRESSION_PASS nested=true metadata=true references=true' \
             "$android_root/metadata.log"

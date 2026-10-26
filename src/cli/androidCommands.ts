@@ -137,6 +137,7 @@ export const registerAndroidCommands = (
         .number()
         .int()
         .positive()
+        .max(1_000)
         .optional()
         .describe("Most code sites per resource (default 50)"),
     }),
