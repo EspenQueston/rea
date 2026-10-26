@@ -212,8 +212,8 @@ try {
         source: { kind: "retained-evidence", evidence_id: parentId },
         view: {
           kind: "native-inventory",
-          offset: 0,
-          limit: Math.min(count, 32),
+          offset: Math.floor(count / 2),
+          limit: Math.min(count - Math.floor(count / 2), 32),
           fields: ["value", "procedure"],
         },
       },
@@ -223,7 +223,7 @@ try {
       .map((row) => row.record)
       .filter(
         (row) =>
-          row.procedure?.external !== true && row.procedure?.thunk !== true,
+          row.procedure?.external === false && row.procedure?.thunk === false,
       )
       .slice(0, 2);
     assert.equal(selected.length, 2);
