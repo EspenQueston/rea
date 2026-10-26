@@ -1,3 +1,4 @@
+import { readBoundedFileBytes } from "../process/BoundedFileBytes.js";
 import { AnalysisCleanupLease } from "../artifacts/AnalysisCleanupLease.js";
 import type { RetainedResourceScope } from "../application/AnalysisProvider.js";
 import { ConfigurationError } from "../domain/configurationErrors.js";
@@ -9,7 +10,7 @@ import {
   RegularFileCleanupFailure,
 } from "../filesystem/OwnedRegularFile.js";
 import {
-  assertRegularFileActive,
+  RegularFileOperationCancelled,
   NonRegularFileReadError,
 } from "../filesystem/RegularFile.js";
 
@@ -64,21 +65,17 @@ export const readProviderRegistration = <Value>(
         async ({ handle, initial: metadata }) => {
           if (metadata.size > MAXIMUM_REGISTRATION_BYTES)
             throw registrationTooLarge();
-          const bytes = Buffer.alloc(MAXIMUM_REGISTRATION_BYTES + 1);
-          let length = 0;
-          while (length < bytes.length) {
-            assertRegularFileActive(options.signal);
-            const { bytesRead } = await handle.read(
-              bytes,
-              length,
-              bytes.length - length,
-              null,
-            );
-            if (bytesRead === 0) break;
-            length += bytesRead;
-          }
-          if (length > MAXIMUM_REGISTRATION_BYTES) throw registrationTooLarge();
-          return bytes.toString("utf8", 0, length);
+          const bytes = await readBoundedFileBytes(
+            handle,
+            MAXIMUM_REGISTRATION_BYTES,
+            {
+              signal: options.signal,
+              cancellationFailure: (reason) =>
+                new RegularFileOperationCancelled(reason),
+            },
+          );
+          if (bytes === undefined) throw registrationTooLarge();
+          return bytes.toString("utf8");
         },
       );
       return format.parse(JSON.parse(text));
