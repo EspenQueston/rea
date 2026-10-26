@@ -507,15 +507,18 @@ export const withSavedPlaceholders = (
 
 /** Whether a request a UI step triggered is the one its `save_response` names: method, start origin, and path with `{*}` matching one segment. */
 /** A `save_response` path's segments as a browser spells a URL path, percent-encoded as its URL parser would, `{*}` kept. */
-const pathPattern = (path: string): readonly string[] =>
-  path
-    .split("?")[0]!
+const pathPattern = (path: string): readonly string[] => {
+  const pathname = path.split("?")[0]!;
+  let wildcard = "~rea-wildcard~";
+  while (pathname.includes(wildcard)) wildcard += "~";
+  const marked = pathname
+    .split(/[\\/]/u)
+    .map((segment) => (segment === "{*}" ? wildcard : segment))
+    .join("/");
+  return new URL(marked, "http://path.invalid").pathname
     .split("/")
-    .map((segment) =>
-      segment === "{*}"
-        ? segment
-        : new URL(`http://path.invalid/${segment}`).pathname.slice(1),
-    );
+    .map((segment) => (segment === wildcard ? "{*}" : segment));
+};
 
 const namesResponse = (
   spec: BrowserScenarioSaveResponse,

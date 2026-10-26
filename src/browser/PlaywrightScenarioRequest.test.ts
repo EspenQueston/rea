@@ -1752,3 +1752,55 @@ it("refuses repeated saved URL expansion before browser navigation", async () =>
   ).rejects.toThrow("serialization allowance");
   expect(goto).not.toHaveBeenCalled();
 });
+
+it.each([
+  "/api\\items/{*}",
+  "/api/unused/../items/{*}",
+  "/api/unused/%2e%2e/items/{*}",
+])(
+  "normalizes the entire observed response path %s before matching",
+  async (path) => {
+    const parsed = clickSaving(path);
+    const { page } = uiPage([
+      {
+        method: "POST",
+        url: `${ORIGIN}/api/items/42`,
+        status: 201,
+        body: '{"id":"42"}',
+      },
+    ]);
+    const secrets = resolved(parsed);
+    await perform(page, parsed.actions[0]!, secrets);
+    expect(secrets.savedValue("item")).toBe("42");
+  },
+);
+
+it("keeps literal encoded wildcard text distinct from observed-response wildcard segments", async () => {
+  const parsed = clickSaving("/api/%7B*%7D");
+  const { page } = uiPage([
+    {
+      method: "POST",
+      url: `${ORIGIN}/api/other`,
+      status: 201,
+      body: '{"id":"42"}',
+    },
+  ]);
+  await expect(
+    perform(page, parsed.actions[0]!, resolved(parsed)),
+  ).rejects.toThrow("no POST");
+});
+
+it("normalizes wildcard paths without colliding with literal marker-like segments", async () => {
+  const parsed = clickSaving("/~rea-wildcard~/items/{*}");
+  const { page } = uiPage([
+    {
+      method: "POST",
+      url: `${ORIGIN}/~rea-wildcard~/items/42`,
+      status: 201,
+      body: '{"id":"42"}',
+    },
+  ]);
+  const secrets = resolved(parsed);
+  await perform(page, parsed.actions[0]!, secrets);
+  expect(secrets.savedValue("item")).toBe("42");
+});

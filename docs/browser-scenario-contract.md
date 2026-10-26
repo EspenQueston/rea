@@ -534,12 +534,10 @@ id the application assigns:
   the selected source transaction's earlier URL, request headers and request
   body are also protected using the admitted values. Unresolved source values
   withhold that transaction's affected metadata/content with an explicit
-  limitation. Before publication, retained network transactions are rechecked
+  limitation. Before publication, retained events are rechecked
   with the final known secret values, including immediate follow-up requests
-  and their response bodies. Unknown source values withhold only the selected
-  source transaction. A token
-  read later from local storage may therefore remain in its earlier login
-  response. Other saved values, such as ids, stay visible, since
+  and their response bodies, console/page errors, WebSocket text and event URL/name fields. Learned redaction facts are independent of source-identity readiness. Unknown source values withhold only the selected
+  source transaction. Other saved values, such as ids, stay visible, since
   environments model them. The environment build warns about saved values
   named like credentials that are not marked secret
   (`credential-named-saved-values`).

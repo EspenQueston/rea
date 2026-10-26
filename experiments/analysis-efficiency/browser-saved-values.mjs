@@ -519,6 +519,10 @@ try {
     const followup = await invoke("capture_browser_scenario", {
       ...sourceScenario,
       start_url: { url: origin + "/immediate-followup.html" },
+      capture: {
+        ...sourceScenario.capture,
+        events: [...sourceScenario.capture.events, "console"],
+      },
       actions: [
         {
           step_id: "exchange",
@@ -548,6 +552,15 @@ try {
         record.evidence_id === followup.normalized_result.parent_evidence_id,
     );
     assert.ok(followupParent);
+    const consoleEvents = followupParent.normalized_result.events.items.filter(
+      (event) => event.kind === "console" && event.text.includes("REDACTED"),
+    );
+    assert.equal(consoleEvents.length, 1);
+    assert.ok(
+      !JSON.stringify(followupParent.normalized_result.events.items).includes(
+        "source-token",
+      ),
+    );
     assert.ok(
       followup.normalized_result.summary.steps.every(
         (step) => step.status === "completed",
@@ -583,6 +596,7 @@ try {
       metadata_only_source_url: true,
       whole_json_secret_withheld: true,
       immediate_followup_protected: true,
+      immediate_console_protected: true,
       whole_json_status: postResponse.status,
     });
   }

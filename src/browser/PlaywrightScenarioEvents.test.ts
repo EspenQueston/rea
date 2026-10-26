@@ -409,6 +409,8 @@ const sourceTransactionCapture = async (
   options: {
     fail?: boolean;
     followup?: boolean;
+    metadataOnly?: boolean;
+    learnDirect?: boolean;
     value?: string;
     padding?: number;
     metadataLimit?: number;
@@ -434,7 +436,11 @@ const sourceTransactionCapture = async (
     actions: [{ step_id: "click", action: "wait_for_timeout", duration_ms: 1 }],
     capture: {
       events: ["network"],
-      network: { request_body: true, response_body: true, header_values: true },
+      network: {
+        request_body: !options.metadataOnly,
+        response_body: !options.metadataOnly,
+        header_values: !options.metadataOnly,
+      },
       ...(options.metadataLimit === undefined
         ? {}
         : {
@@ -472,11 +478,12 @@ const sourceTransactionCapture = async (
     ],
   };
   listeners.get("request")!(request);
-  await vi.waitFor(() =>
-    expect(capture.result().items).toContainEqual(
-      expect.objectContaining({ kind: "network-content", phase: "request" }),
-    ),
-  );
+  if (!options.metadataOnly)
+    await vi.waitFor(() =>
+      expect(capture.result().items).toContainEqual(
+        expect.objectContaining({ kind: "network-content", phase: "request" }),
+      ),
+    );
   const sourceId = capture
     .result()
     .items.find((event) => event.kind === "request")!.transaction_id;
@@ -487,6 +494,10 @@ const sourceTransactionCapture = async (
   secrets.responseProtector("click", [
     { name: "token", json_pointer: "/token", secret: true },
   ])?.(request);
+  if (options.learnDirect)
+    secrets.responseProtector("click", [
+      { name: "token", json_pointer: "/token", secret: true },
+    ])?.(unrelated);
   listeners.get("response")!({
     request: () => request,
     url: () => url,
@@ -513,17 +524,19 @@ const sourceTransactionCapture = async (
       body: async () => Buffer.from(body),
     });
     listeners.get("requestfinished")!(followup);
-    await vi.waitFor(() =>
-      expect(
-        capture
-          .result()
-          .items.filter(
-            (event) =>
-              event.kind === "network-content" && event.phase === "response",
-          ),
-      ).toHaveLength(1),
-    );
+    if (!options.metadataOnly)
+      await vi.waitFor(() =>
+        expect(
+          capture
+            .result()
+            .items.filter(
+              (event) =>
+                event.kind === "network-content" && event.phase === "response",
+            ),
+        ).toHaveLength(1),
+      );
   }
+  if (options.learnDirect) secrets.save("click.token", "token", value, true);
   listeners.get("requestfinished")!(request);
   await capture.finish();
   return { capture, sourceId, value, url };
@@ -647,4 +660,130 @@ it("re-protects follow-up URLs, headers and both body phases recorded before sou
       public: "kept",
     });
   }
+});
+
+it("protects metadata-only follow-ups when direct saves learn a secret without unambiguous source identity", async () => {
+  const { capture, value } = await sourceTransactionCapture({
+    followup: true,
+    metadataOnly: true,
+    learnDirect: true,
+  });
+  const request = capture
+    .result()
+    .items.find(
+      (event) =>
+        event.kind === "request" && event.url.url.includes("/followup?"),
+    );
+  expect(request).toMatchObject({
+    url: { redacted: true, origin: "https://example.test" },
+  });
+  expect(JSON.stringify(capture.result().items)).not.toContain(value);
+  expect(
+    capture.result().items.some((event) => event.kind === "network-content"),
+  ).toBe(false);
+});
+
+it("protects earlier non-network event text after a response secret is learned, without network selection", async () => {
+  const listeners = new Map<string, (value: unknown) => void>();
+  const socketListeners = new Map<string, (value: unknown) => void>();
+  const page = {
+    on: (name: string, listener: (value: unknown) => void) =>
+      listeners.set(name, listener),
+    off: vi.fn(),
+  } as unknown as Page;
+  const parsed = browserScenarioSchema.parse({
+    browser: { mode: "launch", executable_path: "/fixture/browser" },
+    start_url: { url: "https://example.test/" },
+    actions: [{ step_id: "wait", action: "wait_for_timeout", duration_ms: 1 }],
+  });
+  const secrets = resolveScenarioSecrets(parsed, {});
+  const capture = new PlaywrightScenarioEvents({
+    page,
+    enabled: new Set([
+      "console",
+      "page-errors",
+      "websockets",
+      "frames",
+      "workers",
+      "popups",
+      "downloads",
+    ]),
+    secrets,
+  });
+  const value = "late-secret-829a";
+  const url = `https://example.test/?token=${value}`;
+  listeners.get("console")!({
+    type: () => "log",
+    text: () => value,
+    location: () => ({ url }),
+  });
+  const error = new Error(value);
+  error.stack = value;
+  listeners.get("pageerror")!(error);
+  listeners.get("websocket")!({
+    url: () => url,
+    on: (name: string, listener: (value: unknown) => void) =>
+      socketListeners.set(name, listener),
+    off: vi.fn(),
+  });
+  socketListeners.get("framesent")!({ payload: value });
+  listeners.get("framenavigated")!({ url: () => url, name: () => value });
+  listeners.get("worker")!({ url: () => url, on: vi.fn(), off: vi.fn() });
+  listeners.get("popup")!({ url: () => url, on: vi.fn(), off: vi.fn() });
+  listeners.get("download")!({
+    url: () => url,
+    suggestedFilename: () => value,
+    cancel: async () => undefined,
+  });
+  expect(capture.result().items.length).toBeGreaterThanOrEqual(8);
+  expect(JSON.stringify(capture.result().items)).toContain(value);
+  secrets.save("late.token", "token", value, true);
+  await capture.finish();
+  expect(JSON.stringify(capture.result().items)).not.toContain(value);
+  expect(JSON.stringify(capture.result().items)).toContain("REDACTED");
+  const finished = JSON.stringify(capture.result());
+  await capture.finish();
+  expect(JSON.stringify(capture.result())).toBe(finished);
+});
+
+it("accounts for late non-network redaction expansion and reports omissions once", async () => {
+  const listeners = new Map<string, (value: unknown) => void>();
+  const page = {
+    on: (name: string, listener: (value: unknown) => void) =>
+      listeners.set(name, listener),
+    off: vi.fn(),
+  } as unknown as Page;
+  const parsed = browserScenarioSchema.parse({
+    browser: { mode: "launch", executable_path: "/fixture/browser" },
+    start_url: { url: "https://example.test/" },
+    actions: [{ step_id: "wait", action: "wait_for_timeout", duration_ms: 1 }],
+    capture: { limits: { max_event_allocation_bytes: 20_000 } },
+  });
+  const secrets = resolveScenarioSecrets(parsed, {});
+  const capture = new PlaywrightScenarioEvents({
+    page,
+    enabled: new Set(["console"]),
+    limits: parsed.capture.limits,
+    secrets,
+  });
+  listeners.get("console")!({
+    type: () => "log",
+    text: () => "x".repeat(1000),
+    location: () => ({ url: "" }),
+  });
+  expect(capture.result().retained).toBe(1);
+  secrets.save("late.token", "token", "x", true);
+  await capture.finish();
+  expect(capture.result()).toMatchObject({
+    retained: 0,
+    dropped: 1,
+    omissions: {
+      by_kind: [
+        { kind: "console", count: 1, reasons: ["max-event-allocation-bytes"] },
+      ],
+      network_transactions: [],
+    },
+  });
+  await capture.finish();
+  expect(capture.result().dropped).toBe(1);
 });

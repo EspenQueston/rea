@@ -276,6 +276,12 @@ export class BrowserScenarioSecrets {
   private textReplacements: readonly SecretReplacement[] = [];
   private textNeedles: readonly SecretNeedle[] = [];
   private redactionCostPerCharacter = 8;
+  private learnedSecrets = false;
+
+  /** Runtime redaction facts are independent of source request identity/readiness. */
+  hasLearnedSecrets(): boolean {
+    return this.learnedSecrets;
+  }
 
   private constructor(private readonly values: Map<string, string>) {
     this.compile();
@@ -357,6 +363,7 @@ export class BrowserScenarioSecrets {
       this.values.set(id, value);
     }
     this.compile();
+    this.learnedSecrets = true;
   }
 
   static resolve(

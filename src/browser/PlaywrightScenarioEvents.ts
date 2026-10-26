@@ -80,6 +80,22 @@ const retainedEventCost = (
   return allocationCost(unindexed, limit) + 128;
 };
 
+type TextEvent = Exclude<
+  BrowserScenarioEvent,
+  { readonly transaction_id: string }
+>;
+
+/** Count parsed text without allocating another serialization or copying bodies. */
+const eventTextUnits = (value: unknown): number => {
+  if (typeof value === "string") return value.length;
+  if (value === null || typeof value !== "object") return 0;
+  let units = 0;
+  for (const key in value)
+    if (Object.hasOwn(value, key))
+      units += eventTextUnits((value as Record<string, unknown>)[key]);
+  return units;
+};
+
 type EventKind = BrowserScenarioEvent["kind"];
 /** Arrival-ordered Playwright event capture with current-step attribution. */
 export class PlaywrightScenarioEvents {
@@ -110,7 +126,7 @@ export class PlaywrightScenarioEvents {
   private readonly stopListeners = new Map<object, Set<() => void>>();
   private sealed = false;
   private sourcePrivacyIncomplete = false;
-  private networkPrivacyFinalized = false;
+  private eventPrivacyFinalized = false;
 
   constructor(options: EventCaptureOptions) {
     const network = options.network ?? {
@@ -204,7 +220,7 @@ export class PlaywrightScenarioEvents {
       await this.network?.finish();
     } finally {
       try {
-        await this.finalizeNetworkPrivacy();
+        await this.finalizeEventPrivacy();
       } finally {
         this.sealed = true;
       }
@@ -274,19 +290,18 @@ export class PlaywrightScenarioEvents {
     };
   }
 
-  /** Apply the final known secret set to retained network facts before publication. */
-  private async finalizeNetworkPrivacy(): Promise<void> {
-    if (this.networkPrivacyFinalized) return;
-    const sources = this.network?.sourcePrivacy();
-    if (sources === undefined || sources.size === 0) return;
-    const learnedSecrets = [...sources.values()].some(Boolean);
+  /** Apply final known secrets to retained event text independently of source readiness. */
+  private async finalizeEventPrivacy(): Promise<void> {
+    if (this.eventPrivacyFinalized) return;
+    const sources = this.network?.sourcePrivacy() ?? new Map<string, boolean>();
+    const learnedSecrets = this.secrets.hasLearnedSecrets();
+    if (sources.size === 0 && !learnedSecrets) return;
     let retained = 0;
     for (const original of this.items) {
-      if (!("transaction_id" in original)) {
-        this.items[retained++] = original;
-        continue;
-      }
-      const sourceReady = sources.get(original.transaction_id);
+      const sourceReady =
+        "transaction_id" in original
+          ? sources.get(original.transaction_id)
+          : undefined;
       if (sourceReady === undefined && !learnedSecrets) {
         this.items[retained++] = original;
         continue;
@@ -302,36 +317,21 @@ export class PlaywrightScenarioEvents {
         this.limits.max_event_allocation_bytes,
         this.limits.max_total_event_allocation_bytes - this.retainedCost,
       );
-      const bodyMessage =
-        original.kind === "network-content" &&
-        original.body.state === "unavailable"
-          ? original.body.message.length
-          : 0;
-      const extra =
-        bodyMessage +
-        (original.kind === "network-content"
-          ? original.headers.state === "captured"
-            ? original.headers.items.reduce(
-                (length, item) =>
-                  length + item.name.length + (item.value?.length ?? 0),
-                0,
-              )
-            : original.headers.state === "unavailable"
-              ? original.headers.message.length
-              : 0
-          : "url" in original
-            ? original.url.url.length +
-              original.header_names.reduce(
-                (length, name) => length + name.length,
-                0,
-              ) +
-              original.method.length +
-              original.resource_type.length +
-              (original.failure?.length ?? 0)
-            : 0);
+      const extra = eventTextUnits(
+        original.kind === "network-content"
+          ? {
+              headers: original.headers,
+              message:
+                original.body.state === "unavailable"
+                  ? original.body.message
+                  : "",
+            }
+          : original,
+      );
       let reason: BrowserScenarioEventBudgetReason | undefined =
+        "transaction_id" in original &&
         this.secrets.redactionAllocationCost(extra) + 4096 >
-        this.limits.max_network_metadata_allocation_bytes
+          this.limits.max_network_metadata_allocation_bytes
           ? "max-network-metadata-allocation-bytes"
           : undefined;
       const bodyCopy =
@@ -352,11 +352,14 @@ export class PlaywrightScenarioEvents {
             : undefined;
       let event: BrowserScenarioEvent = original;
       if (reason === undefined) {
-        event = await this.protectNetworkEvent(
-          original,
-          ready,
-          Math.max(1, available),
-        );
+        event =
+          "transaction_id" in original
+            ? await this.protectNetworkEvent(
+                original,
+                ready,
+                Math.max(1, available),
+              )
+            : this.protectTextEvent(original);
         const cost = retainedEventCost(
           event,
           this.limits.max_event_allocation_bytes,
@@ -374,10 +377,58 @@ export class PlaywrightScenarioEvents {
         }
       }
       this.omitEvent(original.kind, reason);
-      this.omitNetwork(original.transaction_id, original.kind, reason);
+      if ("transaction_id" in original)
+        this.omitNetwork(original.transaction_id, original.kind, reason);
     }
     this.items.length = retained;
-    this.networkPrivacyFinalized = true;
+    this.eventPrivacyFinalized = true;
+  }
+
+  private protectUrl(value: SanitizedBrowserUrl): SanitizedBrowserUrl {
+    const url = this.secrets.sanitizeUrl(value.url);
+    return { ...url, redacted: url.redacted || value.redacted };
+  }
+
+  private protectTextEvent(event: TextEvent): TextEvent {
+    switch (event.kind) {
+      case "console":
+        return {
+          ...event,
+          url: event.url === null ? null : this.protectUrl(event.url),
+          level: this.secrets.redact(event.level),
+          text: this.secrets.redact(event.text),
+        };
+      case "page-error":
+        return {
+          ...event,
+          message: this.secrets.redact(event.message),
+          stack: event.stack === null ? null : this.secrets.redact(event.stack),
+        };
+      case "websocket-frame-sent":
+      case "websocket-frame-received":
+        return event.payload_type === "text"
+          ? {
+              ...event,
+              url: this.protectUrl(event.url),
+              payload_text: this.secrets.redact(event.payload_text),
+            }
+          : { ...event, url: this.protectUrl(event.url) };
+      case "websocket-opened":
+      case "websocket-closed":
+        return { ...event, url: this.protectUrl(event.url) };
+      case "download-cancelled":
+        return {
+          ...event,
+          url: this.protectUrl(event.url),
+          suggested_filename: this.secrets.redact(event.suggested_filename),
+        };
+      default:
+        return {
+          ...event,
+          url: event.url === null ? null : this.protectUrl(event.url),
+          name: event.name === null ? null : this.secrets.redact(event.name),
+        };
+    }
   }
 
   private async protectNetworkEvent(
@@ -470,7 +521,7 @@ export class PlaywrightScenarioEvents {
     }
     if (!("transaction_id" in event) || !("url" in event)) return event;
     const url = ready
-      ? this.secrets.sanitizeUrl(event.url.url)
+      ? this.protectUrl(event.url)
       : { url: "", origin: null, query_parameter_names: [], redacted: true };
     const metadata = {
       url: { ...url, redacted: url.redacted || event.url.redacted },
