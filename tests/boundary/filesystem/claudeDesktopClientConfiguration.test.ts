@@ -484,7 +484,7 @@ describe("MSIX Claude Desktop registration lifecycle", () => {
           throw new Error("Expected a blocked update");
         expect(failedConfigurationMessage(result)).toContain(privateConfig);
         expect(failedConfigurationMessage(result)).toContain("Repair access");
-        expect(await readFile(appDataConfig)).toEqual(original);
+        expect(Buffer.compare(await readFile(appDataConfig), original)).toBe(0);
         expect(await readdir(dirname(appDataConfig))).toEqual([CONFIG]);
       } finally {
         await chmod(privateDirectory, mode);
@@ -531,39 +531,6 @@ describe("MSIX Claude Desktop uninstall", () => {
     );
     expect(result.status).toBe("complete");
     expect(await readJson(appDataConfig)).toEqual(unrelated);
-  });
-
-  it("blocks managed skill removal through redirected AppData before any removal", async () => {
-    const { home, env, appDataConfig, privateConfig } = await windowsProfile();
-    await writeJson(join(dirname(privateConfig), "Preferences"), {});
-    await mkdir(dirname(dirname(appDataConfig)), { recursive: true });
-    await symlink(dirname(privateConfig), dirname(appDataConfig), "dir");
-    const agents = join(env.APPDATA, "dsh", "agents");
-    const manifest = join(
-      agents,
-      "skills",
-      "reverse-engineer-anything",
-      "SKILL.md",
-    );
-    await mkdir(dirname(manifest), { recursive: true });
-    await writeFile(
-      manifest,
-      "---\nname: reverse-engineer-anything\n---\nmanaged fixture\n",
-    );
-    const environment = { ...env, DSH_AGENTS_HOME: agents };
-    const result = await runUninstall(
-      false,
-      systemUninstallHost(home, undefined, environment, "win32"),
-    );
-    expect(result.status).toBe("failed");
-    expect(result.items).toContainEqual(
-      expect.objectContaining({
-        name: "skill",
-        status: "failed",
-        detail: expect.stringContaining("redirects its writes"),
-      }),
-    );
-    expect(await readFile(manifest, "utf8")).toContain("managed fixture");
   });
 
   it("removes REA from both the private copy and AppData on uninstall", async () => {

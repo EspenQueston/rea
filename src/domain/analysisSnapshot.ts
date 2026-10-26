@@ -38,8 +38,7 @@ import {
   jsonValueSchema,
   type JsonValue,
 } from "./jsonValue.js";
-import { digestSchema } from "./../domain/digests.js";
-import { prefixedDigestSchema } from "./../domain/digests.js";
+import { digestSchema, prefixedDigestSchema } from "./../domain/digests.js";
 import { canonicalJsonDigestSteps } from "./canonicalJsonDigestSteps.js";
 import { freezeJsonSnapshot } from "./immutableJson.js";
 import {
@@ -171,19 +170,9 @@ const entrySchema = z.object({
     subject: subjectSchema.nullable(),
   }),
 });
-const workflowEntrySchema = z.object({
-  query_id: prefixedDigestSchema("query"),
-  operation: z.string().min(1),
-  parameters: jsonObjectSchema,
-  execution: z.object({
-    result: jsonValueSchema,
-    raw_result: jsonValueSchema.nullable(),
-    provider: committedProviderSchema,
+const workflowEntrySchema = entrySchema.extend({
+  execution: entrySchema.shape.execution.extend({
     analysis_profile: analysisProfileSchema,
-    limitations: z.array(z.string()),
-    relationship_coverage: relationshipCoverageSchema.nullable(),
-    locations: z.array(evidenceLocationSchema),
-    subject: subjectSchema.nullable(),
   }),
 });
 
@@ -502,20 +491,31 @@ export const snapshotEvidenceForQuery = (
     (candidate) => candidate.query_id === queryId,
   );
   if (entry === undefined && workflowEntry === undefined) return undefined;
-  const evidence = snapshot.evidence_bundle.records.find(
-    (record) =>
-      record.subject?.digest.sha256 === target.sha256 &&
-      record.operation === operation &&
-      record.provider.id === provider.id &&
-      record.provider.name === provider.name &&
-      record.provider.version === provider.version &&
-      record.analysis_profile !== null &&
-      analysisProfilesEqual(record.analysis_profile, evidenceProfile) &&
-      canonicalJson(record.parameters) === encodedParameters &&
-      ((entry !== undefined && evidenceMatchesEntry(record, entry, snapshot)) ||
-        (workflowEntry !== undefined &&
-          evidenceMatchesWorkflowEntry(record, workflowEntry, snapshot))),
-  );
+  let evidence: Evidence | undefined;
+  for (const record of snapshot.evidence_bundle.records) {
+    if (
+      !(
+        record.subject?.digest.sha256 === target.sha256 &&
+        record.operation === operation &&
+        record.provider.id === provider.id &&
+        record.provider.name === provider.name &&
+        record.provider.version === provider.version &&
+        record.analysis_profile !== null &&
+        analysisProfilesEqual(record.analysis_profile, evidenceProfile) &&
+        canonicalJson(record.parameters) === encodedParameters &&
+        ((entry !== undefined &&
+          evidenceMatchesEntry(record, entry, snapshot)) ||
+          (workflowEntry !== undefined &&
+            evidenceMatchesWorkflowEntry(record, workflowEntry, snapshot)))
+      )
+    )
+      continue;
+    // Entries bind the result, not every part of the Evidence commitment
+    // (for example, upstream links). Do not choose provenance by ID sort order.
+    if (evidence !== undefined && evidence.evidence_id !== record.evidence_id)
+      return undefined;
+    evidence = record;
+  }
   return evidence === undefined
     ? undefined
     : rebindEvidenceToTargetPath(evidence, target);

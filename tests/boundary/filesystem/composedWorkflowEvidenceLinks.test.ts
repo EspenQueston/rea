@@ -6,6 +6,105 @@ import { expect, it } from "vitest";
 import { runDirectAnalysis } from "../../../src/application/DirectAnalysis.js";
 import { createEvidence, parseEvidence } from "../../../src/domain/evidence.js";
 import { composedWorkflowFixture } from "../../fixtures/composedWorkflowEvidence.js";
+import { readFile, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import { createEvidenceBundle } from "../../../src/domain/evidenceBundle.js";
+
+it.each([0, 1, 12])(
+  "does not replay an arbitrary historical workflow provenance when the snapshot binding is ambiguous (%i procedures)",
+  async (procedureCount) => {
+    const original = await composedWorkflowFixture();
+    original.summary.procedure_count = procedureCount;
+    const target = await original.open();
+    const snapshotPath = join(dirname(original.path), "analysis.json");
+    const current = parseEvidence(
+      await runDirectAnalysis(
+        original.dependencies,
+        original.path,
+        "binary_overview",
+        {},
+        { snapshotPath },
+      ),
+    );
+    expect(current.evidence_links).toHaveLength(1);
+    const snapshot = parseAnalysisSnapshot(
+      JSON.parse(await readFile(snapshotPath, "utf8")),
+    );
+    const uniqueReplay = await composedWorkflowFixture();
+    expect(uniqueReplay.session.importAnalysisSnapshot(snapshot).ok).toBe(true);
+    expect(uniqueReplay.session.importAnalysisSnapshot(snapshot)).toEqual(
+      ok(0),
+    );
+    const unique = parseEvidence(
+      await runDirectAnalysis(
+        uniqueReplay.dependencies,
+        original.path,
+        "binary_overview",
+        {},
+        { snapshotPath },
+      ),
+    );
+    expect(unique.evidence_id).toBe(current.evidence_id);
+    expect(unique.evidence_links).toEqual(current.evidence_links);
+    expect(uniqueReplay.calls).toEqual([]);
+    // Earlier composed observations did not carry links. Both are authentic,
+    // but the serialized replay binding does not identify which provenance won.
+    const historical = createEvidence(target, current.provider, {
+      operation: current.operation,
+      parameters: current.parameters,
+      result: current.normalized_result,
+      rawResult: current.raw_result,
+      analysisProfile: current.analysis_profile!,
+      confidence: "derived",
+      limitations: current.limitations,
+    });
+    expect(historical.evidence_links).toEqual([]);
+    expect(historical.evidence_id).not.toBe(current.evidence_id);
+    const ambiguous = parseAnalysisSnapshot({
+      ...snapshot,
+      evidence_bundle: createEvidenceBundle([
+        ...snapshot.evidence_bundle.records,
+        historical,
+      ]),
+    });
+    expect(ambiguous.workflow_entries).toEqual(snapshot.workflow_entries);
+    await writeFile(snapshotPath, JSON.stringify(ambiguous));
+    const replay = await composedWorkflowFixture();
+    const delivered = parseEvidence(
+      await runDirectAnalysis(
+        replay.dependencies,
+        original.path,
+        "binary_overview",
+        {},
+        { snapshotPath },
+      ),
+    );
+    expect(delivered.normalized_result).toEqual(current.normalized_result);
+    expect([current.evidence_id, historical.evidence_id]).not.toContain(
+      delivered.evidence_id,
+    );
+    expect(delivered.evidence_links).toEqual(current.evidence_links);
+    expect(
+      delivered.limitations.some((limitation) =>
+        limitation.includes("this call did not re-run the provider"),
+      ),
+    ).toBe(true);
+    expect(replay.calls).toEqual([]);
+    const refreshedReplay = await composedWorkflowFixture();
+    const refreshed = parseEvidence(
+      await runDirectAnalysis(
+        refreshedReplay.dependencies,
+        original.path,
+        "binary_overview",
+        {},
+        { snapshotPath },
+      ),
+    );
+    expect(refreshed.evidence_id).toBe(delivered.evidence_id);
+    expect(refreshed.evidence_links).toEqual(delivered.evidence_links);
+    expect(refreshedReplay.calls).toEqual([]);
+  },
+);
 
 it.each([false, true])(
   "links a profiled binary overview only to the atomic record it consumed (cached=%s)",
@@ -218,7 +317,7 @@ it("does not manufacture links for empty or failed composed calls", async () => 
   expect(fixture.session.exportEvidenceBundle().records).toEqual([]);
 });
 
-it("drops an old cached ID rather than guessing after an ambiguous snapshot replacement", async () => {
+it("reruns an ambiguous snapshot binding before selecting composed Evidence links", async () => {
   const fixture = await composedWorkflowFixture();
   const target = await fixture.open();
   const initial = await fixture.session.execute(
@@ -253,6 +352,7 @@ it("drops an old cached ID rather than guessing after an ambiguous snapshot repl
   );
   if (!before.ok) throw before.error;
   expect(before.value.evidenceId).toBe(initial.value.evidenceId);
+  expect(replay.calls).not.toContain("read_binary_inventory_summary");
   expect(replay.session.importAnalysisSnapshot(ambiguous.value).ok).toBe(true);
   const after = await replay.session.execute(
     "read_binary_inventory_summary",
@@ -260,8 +360,47 @@ it("drops an old cached ID rather than guessing after an ambiguous snapshot repl
   );
   if (!after.ok) throw after.error;
   expect(after.value.result).toEqual(fixture.summary);
-  expect(after.value.evidenceId).toBeUndefined();
-  expect(replay.calls).not.toContain("read_binary_inventory_summary");
+  expect(
+    replay.calls.filter(
+      (operation) => operation === "read_binary_inventory_summary",
+    ),
+  ).toHaveLength(1);
+  expect(after.value.limitations).not.toContain(
+    "Loaded from a local REA analysis snapshot; this call did not re-run the provider.",
+  );
+  if (after.value.evidenceId === undefined)
+    throw new Error("Fresh provider observation was not committed");
+  // Unchanged facts reproduce their deterministic identity. The provider call,
+  // rather than a choice between historical records, establishes this binding.
+  expect(after.value.evidenceId).toBe(initial.value.evidenceId);
+  expect(after.value.evidenceId).not.toBe(alternative.evidence_id);
+  const originalRecord = snapshot.value.evidence_bundle.records.find(
+    ({ evidence_id }) => evidence_id === initial.value.evidenceId,
+  );
+  expect(replay.session.evidenceById(after.value.evidenceId)).toEqual(
+    originalRecord,
+  );
+  expect(replay.session.evidenceById(alternative.evidence_id)).toEqual(
+    alternative,
+  );
+
+  const composed = await executeComposedWorkflow(
+    replay.session,
+    async (observed) => {
+      const execution = await observed.execute(
+        "read_binary_inventory_summary",
+        {},
+      );
+      return execution.ok ? ok(execution.value.result) : execution;
+    },
+  );
+  if (!composed.ok) throw composed.error;
+  expect(composed.value.evidenceLinks).toEqual([after.value.evidenceId]);
+  expect(
+    replay.calls.filter(
+      (operation) => operation === "read_binary_inventory_summary",
+    ),
+  ).toHaveLength(1);
 });
 
 it("replaces provider-supplied identity with the record actually committed by the session", async () => {

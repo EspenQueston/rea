@@ -173,3 +173,43 @@ it("reports the Hopper producer's invalid cache selection rather than silently f
     await host.close?.();
   }
 });
+
+it("reports a retained Kuna cache reached through symlink parent traversal", async () => {
+  const home = await createTestTempDirectory("rea-managed-cache-parent-");
+  const root = join(home, "cache");
+  const cache = join(root, "rea", "kuna");
+  const external = join(home, "external");
+  await mkdir(cache, { recursive: true });
+  await mkdir(join(external, "subdir"), { recursive: true });
+  await mkdir(join(external, "kuna"));
+  await writeFile(join(cache, "cached"), "owned cache");
+  await writeFile(join(external, "kuna", "evidence"), "caller evidence");
+  await symlink(join(external, "subdir"), join(root, "rea", "alias"), "dir");
+  const custom = `${root}/rea/alias/../kuna`;
+  const host = systemUninstallHost(
+    home,
+    undefined,
+    { XDG_CACHE_HOME: root, REA_KUNA_CACHE_DIR: custom },
+    "linux",
+  );
+  try {
+    const result = await host.purgeData();
+    expect(result).toContainEqual(
+      expect.objectContaining({
+        name: "kuna-custom-cache",
+        status: "retained",
+      }),
+    );
+    expect(result).toContainEqual(
+      expect.objectContaining({ name: "kuna", status: "removed" }),
+    );
+    expect(await readFile(join(external, "kuna", "evidence"), "utf8")).toBe(
+      "caller evidence",
+    );
+    await expect(readFile(join(cache, "cached"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  } finally {
+    await host.close?.();
+  }
+});

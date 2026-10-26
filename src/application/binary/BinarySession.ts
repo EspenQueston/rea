@@ -20,8 +20,8 @@ import type {
   ExecutionOptions,
   AnalysisOperationPort,
   ProviderIdentity,
+  AnalysisOperation,
 } from "../AnalysisProvider.js";
-import type { AnalysisOperation } from "../AnalysisProvider.js";
 import { OFFICIAL_TOOL_CONTRACTS } from "../../contracts/officialToolContracts.js";
 import { ENHANCED_TOOL_CONTRACTS } from "../../contracts/enhancedToolContracts.js";
 import type {
@@ -36,6 +36,7 @@ import { InvestigationRecords } from "../investigation/InvestigationRecords.js";
 import { recordEvidenceSources } from "../investigation/recordEvidenceSources.js";
 import { BinarySessionRecords } from "./BinarySessionRecords.js";
 import { binarySessionStatus } from "./BinarySessionStatus.js";
+import type { BinarySessionDetail } from "../../contracts/sessionStatusContract.js";
 import {
   resolveSessionOpen,
   resolveSessionTarget,
@@ -1024,7 +1025,12 @@ export class BinarySession
   }
 
   /** Describe the active binary session. */
-  status(options: { readonly signal?: AbortSignal } = {}): Promise<JsonValue> {
+  status(
+    options: {
+      readonly signal?: AbortSignal;
+      readonly detail?: BinarySessionDetail;
+    } = {},
+  ): Promise<JsonValue> {
     const resourceRun = this.#activeBundleResources;
     const run =
       this.#active ??
@@ -1248,6 +1254,15 @@ export class BinarySession
     )
       this.#active.nativeSourceAdmitted = true;
     this.#observeRuntimeAvailability(name, execution);
+    // Source facts belong to the observation, even when this query cannot be
+    // replayed (for example a Ghidra procedure read without a document selector).
+    if (execution.ok && execution.value.sourceEvidence !== undefined) {
+      const sourcesRecorded = recordEvidenceSources(
+        (source) => this.recordEvidence(source),
+        execution.value.sourceEvidence,
+      );
+      if (!sourcesRecorded.ok) return sourcesRecorded;
+    }
     if (
       execution.ok &&
       cacheable &&
@@ -1270,11 +1285,6 @@ export class BinarySession
         },
         "observed",
       );
-      const sourcesRecorded = recordEvidenceSources(
-        (source) => this.recordEvidence(source),
-        execution.value.sourceEvidence ?? [],
-      );
-      if (!sourcesRecorded.ok) return sourcesRecorded;
       const recorded = this.recordEvidence(evidence);
       if (!recorded.ok) return recorded;
       const retained = { ...execution.value, evidenceId: evidence.evidence_id };
