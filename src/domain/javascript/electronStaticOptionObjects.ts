@@ -1,8 +1,8 @@
 import * as t from "@babel/types";
 import { unwrapJavaScriptExpression } from "./javascriptAstValues.js";
 import {
+  isErasedJavaScriptDeclaration,
   isTypeOnlyExportDeclaration,
-  isUnmodeledJavaScriptRuntimeScope,
   semanticRuntimeExportValueSources,
 } from "./javascriptModuleDeclaration.js";
 import { semanticBindingAtRead } from "./javascriptSemanticMutationInitializers.js";
@@ -104,16 +104,36 @@ const exportsLocalBindings = (program: t.Program): boolean => {
 
 const localExportPrograms = new WeakMap<t.Program, boolean>();
 
+/** A namespace holding only erased declarations emits no runtime object. */
+const instantiatedNamespace = (node: t.Node): boolean => {
+  if (!t.isTSModuleDeclaration(node) || node.declare === true) return false;
+  const body = node.body;
+  if (t.isTSModuleDeclaration(body)) return instantiatedNamespace(body);
+  return body.body.some(
+    (statement) =>
+      !(
+        isErasedJavaScriptDeclaration(statement) ||
+        (t.isTSModuleDeclaration(statement) &&
+          !instantiatedNamespace(statement)) ||
+        (t.isExportNamedDeclaration(statement) &&
+          (isTypeOnlyExportDeclaration(statement) ||
+            (t.isTSModuleDeclaration(statement.declaration) &&
+              !instantiatedNamespace(statement.declaration))))
+      ),
+  );
+};
+
 const programExportsLocalBindings = (program: t.Program): boolean =>
   program.body.some(
     (statement) =>
       semanticRuntimeExportValueSources(statement).length > 0 ||
-      // Runtime namespaces, enums and `export import` aliases publish
-      // values that the shared export helper does not list.
+      // Instantiated namespaces and `export import` aliases publish values
+      // that the shared export helper does not list. Enum members hold only
+      // numbers and strings, so an exported enum cannot expose an object.
       (t.isExportNamedDeclaration(statement) &&
         statement.declaration != null &&
         !isTypeOnlyExportDeclaration(statement) &&
-        (isUnmodeledJavaScriptRuntimeScope(statement.declaration) ||
+        (instantiatedNamespace(statement.declaration) ||
           (t.isTSImportEqualsDeclaration(statement.declaration) &&
             statement.declaration.importKind !== "type"))) ||
       t.isTSExportAssignment(statement),

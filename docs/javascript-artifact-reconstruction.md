@@ -516,14 +516,14 @@ whose initialization precedes the use. A function or callback can also read a
 and repeated calls can run in any order, such a read is resolved only when the
 object has no relevant write or escape anywhere other than the constructor
 argument itself. CommonJS exports are tracked as escapes; an ES module that
-exports any runtime local value keeps these reads unknown (erased type-only
-exports do not count), because importers can
-reach the object through an exported alias, container, function, namespace or
-import alias. The shared
-lexical and mutation index checks the selected `webPreferences` path, so an
-unrelated `options.icon` write does not discard these facts. Reassignment,
-relevant writes, prior escapes, ambiguous initialization, and unresolved
-spreads remain unknown. The binding
+exports any runtime local value keeps these reads unknown, because importers
+can reach the object through an exported alias, container, function,
+instantiated namespace or import alias. Erased type-only exports, namespaces
+holding only types, and enums do not count. The shared lexical and mutation
+index checks the selected `webPreferences` path, so an unrelated
+`options.icon` write does not discard these facts. Reassignment, relevant
+writes, prior escapes, ambiguous initialization, and unresolved spreads remain
+unknown. The binding
 association is an inference: the window observation retains the constructor
 location and `resolution_sources` identifies the original object literals in
 the same artifact. Inline option syntax keeps its observed Evidence. This
