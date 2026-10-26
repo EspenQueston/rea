@@ -96,6 +96,7 @@ it.each(["selected-target", "no-subject", "provider-subject"] as const)(
         target,
         { signal: controller.signal },
       );
+      expect(result.sourceEvidence).toEqual([source]);
       if (aborted) {
         if (result.ok) throw new Error("Expected late cancellation");
         expect(result.error).toMatchObject({ _tag: "AnalysisCancelledError" });

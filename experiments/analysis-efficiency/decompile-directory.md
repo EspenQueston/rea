@@ -45,7 +45,11 @@ source-record IDs, and the function-dossier adapter copied observation fields
 manually without those links.
 
 The session now authenticates/retains source records independently of replay
-eligibility. The workflow links distinct source IDs without copying their payloads.
+eligibility. Plain application helpers also return authenticated immutable source
+records with their outcome, including late cancellation. Both adapters explicitly
+commit them before delivering links; an adapter without a retention owner refuses
+the response. Source collection borrows ledger records without constructing or
+hashing an intermediate bundle. The workflow links distinct source IDs without copying their payloads.
 The function adapter uses the common observation-to-Evidence constructor,
 preserving sources through normal and late-cancelled completion. Queries with no
 source records avoid the extra recording path. Complete provider bodies remain
@@ -132,11 +136,13 @@ Use `--chunk 512 --heap 3072M --decompile-seconds 5` for the crypto case.
 `--control /absolute/previous-receipt` compares all exported facts;
 `--golden /absolute/fresh-import-receipt` checks the #1048 driver's inventory and
 pseudocode oracle. `--history required` additionally requires a linked historical
-source. Complete local receipts include the transcript, resource report, index,
+source. The driver allows failed functions to succeed on a later retry, verifies only
+previously written files remain unchanged, and reloads the final index before
+comparison. Complete local receipts include the transcript, resource report, index,
 function files, comparison facts and authenticated Evidence export. The resource
 report is supplied by the external process-family sampler, not the driver.
 
-The relevant eight-file suite passed 139 tests. Against unmodified main source,
+The current nine-file suite passed 144 tests. Against unmodified main source,
 the three source-retention/constructor suites reproduce seven failures and 70
 passes; the fixed full suite passes. This includes invalid source commitments,
 live and cursor-dependent reads, shared source deduplication, selected/null/provider

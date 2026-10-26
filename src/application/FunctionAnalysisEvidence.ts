@@ -9,6 +9,13 @@ import { createAnalysisExecutionEvidence } from "../domain/analysisObservation.j
 import { parseFunctionDossier } from "../domain/hopperValues.js";
 import type { JsonValue } from "../domain/jsonValue.js";
 import { completeProviderEvidence } from "./ProviderOperationExecution.js";
+import type { Evidence } from "../domain/evidence.js";
+import { EvidenceLedger } from "./investigation/EvidenceLedger.js";
+import {
+  recordEvidenceSources,
+  withEvidenceSources,
+  type AnalysisResultWithSources,
+} from "./investigation/recordEvidenceSources.js";
 
 /**
  * Preserve the provider's observations when presenting a validated function
@@ -20,7 +27,7 @@ export const executeFunctionAnalysisEvidence = async (
   parameters: Readonly<Record<string, JsonValue>>,
   target: BinaryTarget | undefined,
   options?: ExecutionOptions,
-) => {
+): Promise<AnalysisResultWithSources<Evidence>> => {
   const input = parseAnalysisInput(
     "analyze_function",
     parameters,
@@ -35,22 +42,33 @@ export const executeFunctionAnalysisEvidence = async (
     options,
   );
   if (!execution.ok) return execution;
+  const sourceLedger = new EvidenceLedger();
+  const recorded = recordEvidenceSources(
+    (source) => sourceLedger.record(source),
+    execution.value.sourceEvidence ?? [],
+  );
+  const sources = sourceLedger.recordsForAnalysis();
+  if (!recorded.ok) return withEvidenceSources(recorded, sources);
   const dossier = parseFunctionDossier(execution.value.result);
-  if (!dossier.ok) return dossier;
+  if (!dossier.ok) return withEvidenceSources(dossier, sources);
   const observation = execution.value;
-  return completeProviderEvidence(
-    createAnalysisExecutionEvidence(
-      "analyze_function",
-      arguments_,
-      {
-        ...observation,
-        result: dossier.value,
-        ...(observation.subject === undefined && target !== undefined
-          ? { subject: target }
-          : {}),
-      },
-      "observed",
+  return withEvidenceSources(
+    completeProviderEvidence(
+      createAnalysisExecutionEvidence(
+        "analyze_function",
+        arguments_,
+        {
+          ...observation,
+          sourceEvidence: sources,
+          result: dossier.value,
+          ...(observation.subject === undefined && target !== undefined
+            ? { subject: target }
+            : {}),
+        },
+        "observed",
+      ),
+      options?.signal,
     ),
-    options?.signal,
+    sources,
   );
 };

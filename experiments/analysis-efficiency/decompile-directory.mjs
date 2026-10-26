@@ -202,7 +202,7 @@ try {
   );
   report.resume = remaining.normalized_result;
   report.resume_evidence_links = remaining.evidence_links?.length ?? 0;
-  const index = await readIndex();
+  let index = await readIndex();
   const allFiles = await fileStates(index);
   for (const [address, state] of Object.entries(firstFiles))
     assert.deepEqual(allFiles[address], state);
@@ -213,9 +213,13 @@ try {
     "verified-resume",
   );
   report.verified_resume = settled.normalized_result;
-  assert.equal(report.verified_resume.counts.written, 0);
+  if (report.resume.counts.failed === 0)
+    assert.equal(report.verified_resume.counts.written, 0);
   assert.equal(report.verified_resume.counts.remaining, 0);
-  assert.deepEqual(await fileStates(await readIndex()), allFiles);
+  index = await readIndex();
+  const settledFiles = await fileStates(index);
+  for (const [address, state] of Object.entries(allFiles))
+    assert.deepEqual(settledFiles[address], state);
   assert.equal(index.functions.length, report.resume.counts.selected);
   const facts = [];
   for (const row of index.functions) {

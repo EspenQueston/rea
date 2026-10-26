@@ -49,14 +49,17 @@ it("links shared provider source Evidence once without copying its payload into 
       return ok({ count: 1 });
     },
   );
-  expect(result).toEqual(
-    ok({
+  expect(result).toEqual({
+    ...ok({
       result: { count: 1 },
       limitations: [],
       evidenceLinks: [source.evidence_id],
     }),
+    sourceEvidence: [source],
+  });
+  expect(result.ok && JSON.stringify(result.value)).not.toContain(
+    "historical content",
   );
-  expect(JSON.stringify(result)).not.toContain("historical content");
 });
 
 it.each([false, true])(
