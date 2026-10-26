@@ -1,3 +1,4 @@
+import type { AsarHeaderAdmission } from "../../config/asarHeaderAdmission.js";
 import { AsarArtifactReader } from "../AsarArtifactReader.js";
 import { DotnetBundleArtifactReader } from "../DotnetBundleArtifactReader.js";
 import type {
@@ -8,6 +9,7 @@ import { DirectoryArtifactReader } from "../DirectoryArtifactReader.js";
 import { GodotPckArtifactReader } from "../GodotPckArtifactReader.js";
 import { MachOSliceArtifactReader } from "../MachOSliceArtifactReader.js";
 import { NativeDmgArtifactReader } from "../NativeDmgArtifactReader.js";
+import { NodeSeaArtifactReader } from "../NodeSeaArtifactReader.js";
 import { PyInstallerArtifactReader } from "../PyInstallerArtifactReader.js";
 import { ZipArtifactReader } from "../ZipArtifactReader.js";
 import type {
@@ -25,6 +27,7 @@ export const createReader = (
   format: ArtifactOccurrence["artifact_format"],
   environment: Readonly<NodeJS.ProcessEnv>,
   rootSource?: StableRegularFileDescriptor,
+  asarHeaderAdmission?: AsarHeaderAdmission,
 ): ArtifactReader | undefined => {
   if (isZipPackageFormat(format))
     return new ZipArtifactReader(path, format, undefined, rootSource);
@@ -32,11 +35,18 @@ export const createReader = (
     case "dotnet-bundle":
       return new DotnetBundleArtifactReader(path, rootSource);
     case "directory":
-      return new DirectoryArtifactReader(path);
+      return new DirectoryArtifactReader(path, "omit");
     case "asar":
-      return new AsarArtifactReader(path);
+      return new AsarArtifactReader(
+        path,
+        asarHeaderAdmission === undefined
+          ? {}
+          : { headerAdmission: asarHeaderAdmission },
+      );
     case "pyinstaller":
       return new PyInstallerArtifactReader(path, rootSource);
+    case "node-sea":
+      return new NodeSeaArtifactReader(path, rootSource);
     case "godot-pck":
       return new GodotPckArtifactReader(path, rootSource);
     case "mach-o-universal":
@@ -72,6 +82,11 @@ export const inventoryCoverage = (
               "PCK inventory establishes packaged bytes and metadata; scenes, binary resources, GDScript bytecode and runtime signal behavior were not decoded.",
             ]
           : []),
+        ...(reader.format === "node-sea"
+          ? [
+              "Node SEA inventory establishes the injected blob, flags, fuse sentinel, main script, optional code cache, snapshot, and assets. V8 snapshots and code cache are not deserialized, and the application is not executed.",
+            ]
+          : []),
         ...traversal.limitations,
       ],
     };
@@ -94,7 +109,8 @@ export const inventoryCoverage = (
     isZipPackageFormat(format) ||
     format === "directory" ||
     format === "asar" ||
-    format === "godot-pck"
+    format === "godot-pck" ||
+    format === "node-sea"
   )
     return {
       coverage: { scope: "container-entries", status: "unknown" },
@@ -102,6 +118,8 @@ export const inventoryCoverage = (
     };
   return {
     coverage: { scope: "root", status: "complete" },
-    limitations: ["Artifact has no child container entries."],
+    limitations: [
+      "Inventory covers root bytes only; child container entries were not examined.",
+    ],
   };
 };

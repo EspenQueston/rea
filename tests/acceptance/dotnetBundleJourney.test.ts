@@ -69,9 +69,11 @@ for (const format of ["dotnet-bundle", "pyinstaller"] as const) {
       );
       outputs.push(extraction.output_root);
       expect(extraction.containment_verified).toBe(true);
-      expect(await readFile(join(extraction.output_root, memberPath))).toEqual(
-        member,
-      );
+      expect(
+        (await readFile(join(extraction.output_root, memberPath))).equals(
+          member,
+        ),
+      ).toBe(true);
     };
     try {
       const inspected = await cli.run({
@@ -140,7 +142,7 @@ for (const format of ["dotnet-bundle", "pyinstaller"] as const) {
         arguments: {},
       });
       expect(closed.isError, JSON.stringify(closed)).not.toBe(true);
-      expect(await readFile(path)).toEqual(bytes);
+      expect((await readFile(path)).equals(bytes)).toBe(true);
     } finally {
       await client.close();
       await Promise.all(

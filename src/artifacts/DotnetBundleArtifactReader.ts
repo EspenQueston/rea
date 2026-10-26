@@ -174,12 +174,12 @@ export class DotnetBundleArtifactReader implements ArtifactReader {
       );
     if (this.#source !== undefined) return this.#source;
     try {
-      const handle = await openRegularFile(this.path, {
+      const source = await openRegularFile(this.path, {
         symlinks: "reject",
         signal,
       });
-      this.#owner = new OwnedFileHandle(handle);
-      this.#source = { handle, initial: await handle.stat() };
+      this.#owner = new OwnedFileHandle(source.handle);
+      this.#source = source;
       return this.#source;
     } catch (cause) {
       if (cause instanceof RegularFileAdmissionFailure)

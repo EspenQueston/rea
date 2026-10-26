@@ -7,14 +7,12 @@ import { expect, it } from "vitest";
 
 import { DotnetBundleArtifactReader } from "../../../src/artifacts/DotnetBundleArtifactReader.js";
 import { ArtifactResourceScope } from "../../../src/artifacts/ArtifactResourceScope.js";
+import { extractArtifact } from "../../../src/artifacts/extraction/ArtifactExtraction.js";
+import { inventoryArtifact } from "../../../src/artifacts/inventory/ArtifactInventory.js";
 import {
-  extractArtifact,
   materializeArtifactInventory,
-} from "../../../src/artifacts/extraction/ArtifactExtraction.js";
-import {
-  inventoryArtifact,
   scanArtifactInventory,
-} from "../../../src/artifacts/inventory/ArtifactInventory.js";
+} from "../../fixtures/artifactInventory.js";
 import { dotnetBundleFixture } from "../../../src/artifacts/dotnet/DotnetBundle.fixture.js";
 import { cArchiveExecutable } from "../../../src/artifacts/pyinstaller/CArchive.fixture.js";
 import {
@@ -67,8 +65,10 @@ it.each(["pyinstaller", "dotnet-bundle"] as const)(
       resourceScope: new ArtifactResourceScope(),
     });
     expect(extracted.containment_verified).toBe(true);
-    expect(await readFile(join(outputRoot, "helper.exe"))).toEqual(helper);
-    expect(await readFile(path)).toEqual(bytes);
+    expect(
+      (await readFile(join(outputRoot, "helper.exe"))).equals(helper),
+    ).toBe(true);
+    expect((await readFile(path)).equals(bytes)).toBe(true);
   },
 );
 
@@ -128,11 +128,13 @@ it.each([1, 2, 6])(
       resourceScope: new ArtifactResourceScope(),
     });
     expect(result.containment_verified).toBe(true);
-    expect(await readFile(join(outputRoot, "App.dll"))).toEqual(plain);
-    expect(await readFile(join(outputRoot, "内容/data.txt"))).toEqual(
-      compressed,
+    expect((await readFile(join(outputRoot, "App.dll"))).equals(plain)).toBe(
+      true,
     );
-    expect(await readFile(path)).toEqual(fixture.bytes);
+    expect(
+      (await readFile(join(outputRoot, "内容/data.txt"))).equals(compressed),
+    ).toBe(true);
+    expect((await readFile(path)).equals(fixture.bytes)).toBe(true);
   },
 );
 
@@ -353,9 +355,7 @@ it("rejects a replaced host even when its inventoried members are unchanged", as
   const path = join(root, "host.exe");
   const original = dotnetBundleFixture().bytes;
   await writeFile(path, original);
-  const snapshot = await scanArtifactInventory(path, {
-    resourceScope: new ArtifactResourceScope(),
-  });
+  const snapshot = await scanArtifactInventory(path);
   const changed = Buffer.from(original);
   // Change native host bytes without changing the inventoried member.
   changed[400] = changed[400]! ^ 1;
@@ -370,7 +370,6 @@ it("rejects a replaced host even when its inventoried members are unchanged", as
         outputRoot,
         environment: process.env,
         integrityPolicy: "fail",
-        resourceScope: new ArtifactResourceScope(),
       },
       path,
       snapshot,
@@ -637,9 +636,11 @@ it.each(["elf", "mach-o"] as const)(
       integrityPolicy: "fail",
       resourceScope: new ArtifactResourceScope(),
     });
-    expect(await readFile(join(outputRoot, "App.dll"))).toEqual(
-      Buffer.from("owned assembly bytes"),
-    );
+    expect(
+      (await readFile(join(outputRoot, "App.dll"))).equals(
+        Buffer.from("owned assembly bytes"),
+      ),
+    ).toBe(true);
   },
 );
 

@@ -1,6 +1,8 @@
+import type { AnalysisSettings } from "../application/AnalysisSettings.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 
 import {
+  specTypeSchemas,
   isCallToolResult,
   isJSONRPCErrorResponse,
   isJSONRPCRequest,
@@ -161,6 +163,7 @@ export interface StandardToolRegistration {
 
 /** Bind oversized MCP error recovery to this server's Evidence ledger. */
 export class EvidenceMcpServerCore extends RequestTrackingMcpServer {
+  analysisSettings: AnalysisSettings | undefined;
   private identity: ReturnType<typeof createCatalogIdentity> | undefined;
 
   /** Composition supplies identity without importing the canonical schema graph. */
@@ -261,7 +264,11 @@ export class EvidenceMcpServerCore extends RequestTrackingMcpServer {
         : undefined;
     const registeredConfig =
       inputSchema === undefined ? config : { ...config, inputSchema };
-    return this.bindTool(name, registeredConfig as never, callback as never);
+    const scoped = (input: never, context: never) =>
+      this.analysisSettings === undefined
+        ? callback(input, context)
+        : this.analysisSettings.run(() => callback(input, context));
+    return this.bindTool(name, registeredConfig as never, scoped as never);
   }
 
   protected bindTool(
@@ -313,6 +320,28 @@ class ErrorEvidenceTransport implements Transport {
     if (transport.hasPerRequestStream !== undefined)
       this.hasPerRequestStream = transport.hasPerRequestStream;
     transport.onmessage = (message, extra) => {
+      // The pinned SDK classifies generic method schema failures as internal
+      // errors. Validate these wire requests with its canonical schemas before
+      // dispatch, leaving callback failures and negotiated-era checks to it.
+      if (isJSONRPCRequest(message)) {
+        const schema = discoveryRequestSchema(message.method);
+        const result = schema?.["~standard"].validate(message);
+        if (result?.issues !== undefined) {
+          void this.send({
+            jsonrpc: "2.0",
+            id: message.id,
+            error: {
+              code: -32602,
+              message: `Invalid ${message.method} request: ${JSON.stringify(result.issues)}`,
+            },
+          }).catch((cause: unknown) =>
+            this.onerror?.(
+              cause instanceof Error ? cause : new Error(String(cause)),
+            ),
+          );
+          return;
+        }
+      }
       if (
         isJSONRPCRequest(message) &&
         message.method === "tools/call" &&
@@ -697,3 +726,18 @@ class ErrorEvidenceTransport implements Transport {
     };
   }
 }
+
+const discoveryRequestSchema = (method: string) => {
+  switch (method) {
+    case "prompts/get":
+      return specTypeSchemas.GetPromptRequest;
+    case "prompts/list":
+      return specTypeSchemas.ListPromptsRequest;
+    case "completion/complete":
+      return specTypeSchemas.CompleteRequest;
+    case "tools/list":
+      return specTypeSchemas.ListToolsRequest;
+    default:
+      return undefined;
+  }
+};

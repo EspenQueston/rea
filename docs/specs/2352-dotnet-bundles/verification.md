@@ -281,3 +281,48 @@ Windows x64, Node 24.18.0/npm 11.16.0, E:-scoped temporary/cache directories:
   metadata, knip, duplication, TODO, architecture and test-discovery checks.
   The command then stopped at the unavailable Windows `python3` executable;
   it is not a complete local CI pass.
+
+## Upstream main integration (2026-10-26)
+
+Merged fixed upstream main `1173c0a9dc1b352a60943a491462294db8f353ae`
+into PR head `a5fc5519b5f0d5f61e614bb87015b3757f5a3b07`. The six conflict
+files were resolved with both .NET and upstream Node SEA reader/schema cases,
+upstream ZIP descriptor transfer and cleanup ownership, and the previously
+verified PyInstaller/.NET marker-search boundary retained.
+
+The automatically merged consumers were also checked. The .NET reader now
+consumes `openRegularFile`'s admitted `{ handle, initial }` result, and the
+snapshot identity regression uses the upstream test-owned scope wrappers after
+the production facades were removed. Buffer assertions use `Buffer.equals`
+under the new lint rule, retaining byte-exact comparison without enumerating
+every byte in a structural assertion.
+
+Two independent read-only sub-agent reviews covered production contracts and
+test/cleanup coverage. The test review caught a dropped .NET post-admission
+verification failure case; it was restored alongside upstream's ZIP and Mach-O
+scenarios, rerun, and reviewed again. The production review reported no
+actionable finding. These were source reviews; runtime results follow below.
+
+Windows x64, Node 24.22.1/npm 11.16.0, with temporary files and npm cache on E:.
+The official Node archive was SHA-256 checked; the released 6.8.0 Windows native
+runtime passed the repository's artifact metadata/digest check. No generated
+hosts were executed.
+
+- `npm run test:focused -- tests/boundary/filesystem/dotnetBundleArtifacts.test.ts tests/boundary/filesystem/ownedArtifactReaderCleanup.test.ts tests/acceptance/dotnetBundleJourney.test.ts src/artifacts/NodeSeaArtifactReader.test.ts tests/acceptance/nodeSeaCli.test.ts src/artifacts/extraction/ArtifactExtraction.test.ts tests/acceptance/artifactZipExtractionPaths.test.ts src/artifacts/inventory/ArtifactGraphConstruction.test.ts src/artifacts/ArtifactReader.test.ts`:
+  126 passed across nine files before the review correction. This included
+  Node-produced SEA blob coverage, .NET/PyInstaller CLI/stdio MCP, and ZIP
+  extraction identity/path checks.
+- After restoring the .NET cleanup case and updating Buffer assertions,
+  `npm run test:focused -- tests/boundary/filesystem/dotnetBundleArtifacts.test.ts tests/boundary/filesystem/ownedArtifactReaderCleanup.test.ts tests/acceptance/dotnetBundleJourney.test.ts`:
+  40 passed across the three changed files, including both .NET failure stages.
+- Four existing Microsoft HostModel-generated Windows x64 hosts (v1, v2, plain
+  v6 and compressed v6) passed compiled CLI and stdio MCP inspection/extraction.
+  Extracted DLL/resource bytes matched the producer inputs; host hashes were
+  unchanged.
+- `npm run check:ci` passed its fast/deep static tasks, architecture guards and
+  test discovery (2498 files). It stopped at the unavailable Windows `python3`
+  command. The later `npm run knip:production` and `npm run lint:typed` stages
+  were run separately and passed; typed lint reported zero errors. The complete
+  Windows command is still not a pass, and Python was not rerun on this tree.
+- `npm run docs:check` passed generated-document checks and nine README
+  consistency tests. `npm run docs:build` rendered the documentation successfully.
