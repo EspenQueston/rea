@@ -10,13 +10,18 @@ contains GitHub merge `1a3ef66c8e25f25fdd06053bb33255f10f65c5b6`
 `ed110935f520d56f6eaf5710ad2f9a58340492b4`), followed by response-scope fix
 `2c5f9cc14b3395ef4a99071222e3feaf9501bb62`. The local verification commit is
 not a published release. Recreate its tree from the public main/PR inputs,
-then apply that fix.
+then apply that fix. Final reconciliation adds `0d89c65409d28fec269cfdbb3ee62e0f153819fa`
+(local current-dependency tree `221ba53af`) for query spelling and refused-slug
+source constraints; the primary timing pair predates these two corrections.
 
 Historical comparisons against pre-feature main
 `6d5532a204b338a6c770fcbae61e0d55bda70793` used Playwright 1.58.2 and remain
 below. They do not isolate the dependency upgrade. The implementation integrates
 Edgar Arakelyan's #7162; upstream `d39f386d202fe8e98592fb2d9d26e43d8d0fb94f`
-and subsequent fixes through `22a93fadc` were compared. Original multi-app/model
+and subsequent fixes through `9f5191ab0` were compared. Its query redaction and refused-slug source
+pinning were incorporated. Existing heap-derived URL/JSON/envelope admission
+remains the owner of expansion bounds, rather than adding the upstream fixed
+fill ceiling. Original multi-app/model
 results are [attributed historical evidence](../specs/agent-environments/scenario-saved-values/verification.md),
 not executions performed here.
 
@@ -166,8 +171,8 @@ summed as independent model usage.
 
 ## Executed checks and negative controls
 
-- Final feature branch: **557 tests in 12 source suites**, type/lint and build passed.
-- Current integration/Playwright 1.64.1: **558 tests in the same 12 suites**,
+- Final feature branch: **560 tests in 12 source suites**, type/lint and build passed.
+- Current integration/Playwright 1.64.1: **561 tests in the same 12 suites**,
   build and `check:fast` passed; the additional test comes from main.
 - Twenty explicit schema/profile tests passed earlier; all 41 distinct cases in
   the broader five-suite run passed across its run and isolated rerun. One case
@@ -179,6 +184,14 @@ summed as independent model usage.
   cases; two whole-JSON cases; two backslash substitutions plus immediate
   follow-up; five final event/path cases; and ten screenshot cases. The
   screenshot nonsecret control passes on the old revision.
+- Final reconciliation re-ran the eight-step real CLI task and all four privacy
+  probes plus the positive PNG case on `221ba53af` successfully. A further
+  two-step public CLI case verifies the parsed query spelling of `ab'cd~ef`
+  is redacted. Together these checks used 16.550 s elapsed, 18.581 s CPU and
+  1,675,153,408 B sampled family peak; this is qualification, not a new timing pair.
+- The final upstream query/slug regressions fail three cases on `34dc2c1c4`.
+  The query spelling lower-bound calculation also includes the new encoding
+  before allocating it.
 - Three prospective-page/Basic regressions fail on `ed110935f`; final tests also
   cover promotion, scope-cache invalidation and preservation of the first marker.
 - The prior CI's own event-budget assertion was fixed with JSON admission order
@@ -195,6 +208,14 @@ Subsequent CI failures comprise those two SAZ assertions and Java diagnostic
 actual CI main parent `c6893d1ac6a9ccb8a11d64b4e9ba1b57e79cbfd8` with its isolated
 1.64.1 locked dependencies. The first preparation refused stale shared 1.58.2
 dependencies before any tests; the shared installation was preserved.
+On head `34dc2c1c4`, all 18 distinct CI failures (artifact/inventory, snapshot,
+cleanup, Apple-resource coverage and the two SAZ assertions) reproduce on exact
+CI main parent `29ebd6740550bf3989129c39c65f17e5c61e3dd2`. The additional
+control run also timed out two retained-ZIP cases and emitted two connection
+closures; these were control-only incomplete results, not passing checks.
+All fifteen actionable review threads were fixed and resolved. A further
+final-head Codex review request was refused by the repository usage limit; no
+fresh successful automated review is claimed.
 Cancelled lanes remain incomplete, including cancelled shards that emitted
 passing summaries. CI counts from overlapping revisions are not added together.
 
