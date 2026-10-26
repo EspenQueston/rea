@@ -24,6 +24,7 @@ import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { ExecutionOptions } from "../../application/AnalysisProvider.js";
 import { readStableArtifact } from "../../artifacts/readStableArtifact.js";
+import { completedStableArtifactObservation } from "../../artifacts/StableArtifactObservation.js";
 import type { ArtifactReaderFailure } from "../../artifacts/ArtifactReader.js";
 import {
   ArtifactResourceScope,
@@ -48,6 +49,7 @@ import {
   type InspectWebNetworkCaptureInput,
   type WebNetworkCapture,
 } from "../../domain/webNetworkCapture.js";
+import { snapshotEnvironment } from "../../process/snapshotEnvironment.js";
 import { runOwnedCommand } from "../../process/OwnedCommand.js";
 import { PrivateRuntimeRoot } from "../../process/PrivateRuntimeRoot.js";
 import { redactExplicitFailure } from "../../domain/explicitSensitiveFailure.js";
@@ -120,6 +122,7 @@ export class HistoricalCaptureDecoder {
     input: InspectWebNetworkCaptureInput,
     options?: ExecutionOptions,
   ): Promise<Result<WebNetworkCapture, AnalysisError>> {
+    const selectedEnvironment = snapshotEnvironment(this.environment);
     let runtime: Pick<PrivateRuntimeRoot, "path" | "close"> | undefined;
     let result: Result<WebNetworkCapture, AnalysisError>;
     let phase: "capture-read" | "decoder" = "capture-read";
@@ -127,9 +130,11 @@ export class HistoricalCaptureDecoder {
     let reportedHeap = this.#heap;
     let replyFinalization: ArtifactReaderFailure | undefined;
     try {
-      const adapter = this.adapters.find(
+      const selectedAdapter = this.adapters.find(
         (candidate) => candidate.format === input.format,
       );
+      const adapter =
+        selectedAdapter?.snapshotConfiguration?.() ?? selectedAdapter;
       reportedHeap = this.#reportedHeap(adapter);
       if (adapter === undefined)
         throw new AnalysisCapabilityUnavailableError(
@@ -165,7 +170,7 @@ export class HistoricalCaptureDecoder {
       );
       const command = await adapter.command(requestPath, runtime.path);
       const environment: NodeJS.ProcessEnv = {
-        ...this.environment,
+        ...selectedEnvironment,
         UV_THREADPOOL_SIZE: "1",
       };
       delete environment.NODE_OPTIONS;
@@ -392,12 +397,18 @@ export class HistoricalCaptureDecoder {
           reply_finalization_error: projectAnalysisError(cancellation),
         });
       }
-      result = err(
-        redactExplicitFailure(
-          withCaptureReaderCleanup(error, replyFinalization ?? cause),
-          input.sensitive_values,
-        ),
+      const failure = withCaptureReaderCleanup(
+        error,
+        replyFinalization ?? cause,
       );
+      if (phase === "capture-read") {
+        const snapshot = completedStableArtifactObservation(
+          cause,
+          input.capture_path,
+        );
+        if (snapshot !== undefined) failure.retainPartialObservation(snapshot);
+      }
+      result = err(redactExplicitFailure(failure, input.sensitive_values));
     }
     const completedCapture = result.ok ? result.value : undefined;
     let cleanupFailure:

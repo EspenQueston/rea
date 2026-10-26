@@ -1476,7 +1476,10 @@ it("rejects unpaired UTF-16 surrogates in archive entries and output roots and m
     await writeFile(shortLimitArchive, Buffer.from(await writer.close()));
 
     lstatOverride = (targetPath: string) => {
-      if (targetPath === join(directory, shortLimitSegment))
+      if (
+        targetPath.endsWith(`/${shortLimitSegment}`) ||
+        targetPath.endsWith(`\\${shortLimitSegment}`)
+      )
         return Promise.reject(
           Object.assign(new Error("ENAMETOOLONG: file name too long"), {
             code: "ENAMETOOLONG",

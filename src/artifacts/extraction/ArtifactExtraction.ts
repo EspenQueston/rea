@@ -158,9 +158,10 @@ export const materializeArtifactInventoryInScope = async (
   if (zipSource === undefined) {
     const canonicalSource = await realpath(sourcePath);
     if ((await lstat(canonicalSource)).isDirectory()) {
-      const parent = await realpath(
-        dirname(absoluteCallerPath(input.outputRoot)),
+      const { canonicalOutput } = await SafeOutputTree.resolveDestination(
+        input.outputRoot,
       );
+      const parent = dirname(canonicalOutput);
       if (isPathWithinRoot(canonicalSource, parent))
         throw new SafeOutputTreeDestinationRefusal(
           `Extraction output parent ${parent} is inside source directory ${canonicalSource}. Choose a temporary directory outside the source.`,
