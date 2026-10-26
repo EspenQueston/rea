@@ -768,7 +768,8 @@ precision, including microseconds. A list read
 only adds fields the answer lacks and still checks it. Serving answers a create
 in its answer's shape and clock precision, with empty lists and maps the call
 did not send spelled (`null`, `[]` or `{}`) as its answer spelled them and the
-values it had not loaded as it answered them, and stores the fields of both,
+values it had not loaded as it answered them (unless the call sent one the plan
+stores as sent), and stores the fields of both,
 as the item read-back shows them, with its clock precision. Updates
 answer empty lists and maps they did not send as their answers spelled them
 too; a member a call sent is answered as sent. An update or delete that answers
@@ -874,7 +875,7 @@ all request completions are known; otherwise it is null. An
 update that writes the field its type's creates are sorted by moves its entity
 to where the new value sorts (its own `insert`); a bulk update moves each entity
 it writes in turn, as replay applies them. When a read listing the whole
-collection fails after an update and the type's creates are not sorted by a field
+collection in its own order, not one its query sorts, fails after an update and the type's creates are not sorted by a field
 that update writes, the view tries the collection sorted by such a field, when
 the entities no write it exercised changed already follow it, as serving moves
 only the entities a write changes, and unless

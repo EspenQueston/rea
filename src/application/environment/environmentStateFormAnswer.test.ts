@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  ACTIVE_ON_READ_ROWS,
   BULK_RENAMED_LABEL_ROWS,
   ECHOED_EMPTY_ROWS,
   formLabelRows,
@@ -143,6 +144,18 @@ describe("served creates and updates modelled on form recordings", () => {
     expect(tasks.answer("get_tasks_by_id", { id: "1" }).body).toMatchObject({
       done: true,
       assignees: null,
+    });
+  });
+
+  it("answers a sent value its create does not store as the recorded answer did, and stores the read's", () => {
+    const users = servedFrom(ACTIVE_ON_READ_ROWS);
+    expect(
+      users.answer("post_users", { body: { name: "Cy", active: false } }).body,
+    ).toEqual({ id: 2, name: "Cy", active: false });
+    expect(users.answer("get_users_by_id", { id: "2" }).body).toEqual({
+      id: 2,
+      name: "Cy",
+      active: true,
     });
   });
 

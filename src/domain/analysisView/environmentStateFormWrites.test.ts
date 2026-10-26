@@ -15,6 +15,7 @@ import {
   NOTE_DEFAULT_ROWS,
   RENAMED_LABEL_ROWS,
   SHELF_SORTED_ROWS,
+  SHELF_TIE_ROWS,
   TITLE_ORDER_ROWS,
   UNLOADED_ANSWER_ROWS,
   UNSORTED_SEED_ROWS,
@@ -167,6 +168,10 @@ describe("collections kept sorted", () => {
     const plan = planOf(UNSORTED_SEED_ROWS, "put_folders_by_id");
     expect(plan.served).toBe(false);
     expect(plan.insert).toBeNull();
+  });
+
+  it("learns no sort from a read its query sorts, whose ties need not follow the collection's order", () => {
+    expect(planOf(SHELF_TIE_ROWS, "put_books_by_id").insert).toBeNull();
   });
 
   it("serves a bulk update whose recordings echo the empty values each call sent", () => {
