@@ -20,6 +20,7 @@ import { ArtifactReaderFailure } from "../ArtifactReader.js";
 import { ArtifactResourceScope } from "../ArtifactResourceScope.js";
 import { OwnedFileHandle } from "../../filesystem/OwnedFileHandle.js";
 import { openRegularFile } from "../../filesystem/RegularFile.js";
+import { SafeOutputTree } from "../SafeOutputTree.js";
 import { ZipArtifactReader } from "../ZipArtifactReader.js";
 import { DirectoryArtifactReader } from "../DirectoryArtifactReader.js";
 import { createTestTempDirectory } from "../../../tests/fixtures/temporaryDirectory.js";
@@ -657,6 +658,14 @@ it("refuses case-folding file and parent directory collisions in dry-run mode wh
   await writeFile(parentCaseZip, Buffer.from(await parentWriter.close()));
 
   const resourceScope = new ArtifactResourceScope();
+  const realCheckDestination =
+    SafeOutputTree.checkDestination.bind(SafeOutputTree);
+  const checkDestinationSpy = vi
+    .spyOn(SafeOutputTree, "checkDestination")
+    .mockImplementation(async (outputRoot: string) => {
+      await realCheckDestination(outputRoot);
+      return { caseSensitivity: "case-insensitive" };
+    });
   try {
     const fileOut = join(directory, "file-case-out");
     const fileError = await extractArtifact({
@@ -720,11 +729,49 @@ it("refuses case-folding file and parent directory collisions in dry-run mode wh
       "Non-ASCII case-folding paths depend on the destination filesystem case table and cannot be verified without creating files; affected paths remain unresolved in the dry-run plan.",
     );
     await expect(stat(nonAsciiOut)).rejects.toMatchObject({ code: "ENOENT" });
+  } finally {
+    checkDestinationSpy.mockRestore();
+    await resourceScope.close();
+  }
+});
 
-    if (process.platform !== "win32") {
-      const hardlinkParent = join(directory, "hardlink-parent");
-      await mkdir(hardlinkParent, { recursive: true });
-      await writeFile(join(hardlinkParent, "Foo"), "same-inode");
+it("observes destination directory case sensitivity with bounded scans and hard-link disambiguation", async () => {
+  const directory = await createTestTempDirectory(
+    "rea-extraction-dry-run-case-observation-",
+  );
+  const fileCaseZip = join(directory, "file-case.zip");
+  const fileWriter = new ZipWriter(new Uint8ArrayWriter());
+  await fileWriter.add("Foo.txt", new TextReader("upper"));
+  await fileWriter.add("foo.txt", new TextReader("lower"));
+  await writeFile(fileCaseZip, Buffer.from(await fileWriter.close()));
+
+  const resourceScope = new ArtifactResourceScope();
+  try {
+    const hardlinkParent = join(directory, "hardlink-parent");
+    await mkdir(hardlinkParent, { recursive: true });
+    await writeFile(join(hardlinkParent, "Foo"), "same-inode");
+    const supportsDistinctCaseSpellings = !(await stat(
+      join(hardlinkParent, "foo"),
+    ).then(
+      () => true,
+      () => false,
+    ));
+    if (supportsDistinctCaseSpellings) {
+      const winCaseSensitiveOut = join(directory, "win-case-sensitive-out");
+      const winCaseSensitivePlan = await extractArtifact({
+        ...zipInput(fileCaseZip, winCaseSensitiveOut, resourceScope),
+        dryRun: true,
+        platform: "win32",
+      });
+      expect(winCaseSensitivePlan.plan?.totals).toMatchObject({
+        planned_files: 2,
+        unresolved_entries: 0,
+      });
+      await expect(stat(winCaseSensitiveOut)).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+    }
+    if (process.platform !== "win32" && supportsDistinctCaseSpellings) {
       await link(join(hardlinkParent, "Foo"), join(hardlinkParent, "foo"));
       const hardlinkOut = join(hardlinkParent, "out");
       const hardlinkPlan = await extractArtifact({
@@ -747,6 +794,26 @@ it("refuses case-folding file and parent directory collisions in dry-run mode wh
       ]);
       await expect(stat(hardlinkOut)).rejects.toMatchObject({ code: "ENOENT" });
     }
+
+    const crowdedParent = join(directory, "crowded-parent");
+    await mkdir(crowdedParent, { recursive: true });
+    await Promise.all(
+      Array.from({ length: 257 }, (_, index) =>
+        writeFile(join(crowdedParent, String(index)), ""),
+      ),
+    );
+    const crowdedOut = join(crowdedParent, "out");
+    const crowdedPlan = await extractArtifact({
+      ...zipInput(fileCaseZip, crowdedOut, resourceScope),
+      dryRun: true,
+      platform: "linux",
+    });
+    expect(crowdedPlan.plan?.totals).toMatchObject({
+      planned_files: 0,
+      unresolved_entries: 2,
+      observed_bytes_estimate: 0,
+    });
+    await expect(stat(crowdedOut)).rejects.toMatchObject({ code: "ENOENT" });
 
     const emptyMount = join(directory, "empty-mount");
     await mkdir(emptyMount, { recursive: true });

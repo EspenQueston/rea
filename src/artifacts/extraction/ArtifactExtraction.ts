@@ -329,7 +329,6 @@ const materializeSelection = async ({
     if (dryRun) {
       const destination = await SafeOutputTree.checkDestination(
         input.outputRoot,
-        platform,
       );
       destinationCaseSensitivity = destination.caseSensitivity;
     } else {

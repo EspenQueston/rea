@@ -6,6 +6,7 @@ import {
   chmod,
   mkdir,
   open,
+  opendir,
   readdir,
   realpath,
   type FileHandle,
@@ -148,7 +149,6 @@ export class SafeOutputTree {
   /** Read-only early admission; create() still rechecks and acquires exclusively. */
   static async checkDestination(
     outputRoot: string,
-    platform: NodeJS.Platform = process.platform,
   ): Promise<{ readonly caseSensitivity: DestinationCaseSensitivity }> {
     const { canonicalOutput } = await this.#resolveDestination(outputRoot);
     const existing = await lstat(canonicalOutput).catch((cause: unknown) => {
@@ -185,10 +185,7 @@ export class SafeOutputTree {
       },
     );
     return {
-      caseSensitivity:
-        platform === "win32"
-          ? "case-insensitive"
-          : await observeDirectoryCaseSensitivity(parent),
+      caseSensitivity: await observeDirectoryCaseSensitivity(parent),
     };
   }
 
@@ -783,6 +780,8 @@ const toggleFirstAsciiLetter = (value: string): string | undefined => {
   return undefined;
 };
 
+const MAX_CASE_PROBE_ENTRIES = 256;
+
 /**
  * Observe whether an existing directory resolves case-folded entry lookups to
  * the same inode without creating entries or inferring from parent mounts.
@@ -790,25 +789,47 @@ const toggleFirstAsciiLetter = (value: string): string | undefined => {
 const observeDirectoryCaseSensitivity = async (
   directory: string,
 ): Promise<DestinationCaseSensitivity> => {
-  const entries = await readdir(directory).catch(() => undefined);
-  if (entries === undefined) return "unknown";
-  const entryNames = new Set(entries);
-  for (const entry of entries) {
-    const toggled = toggleFirstAsciiLetter(entry);
-    if (toggled === undefined) continue;
-    if (entryNames.has(toggled)) return "case-sensitive";
-    const [original, candidate] = await Promise.all([
-      lstat(join(directory, entry), { bigint: true }).catch(() => undefined),
-      lstat(join(directory, toggled), { bigint: true }).catch(() => undefined),
-    ]);
-    if (original === undefined) continue;
-    return candidate !== undefined &&
-      candidate.dev === original.dev &&
-      candidate.ino === original.ino
-      ? "case-insensitive"
-      : "case-sensitive";
+  const dir = await opendir(directory).catch(() => undefined);
+  if (dir === undefined) return "unknown";
+  try {
+    let scanned = 0;
+    let remainingMatch: string | undefined;
+    while (true) {
+      const dirent = await dir.read();
+      if (dirent === null) {
+        return remainingMatch === undefined ? "unknown" : "case-insensitive";
+      }
+      if (scanned >= MAX_CASE_PROBE_ENTRIES) return "unknown";
+      scanned += 1;
+      if (remainingMatch !== undefined) {
+        if (dirent.name === remainingMatch) return "case-sensitive";
+        continue;
+      }
+      const toggled = toggleFirstAsciiLetter(dirent.name);
+      if (toggled === undefined) continue;
+      const [original, candidate] = await Promise.all([
+        lstat(join(directory, dirent.name), { bigint: true }).catch(
+          () => undefined,
+        ),
+        lstat(join(directory, toggled), { bigint: true }).catch(
+          () => undefined,
+        ),
+      ]);
+      if (original === undefined) continue;
+      if (
+        candidate === undefined ||
+        candidate.dev !== original.dev ||
+        candidate.ino !== original.ino
+      ) {
+        return "case-sensitive";
+      }
+      remainingMatch = toggled;
+    }
+  } catch {
+    return "unknown";
+  } finally {
+    await dir.close().catch(() => undefined);
   }
-  return "unknown";
 };
 
 const abortIfNeeded = (signal?: AbortSignal): void => {
