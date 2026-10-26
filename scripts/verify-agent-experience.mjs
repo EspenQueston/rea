@@ -93,8 +93,13 @@ const { runClient, runProcess, readCommandVersion } = commands;
 
 await withVerifierCleanup(
   async () => {
-    // The version preflight gets the allowlisted base environment and the
+    // The isolated account exists before any client reads it as HOME. The
+    // version preflight gets the allowlisted base environment and the
     // client's containment controls, without authentication.
+    await Promise.all([
+      mkdir(fixtureRoot, { recursive: true }),
+      mkdir(account, { recursive: true }),
+    ]);
     const clientVersion = await readCommandVersion(
       agentEvalEnvironment({
         account,
@@ -102,10 +107,6 @@ await withVerifierCleanup(
         client: { environment: preflightClientEnvironment(client) },
       }),
     );
-    await Promise.all([
-      mkdir(fixtureRoot, { recursive: true }),
-      mkdir(account),
-    ]);
     // Reuse authentication only. User config, plugins, rules, history and skills
     // must not make a fresh installed-skill trial pass accidentally.
     const prepared = await prepareAgentEvalClient(client, {

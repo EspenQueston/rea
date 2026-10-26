@@ -2121,8 +2121,9 @@ package entrypoint as the script's first argument for package coverage.
 `npm run verify:agent` evaluates investigation scenarios through a real local
 agent client. Select Codex (the default), Claude Code, or Gemini CLI with
 `REA_AGENT_EVAL_CLIENT`. The lane runs sequentially; select scenarios with
-`REA_AGENT_EVAL_SCENARIOS` and choose the installed client/model with
-`REA_CODEX_CLI` and `REA_AGENT_EVAL_MODEL`. The detailed
+`REA_AGENT_EVAL_SCENARIOS` and choose the installed client executable with
+`REA_CODEX_CLI`, `REA_VERIFY_CLAUDE_COMMAND` or `REA_VERIFY_GEMINI_COMMAND`
+and the model with `REA_AGENT_EVAL_MODEL`. The detailed
 [agent evaluation reference](client-verification.md#agent-evaluation-and-conformance-records)
 contains isolation, authentication cleanup, grading, and conformance boundaries.
 
