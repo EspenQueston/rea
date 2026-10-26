@@ -588,6 +588,37 @@ it.each(["codex", "claude-code"] as const)(
   },
 );
 
+it("withholds the error code when a Codex item's result and output aliases disagree", () => {
+  const refusal = (code: string) => ({
+    isError: true,
+    structuredContent: { error: { code } },
+  });
+  const transcript = parseCodexEvents([
+    {
+      type: "item.completed",
+      item: {
+        id: "call",
+        type: "mcp_tool_call",
+        server: "rea",
+        tool: "open_binary",
+        arguments: { path: "/bin/true" },
+        status: "completed",
+        result: refusal("provider_unavailable"),
+        output: refusal("invalid_request"),
+      },
+    },
+  ]);
+  expect(transcript.calls).toEqual([
+    expect.objectContaining({ delivered: false, error: true, errorCode: null }),
+  ]);
+  const scenario = nativeProviderScenario("/bin/true");
+  expect(
+    scenario.assess(
+      evaluateAgentTranscript(transcript, scenario.expectedFirstTool, scenario),
+    ),
+  ).toBe("failed");
+});
+
 it.each(["codex", "claude-code", "gemini-cli"] as const)(
   "%s withholds the error code when simultaneously present error records disagree",
   (client) => {

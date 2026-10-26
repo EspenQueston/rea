@@ -55,6 +55,16 @@ it.each([
       command: "gemini",
       arguments: ["--version"],
     });
+    // A bare entry name is resolved once against the repository root too, so
+    // the preflight (run from there) and the scenarios (run from the
+    // evaluation root) launch the same file.
+    vi.stubEnv(variable, "gemini.js");
+    const bare = selectAgentEvalClient(id, root);
+    expect(bare.command).toBe(resolve(root, "gemini.js"));
+    expect(bare.launch(["--version"])).toEqual({
+      command: process.execPath,
+      arguments: [resolve(root, "gemini.js"), "--version"],
+    });
   },
 );
 

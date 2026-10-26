@@ -63,14 +63,19 @@ export const selectAgentEvalClient = (
       `REA_AGENT_EVAL_CLIENT must be one of ${Object.keys(CLIENTS).join(", ")}`,
     );
   const selected = process.env[client.commandVariable] ?? client.defaultCommand;
-  const command =
-    selected.includes("/") || selected.includes("\\")
-      ? resolve(repositoryRoot, selected)
-      : selected;
   // npm installs provide a JavaScript entry point; on Windows only a .cmd shim
   // reaches PATH, which Node does not spawn without a shell, so a selected .js
   // entry runs under this Node for the version preflight and every scenario.
-  const entryPoint = /\.(c|m)?js$/iu.test(command) ? command : undefined;
+  // It is resolved once against the repository root, because the preflight
+  // runs from there and the scenarios from the evaluation root.
+  const entryPoint = /\.(c|m)?js$/iu.test(selected)
+    ? resolve(repositoryRoot, selected)
+    : undefined;
+  const command =
+    entryPoint ??
+    (selected.includes("/") || selected.includes("\\")
+      ? resolve(repositoryRoot, selected)
+      : selected);
   return {
     id: value,
     ...client,
