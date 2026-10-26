@@ -77,7 +77,8 @@ the existing cleanup/receipt owner; the protocol and task are unchanged.
 The plain ls pair has identical complete comparison facts. Runtime is similar;
 the higher sampled memory in the fixed run is reported rather than treated as an
 improvement. These sequential shared-host samples establish no generic speed or
-memory ratio. The final large-run comparison is recorded separately when executed.
+memory ratio. [PR #7250](https://github.com/morluto/rea/pull/7250) records the final
+large-run comparison and CI/review results.
 The failed historical baseline is excluded from completed-task comparisons.
 
 The complete MCP replies stayed around 11–12 KiB, including repeated textual and
