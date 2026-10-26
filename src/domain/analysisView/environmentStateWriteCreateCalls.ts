@@ -4,11 +4,13 @@ import { storedKinds } from "./environmentStateWriteApply.js";
 import { fittedClockFormat } from "./environmentStateWriteClockFormats.js";
 import {
   alikeRules,
+  isBlankValue,
   type FieldRule,
   type WriteBody,
 } from "./environmentStateWriteRules.js";
 
 type Default = { readonly member: string; readonly value: JsonValue };
+type Blank = NonNullable<WriteBody["blank"]>[number];
 
 /** What earlier calls showed that a merge must respect: members stored unsorted as sent, and the value showing each clock's width. */
 export interface EarlierEvidence {
@@ -190,6 +192,11 @@ export const mergedCreatePlan = (
       ? undefined
       : joinedDefaults(plan.body.defaults ?? [], defaults);
   if (body === undefined || joined === undefined) return undefined;
+  // A member a call left out stores its default, which a value sent empty elsewhere does not override.
+  const { blank: sentBlank = [], ...rest } = body;
+  const blank = sentBlank.filter(
+    ({ member }) => !joined.some((entry) => entry.member === member),
+  );
   // The plan's rules keep their order; rules the later call adds follow.
   return {
     rules: [
@@ -199,8 +206,42 @@ export const mergedCreatePlan = (
       }),
       ...[...merged.values()].filter((rule) => !held.has(rule.field)),
     ],
-    body: joined.length === 0 ? body : { ...body, defaults: joined },
+    body: {
+      ...rest,
+      ...(joined.length === 0 ? {} : { defaults: joined }),
+      ...(blank.length === 0 ? {} : { blank }),
+    },
   };
+};
+
+/**
+ * Members both calls sent and either sent empty, with that empty value, and those both sent empty but differently,
+ * which stay required; a member only one call sent takes its default from the call that left it out instead.
+ */
+const joinedBlanks = (
+  held: readonly Blank[],
+  added: readonly Blank[],
+  calls: {
+    readonly sentBefore: ReadonlySet<string>;
+    readonly later: JsonObject;
+  },
+): { readonly blank: Blank[]; readonly differing: string[] } => {
+  const blank: Blank[] = [];
+  const differing: string[] = [];
+  for (const entry of held) {
+    if (!Object.hasOwn(calls.later, entry.member)) continue;
+    const sent = calls.later[entry.member]!;
+    if (isBlankValue(sent) && !same(sent, entry.sent))
+      differing.push(entry.member);
+    else blank.push(entry);
+  }
+  for (const entry of added)
+    if (
+      calls.sentBefore.has(entry.member) &&
+      !held.some(({ member }) => member === entry.member)
+    )
+      blank.push(entry);
+  return { blank, differing };
 };
 
 /** Two calls' body contracts joined, undefined when a member one accepts with any value the other fixes, or both fix it at different values. */
@@ -228,17 +269,32 @@ const mergedBody = (
   const added = contract.accepted.filter(
     (member) => !body.accepted.includes(member),
   );
+  const { blank, differing } = joinedBlanks(
+    body.blank ?? [],
+    contract.blank ?? [],
+    {
+      sentBefore: new Set([...body.accepted, ...fixed.keys()]),
+      later: later.body,
+    },
+  );
+  const { blank: _blank, ...rest } = body;
   return {
-    ...body,
+    ...rest,
     accepted: [...body.accepted, ...added],
     fixed: [
       ...body.fixed,
       ...contract.fixed.filter((entry) => !fixed.has(entry.member)),
     ],
-    required: body.required.filter((member) =>
-      Object.hasOwn(later.body, member),
-    ),
+    required: [
+      ...body.required.filter(
+        (member) =>
+          Object.hasOwn(later.body, member) &&
+          !isBlankValue(later.body[member]),
+      ),
+      ...differing,
+    ],
     identity: body.identity ?? contract.identity,
     kinds: [...body.kinds, ...storedKinds(added, exemplar, later.entity)],
+    ...(blank.length === 0 ? {} : { blank }),
   };
 };

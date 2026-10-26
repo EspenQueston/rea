@@ -124,6 +124,12 @@ client with it. Match `wait_for` locators to exactly one element.
    (`wait_for_timeout` with `duration_ms: 1100`).
 5. Update both objects and read each back; delete both and read each back
    (expect 404) and the list.
+6. Vary what the two creates fill in: the first every field the form offers,
+   the second only what a person must give (its title or name), leaving the
+   other fields as the form starts them. A served create requires each member
+   both creates filled in and lets a caller leave out one a create sent empty,
+   so an agent that names only a title is not refused for fields it had no
+   reason to set.
 
 About `request` steps:
 

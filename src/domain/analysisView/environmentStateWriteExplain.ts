@@ -11,6 +11,8 @@ import {
   type StateEntity,
 } from "./environmentStateRules.js";
 import {
+  emptySpellings,
+  isBlankValue,
   siblingTrimmedClocks,
   type FieldRule,
   type InsertRule,
@@ -367,17 +369,24 @@ export const explainCreate = (
     rules.filter((rule) => !stranded.has(rule.field)),
     evidence.entity,
   );
+  // A member sent empty is one a form sends for a field left as it was, which a caller may leave out.
+  const blank = Object.entries(evidence.call.body).flatMap(([member, sent]) =>
+    isBlankValue(sent) ? [{ member, sent }] : [],
+  );
+  const shaped = bodyOf(
+    evidence.call.body,
+    new Set(
+      [...stored].filter(
+        (member) => !referenced.has(member) && !pinned.has(member),
+      ),
+    ),
+    Object.keys(evidence.call.body).filter(
+      (member) => !isBlankValue(evidence.call.body[member]),
+    ),
+  );
   return {
     rules,
-    body: bodyOf(
-      evidence.call.body,
-      new Set(
-        [...stored].filter(
-          (member) => !referenced.has(member) && !pinned.has(member),
-        ),
-      ),
-      Object.keys(evidence.call.body),
-    ),
+    body: blank.length === 0 ? shaped : { ...shaped, blank },
     // A template rebuilds only its generated value, so other text it keeps ties it like a constant.
     tied: [
       ...[...constants, ...templates].map((field) =>
@@ -484,6 +493,14 @@ export const explainUpdate = (
       if (kept !== undefined) rules.push(kept);
       continue;
     }
+    // An empty list or map one answer spells `null` and another `[]` or `{}` is unchanged.
+    if (
+      emptySpellings(
+        ownMember(evidence.before, field),
+        ownMember(evidence.after, field),
+      )
+    )
+      continue;
     const rule = changeRule(evidence, field, slugs);
     if (rule === undefined) unexplained.push(field);
     else rules.push(rule);
@@ -560,7 +577,7 @@ export const compareValues = (
 };
 
 /** Whether the members are strictly ordered by the field in the direction. */
-const orderedBy = (
+export const orderedBy = (
   members: readonly JsonObject[],
   field: string,
   direction: "ascending" | "descending",

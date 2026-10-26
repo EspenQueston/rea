@@ -1,0 +1,77 @@
+import { describe, expect, it } from "vitest";
+
+import {
+  formLabelRows,
+  LISTED_ID_ROWS,
+  RENAMED_LABEL_ROWS,
+  TITLE_ORDER_ROWS,
+} from "../../../tests/fixtures/environmentStateFormWrites.js";
+import { servedFrom } from "../../../tests/fixtures/environmentStateServing.js";
+import type { JsonValue } from "../../domain/jsonValue.js";
+
+const field = (body: JsonValue | undefined, name: string): JsonValue[] => {
+  if (!Array.isArray(body)) throw new Error("Expected a list body");
+  return body.map((item) =>
+    typeof item === "object" && item !== null && !Array.isArray(item)
+      ? (item[name] ?? null)
+      : null,
+  );
+};
+
+describe("served creates and updates modelled on form recordings", () => {
+  it("creates an entity from its name alone, storing the members the form sent empty as it sent them", () => {
+    const labels = servedFrom(formLabelRows());
+    expect(
+      labels.answer("post_labels", { body: { name: "Loaned Out" } }).body,
+    ).toEqual({
+      id: 3,
+      name: "Loaned Out",
+      description: "",
+      color: "",
+      icon: "",
+    });
+    expect(field(labels.answer("get_labels").body, "name")).toEqual([
+      "Kitchen",
+      "Loaned Out",
+      "Tools",
+    ]);
+    expect(
+      labels.refusal("post_labels", { body: { description: "No name" } }),
+    ).toMatchObject({ message: expect.stringContaining('"name"') });
+  });
+
+  it("moves a renamed entity to where the collection's order puts its new name", () => {
+    const labels = servedFrom(RENAMED_LABEL_ROWS);
+    labels.answer("patch_labels_by_id", { id: "1", body: { name: "Zinc" } });
+    expect(field(labels.answer("get_labels").body, "name")).toEqual([
+      "Tools",
+      "Zinc",
+    ]);
+  });
+
+  it("keeps folders by title after a served create and rename", () => {
+    const folders = servedFrom(TITLE_ORDER_ROWS);
+    folders.answer("post_folders", { body: { title: "Harbour Ops" } });
+    expect(field(folders.answer("get_folders").body, "title")).toEqual([
+      "Harbour Ops",
+      "Lighthouse Rota",
+    ]);
+    folders.answer("put_folders_by_id", {
+      id: "1",
+      body: { title: "Archive", version: 1 },
+    });
+    expect(field(folders.answer("get_folders").body, "title")).toEqual([
+      "Archive",
+      "Harbour Ops",
+    ]);
+  });
+
+  it("lists a created tag's id in the list envelope's ids, in list order", () => {
+    const tags = servedFrom(LISTED_ID_ROWS);
+    tags.answer("post_tags", { body: { name: "Lamp" } });
+    expect(tags.answer("get_tags").body).toMatchObject({
+      count: 3,
+      all: [1, 3, 2],
+    });
+  });
+});

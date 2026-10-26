@@ -320,15 +320,33 @@ const copiedShapes = (
     }),
   );
 
+/** A create's call with the members it left out that recorded calls sent empty, as they sent them. */
+const withBlanks = (body: WriteBody, call: WriteCall): WriteCall => {
+  const given = call.body ?? {};
+  const left = (body.blank ?? []).filter(
+    ({ member }) => !Object.hasOwn(given, member),
+  );
+  return left.length === 0
+    ? call
+    : {
+        ...call,
+        body: {
+          ...Object.fromEntries(left.map(({ member, sent }) => [member, sent])),
+          ...given,
+        },
+      };
+};
+
 /** The fields of a created entity: the observed entity with every ruled field taken from the call or generated. */
 export const createdFields = (
   plan: Pick<StateWritePlan, "rules" | "body">,
   observed: JsonObject,
-  call: WriteCall,
+  sentCall: WriteCall,
   generate: GenerateValue,
   referenced?: ReferencedEntity,
 ): Applied<JsonObject> => {
   if (plan.body === null) return err("The tool has no modelled body.");
+  const call = withBlanks(plan.body, sentCall);
   const problem = bodyProblem(plan.body, call, {
     entity: { ...copiedShapes(plan.rules, observed), ...observed },
   });

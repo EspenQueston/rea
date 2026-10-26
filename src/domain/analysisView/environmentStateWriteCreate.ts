@@ -62,7 +62,7 @@ import {
 import {
   laterObservation,
   newEntityIn,
-  respelledInstant,
+  loadedLater,
   withRead,
   type Observed,
 } from "./environmentStateWriteObserve.js";
@@ -135,8 +135,7 @@ const withReadBack = (
       Object.entries(later.object).some(
         ([field, value]) =>
           Object.hasOwn(own.object, field) &&
-          !same(own.object[field], value) &&
-          !respelledInstant(own.object[field], value),
+          !loadedLater(own.object[field], value),
       ))
   )
     return own;
@@ -459,7 +458,31 @@ const agreesLater = (
   call: { readonly body: JsonObject; readonly observed: JsonObject },
 ): boolean =>
   followsCreateRules(context, draft, { ...created, observed: call.observed }) &&
-  !contradictsDefault(draft.plan.rules, call, created.fields);
+  !contradictsDefault(draft.plan.rules, call, created.fields) &&
+  !unruledDiffers(draft.plan.rules, call.observed, {
+    written: created.fields,
+    volatile: context.volatileOf(created.type),
+  });
+
+/** Whether the call stored a field no rule writes and no read leaves unchecked otherwise than the plan keeps it, as the exemplar stored it. */
+const unruledDiffers = (
+  rules: readonly FieldRule[],
+  observed: JsonObject,
+  plan: {
+    readonly written: JsonObject;
+    readonly volatile: ReadonlySet<string>;
+  },
+): boolean => {
+  const { written, volatile } = plan;
+  const ruled = new Set(rules.map((rule) => rule.field));
+  return Object.keys(observed).some(
+    (field) =>
+      !ruled.has(field) &&
+      !volatile.has(field) &&
+      Object.hasOwn(written, field) &&
+      !same(observed[field], ownMember(written, field)),
+  );
+};
 
 /** Whether an echoed member the call left out was stored otherwise than its learned default. */
 const contradictsDefault = (

@@ -42,6 +42,7 @@ import {
   collectionMatch,
   decodedSegment,
   isObject,
+  same,
   scalarText,
   type JsonObject,
   type StateEntity,
@@ -601,10 +602,39 @@ const answerUpdate = (
     },
   );
   if (!answer.ok) return answer;
-  const updated = serving.store.update(updatedEntity(entity, written.value));
+  const updated = serving.store.update(
+    updatedEntity(entity, written.value),
+    resortedIndex(serving, plan, { entity, fields: written.value }),
+  );
   if (!updated.ok) return updated;
   serving.store.commitWrite(values.taken);
   return answer;
+};
+
+/** Where an update moves its entity among the others of a collection sorted by a field it changed; undefined to keep it in place. */
+export const resortedIndex = (
+  serving: StateServing,
+  plan: StateWritePlan,
+  written: { readonly entity: StateEntity; readonly fields: JsonObject },
+): number | undefined => {
+  const { insert } = plan;
+  const { entity, fields } = written;
+  if (
+    insert?.rule !== "sorted" ||
+    same(
+      ownMember(entity.fields, insert.field),
+      ownMember(fields, insert.field),
+    )
+  )
+    return undefined;
+  return insertIndex(
+    insert,
+    serving.store
+      .inCollection(entity.type, entity.collection)
+      .filter((member) => member.id !== entity.id)
+      .map((member) => member.fields),
+    fields,
+  );
 };
 
 const answerDelete = (

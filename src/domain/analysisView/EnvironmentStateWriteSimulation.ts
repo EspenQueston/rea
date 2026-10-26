@@ -4,8 +4,12 @@ import {
   changesState,
   isObject,
   isStateWrite,
+  listItems,
   listsAll,
   normalizedPath,
+  ownMember,
+  same,
+  scalarText,
   type JsonObject,
   type ParsedRequestBody,
   type StateEntity,
@@ -75,10 +79,12 @@ import {
   classifyWrite,
   prefixRelated,
   unservedPlan,
+  type InsertRule,
   type StateWritePlan,
 } from "./environmentStateWriteRules.js";
 import { WriteTaint } from "./environmentStateWriteTaint.js";
 import { writeVerdict } from "./environmentStateWriteVerdict.js";
+import { orderedBy } from "./environmentStateWriteExplain.js";
 
 const APPLY = {
   create: applyCreate,
@@ -129,6 +135,8 @@ export class EnvironmentStateWriteSimulation {
   readonly #inserted = new Map<string, string>();
   /** Creates whose insert rule a passing list check relied on, so it is no longer changed. */
   readonly #placed = new Set<string>();
+  /** The order a read showed a type's collections sorted in after an update, when no create of it showed one. */
+  readonly #learnedSorts = new Map<string, InsertRule>();
   /** Entities writes no plan models made, taken when an item read first shows them. */
   readonly #unseen: UnseenEntities;
   readonly #blame: FailedReadBlame;
@@ -171,6 +179,24 @@ export class EnvironmentStateWriteSimulation {
       ),
       this.#state,
     );
+    this.#state.keepSorted((type) => this.#sortOf(type));
+  }
+
+  /** The sorted order a type's creates insert by, when they agree on one and nothing contradicted them. */
+  #sortOf(type: string): InsertRule | undefined {
+    const rules = new Map<string, InsertRule>();
+    for (const { plan, observed, contradictedBy } of this.#drafts.values())
+      if (
+        plan.effect === "create" &&
+        plan.target === type &&
+        observed !== undefined &&
+        plan.reason === null &&
+        contradictedBy === undefined &&
+        plan.insert?.rule === "sorted"
+      )
+        rules.set(JSON.stringify(plan.insert), plan.insert);
+    if (rules.size === 0) return this.#learnedSorts.get(type);
+    return rules.size === 1 ? [...rules.values()][0] : undefined;
   }
 
   /** Every state-changing tool's plan, in manifest order, with its verdict. */
@@ -231,6 +257,9 @@ export class EnvironmentStateWriteSimulation {
         view,
       ]),
     );
+    const sorts = new Map(
+      [...this.#types.keys()].map((type) => [type, this.#sortOf(type)]),
+    );
     return [...this.#drafts.values()].map((draft) => {
       // A view that became recorded cannot supply proof for a served write.
       let kept = 0;
@@ -240,6 +269,16 @@ export class EnvironmentStateWriteSimulation {
           draft.confirmed[kept++] = ordinal;
       }
       draft.confirmed.length = kept;
+      // An update moves its entity in a sorted collection when it writes the field sorted by.
+      const sort =
+        draft.plan.effect === "update" && draft.plan.target !== null
+          ? sorts.get(draft.plan.target)
+          : undefined;
+      if (
+        sort?.rule === "sorted" &&
+        draft.plan.rules.some((rule) => rule.field === sort.field)
+      )
+        draft.plan.insert = sort;
       return writeVerdict(draft, this.#input);
     });
   }
@@ -288,6 +327,7 @@ export class EnvironmentStateWriteSimulation {
         return view === undefined ? undefined : this.#viewOf(view);
       },
       idField: (type) => this.#types.get(type)!.id_field,
+      volatileOf: this.#input.volatileOf,
       observed: (ordinal) =>
         this.#observations.set(
           ordinal,
@@ -580,7 +620,9 @@ export class EnvironmentStateWriteSimulation {
       return;
     }
     if (!outcome.pass && view.shape === "list") {
-      const retried = this.#retryInsert(view, record, exercised);
+      const retried =
+        this.#retryInsert(view, record, exercised) ??
+        this.#retrySort(view, record, exercised);
       if (retried !== undefined) {
         // Reordering can replace the entities on a query page. Confirmation
         // and pending-write cleanup must use the successful check's coverage.
@@ -743,6 +785,82 @@ export class EnvironmentStateWriteSimulation {
           this.#drafts.get(write.tool)!.sideEffect = true;
     if (failed.view.shape !== "item")
       for (const key of failed.keys) this.#taint.fail(key);
+  }
+
+  /**
+   * The successful check with the collection sorted by a field an update the read exercised writes, when the read
+   * lists the whole collection in that order and no create of the type was placed otherwise; the type's creates then
+   * insert by it, and its updates move their entity by it.
+   */
+  #retrySort(
+    view: Extract<StateView, { shape: "list" }>,
+    record: StateRecordFacts,
+    exercised: ReadonlySet<string>,
+  ): CheckOutcome | undefined {
+    if (this.#sortOf(view.type) !== undefined) return undefined;
+    const line = this.#line(view, record);
+    const idField = this.#types.get(view.type)?.id_field;
+    if (line === undefined || idField === undefined) return undefined;
+    const held = new Set(
+      this.#state
+        .members(view.type, line.collection)
+        .map((entity) => entity.id),
+    );
+    const written = new Set(
+      [...exercised].flatMap((name) => {
+        const { plan } = this.#drafts.get(name)!;
+        return plan.effect === "update" && plan.target === view.type
+          ? plan.rules.map((rule) => rule.field)
+          : [];
+      }),
+    );
+    const creates = [...this.#drafts.values()].filter(
+      (draft) =>
+        draft.plan.effect === "create" &&
+        draft.plan.target === view.type &&
+        draft.observed !== undefined,
+    );
+    const rules = this.#input.io.withBody(record.ordinal, (body) => {
+      const items =
+        body === undefined ? undefined : listItems(body, view.pointer);
+      // Only a read of the whole collection shows the order it is kept in.
+      if (
+        items === undefined ||
+        items.length < 2 ||
+        items.length !== held.size ||
+        !items.every((item) =>
+          held.has(scalarText(ownMember(item, idField)) ?? ""),
+        )
+      )
+        return [];
+      return [...written].flatMap((field) =>
+        (["ascending", "descending"] as const).flatMap((direction) =>
+          orderedBy(items, field, direction)
+            ? [{ rule: "sorted", field, direction } as const]
+            : [],
+        ),
+      );
+    });
+    for (const rule of rules) {
+      // A create placed by another sort shows the collection is not kept in this order.
+      if (
+        creates.some(
+          ({ candidates }) =>
+            candidates.some((candidate) => candidate.rule === "sorted") &&
+            !candidates.some((candidate) => same(candidate, rule)),
+        )
+      )
+        continue;
+      const before = this.#state.arrange(view.type, line.collection, rule);
+      const outcome = this.#check(view, record);
+      if (outcome?.pass === true) {
+        for (const draft of creates) draft.plan.insert = rule;
+        this.#learnedSorts.set(view.type, rule);
+        return outcome;
+      }
+      this.#state.restore(view.type, line.collection, before);
+    }
+    return undefined;
   }
 
   /** The successful check under another create insertion candidate, including its possibly different query-page coverage. */
