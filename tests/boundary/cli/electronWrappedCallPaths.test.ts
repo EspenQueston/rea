@@ -889,6 +889,13 @@ const descriptorCases: readonly (readonly [
   ["mixed-getter", `{get:()=>0,...{value:${descriptorSender}}}`, false, true],
   ["mixed-setter", `{value:${descriptorSender},...{set:()=>{}}}`, false, true],
   ["string-spread", `{value:${descriptorSender},..."x"}`, true],
+  ["negative-number", `{value:${descriptorSender},...-1}`, true],
+  ["negative-bigint", `{value:${descriptorSender},...-1n}`, true],
+  [
+    "method-value",
+    "{value" + descriptorSender.slice("function".length) + "}",
+    true,
+  ],
   ["patch-after", `{value:${descriptorNoop}}`, false],
   ["outer-patch-after", `{value:${descriptorNoop}}`, false],
   ["mutating-intrinsic", `{value:${descriptorSender}}`, false],

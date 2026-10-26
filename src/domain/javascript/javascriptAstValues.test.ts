@@ -21,7 +21,11 @@ it("keeps string spread indices separate from named descriptor fields", () => {
       t.spreadElement(t.stringLiteral(text)),
     ]);
     const read = staticObjectPropertyReader(object);
-    expect(read("value")).toEqual({ status: "explicit", property: original });
+    expect(read("value")).toEqual({
+      status: "explicit",
+      property: original,
+      value: original.value,
+    });
     expect(read("get")).toEqual({ status: "missing" });
     expect(read("set")).toEqual({ status: "missing" });
     expect(read("0").status).toBe(text.length > 0 ? "dynamic" : "missing");
@@ -50,7 +54,7 @@ it("keeps numeric overwrite order and constant template string spread keys", () 
   ).toBe("dynamic");
   expect(
     staticObjectProperty(t.objectExpression([spread, property]), "0"),
-  ).toEqual({ status: "explicit", property });
+  ).toEqual({ status: "explicit", property, value: property.value });
 });
 
 it("keeps literal array indices, holes and unknown iterable suffixes separate from names", () => {
@@ -67,7 +71,11 @@ it("keeps literal array indices, holes and unknown iterable suffixes separate fr
       t.spreadElement(t.arrayExpression(elements)),
     ]);
     const read = staticObjectPropertyReader(object);
-    expect(read("value")).toEqual({ status: "explicit", property: value });
+    expect(read("value")).toEqual({
+      status: "explicit",
+      property: value,
+      value: value.value,
+    });
     expect(read("get")).toEqual({ status: "missing" });
     expect(read("set")).toEqual({ status: "missing" });
     expect(read("0").status).toBe(elements[0] == null ? "missing" : "dynamic");
@@ -85,7 +93,7 @@ it("keeps literal array indices, holes and unknown iterable suffixes separate fr
   }
 });
 
-it("copies ordinary members without proving requested methods or getter effects", () => {
+it("preserves ordinary method data values without executing getter effects", () => {
   const method = (name: string, computed = false) =>
     t.objectMethod(
       "method",
@@ -109,7 +117,7 @@ it("copies ordinary members without proving requested methods or getter effects"
   for (const [member, status] of [
     [method("helper"), "explicit"],
     [setter, "explicit"],
-    [method("stdio"), "dynamic"],
+    [method("stdio"), "explicit"],
     [getter, "dynamic"],
     [method("key", true), "dynamic"],
   ] as const) {
@@ -356,4 +364,63 @@ it("shares static member paths and stops before unadmitted path expansion", () =
   let admitted = 0;
   expect(semanticMemberChain(selected, () => ++admitted < 2)).toBeUndefined();
   expect(admitted).toBe(2);
+});
+
+it("retains exact ordinary method data nodes while keeping accessors unknown", () => {
+  const method = t.objectMethod(
+    "method",
+    t.identifier("value"),
+    [],
+    t.blockStatement([]),
+  );
+  const getter = t.objectMethod(
+    "get",
+    t.identifier("value"),
+    [],
+    t.blockStatement([]),
+  );
+  expect(staticObjectProperty(t.objectExpression([method]), "value")).toEqual({
+    status: "explicit",
+    property: method,
+    value: method,
+  });
+  expect(staticObjectProperty(t.objectExpression([getter]), "value")).toEqual({
+    status: "dynamic",
+  });
+});
+
+it("keeps primitive unary results propertyless and typeof results index-only", () => {
+  const value = t.objectProperty(t.identifier("value"), t.identifier("sender"));
+  const index = t.objectProperty(
+    t.stringLiteral("0"),
+    t.stringLiteral("prior"),
+  );
+  for (const operator of ["+", "-", "~", "!", "void", "delete"] as const) {
+    const object = t.objectExpression([
+      value,
+      index,
+      t.spreadElement(t.unaryExpression(operator, t.numericLiteral(1))),
+    ]);
+    expect(staticObjectProperty(object, "value")).toEqual({
+      status: "explicit",
+      property: value,
+      value: value.value,
+    });
+    expect(staticObjectProperty(object, "0")).toEqual({
+      status: "explicit",
+      property: index,
+      value: index.value,
+    });
+  }
+  const object = t.objectExpression([
+    value,
+    index,
+    t.spreadElement(t.unaryExpression("typeof", t.identifier("input"))),
+  ]);
+  expect(staticObjectProperty(object, "value")).toEqual({
+    status: "explicit",
+    property: value,
+    value: value.value,
+  });
+  expect(staticObjectProperty(object, "0")).toEqual({ status: "dynamic" });
 });

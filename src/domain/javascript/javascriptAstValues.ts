@@ -161,9 +161,76 @@ export const isNullishJavaScriptSyntax = (node: t.Node): boolean => {
   );
 };
 
+export type ObjectDataPropertyValue =
+  | t.ObjectProperty["value"]
+  | t.ObjectMethod;
+
+/** Preserve original data-value nodes; accessor reads remain unresolved. */
+export const objectDataPropertyValue = (
+  property: t.ObjectProperty | t.ObjectMethod,
+): ObjectDataPropertyValue | undefined =>
+  t.isObjectProperty(property)
+    ? property.value
+    : property.kind === "method"
+      ? property
+      : undefined;
+
+const PROPERTYLESS_UNARY = new Set(["+", "-", "~", "!", "void", "delete"]);
+const PROPERTYLESS_BINARY = new Set([
+  "-",
+  "*",
+  "/",
+  "%",
+  "**",
+  "<<",
+  ">>",
+  ">>>",
+  "|",
+  "^",
+  "&",
+  "==",
+  "!=",
+  "===",
+  "!==",
+  "<",
+  "<=",
+  ">",
+  ">=",
+  "in",
+  "instanceof",
+]);
+
+/** Operator results are primitive even when their value is not statically known. */
+const primitiveOwnKeys = (
+  node: t.Node,
+  isNullish?: (node: t.Node) => boolean,
+): "indices" | "none" | null => {
+  if (
+    t.isStringLiteral(node) ||
+    t.isTemplateLiteral(node) ||
+    (t.isUnaryExpression(node) && node.operator === "typeof") ||
+    (t.isBinaryExpression(node) && node.operator === "+")
+  )
+    return "indices";
+  return t.isNumericLiteral(node) ||
+    t.isBooleanLiteral(node) ||
+    t.isBigIntLiteral(node) ||
+    t.isNullLiteral(node) ||
+    (t.isUnaryExpression(node) && PROPERTYLESS_UNARY.has(node.operator)) ||
+    t.isUpdateExpression(node) ||
+    (t.isBinaryExpression(node) && PROPERTYLESS_BINARY.has(node.operator)) ||
+    isNullish?.(node) === true
+    ? "none"
+    : null;
+};
+
 type StaticObjectProperty =
   | { readonly status: "missing" | "dynamic" }
-  | { readonly status: "explicit"; readonly property: t.ObjectProperty };
+  | {
+      readonly status: "explicit";
+      readonly property: t.ObjectProperty | t.ObjectMethod;
+      readonly value: ObjectDataPropertyValue;
+    };
 
 type StaticObjectMember =
   | { readonly kind: "unknown" }
@@ -171,7 +238,7 @@ type StaticObjectMember =
       readonly kind: "prototype-setter";
       readonly prototype: "null" | "ignored" | "unknown";
     }
-  | { readonly kind: "string-indices"; readonly length: number | null }
+  | { readonly kind: "primitive-indices"; readonly length: number | null }
   | {
       readonly kind: "array-indices";
       readonly elements: t.ArrayExpression["elements"];
@@ -216,16 +283,12 @@ const appendStaticObjectMembers = (
         // key; one copied through object spread has no effect on the target.
         if (depth === 0) {
           const prototype = unwrapJavaScriptExpression(property.value).node;
-          const primitive = readExactJavaScriptLiteral(prototype);
+          const primitive = primitiveOwnKeys(prototype, isNullish);
           members.push({
             kind: "prototype-setter",
             prototype: t.isNullLiteral(prototype)
               ? "null"
-              : primitive.found ||
-                  t.isNumericLiteral(prototype) ||
-                  t.isBigIntLiteral(prototype) ||
-                  t.isTemplateLiteral(prototype) ||
-                  isNullish?.(property.value) === true
+              : primitive !== null
                 ? "ignored"
                 : "unknown",
           });
@@ -275,28 +338,22 @@ const appendStaticObjectMembers = (
         });
       continue;
     }
-    const literal = readExactJavaScriptLiteral(spread);
-    if (literal.found && typeof literal.value === "string") {
-      // Keep UTF-16 index writes symbolically, without expanding a string into
-      // synthetic source properties or allocating an entry for every character.
-      if (literal.value.length > 0)
-        members.push({ kind: "string-indices", length: literal.value.length });
+    const primitive = primitiveOwnKeys(spread, isNullish);
+    if (primitive === "indices") {
+      const literal = readExactJavaScriptLiteral(spread);
+      const length =
+        literal.found && typeof literal.value === "string"
+          ? literal.value.length
+          : null;
+      // Retain indexed writes without expanding strings or synthesizing properties.
+      if (length !== 0) members.push({ kind: "primitive-indices", length });
       continue;
     }
-    if (t.isTemplateLiteral(spread)) {
-      // Every completed interpolation yields a string, even when its length is unknown.
-      members.push({ kind: "string-indices", length: null });
-      continue;
-    }
-    // Primitive boxes, fresh functions and regex literals have no enumerable own keys.
     if (
+      primitive === "none" ||
       t.isFunctionExpression(spread) ||
       t.isArrowFunctionExpression(spread) ||
-      t.isRegExpLiteral(spread) ||
-      t.isBooleanLiteral(spread) ||
-      t.isNumericLiteral(spread) ||
-      t.isBigIntLiteral(spread) ||
-      isNullish?.(property.argument) === true
+      t.isRegExpLiteral(spread)
     )
       continue;
     members.push(UNKNOWN_STATIC_OBJECT_MEMBER);
@@ -341,7 +398,7 @@ const readStaticObjectProperty = (
       continue;
     }
     if (member.kind === "unknown") return { status: "dynamic" };
-    if (member.kind === "string-indices") {
+    if (member.kind === "primitive-indices") {
       const index = semanticArrayIndex(name);
       if (index !== null && (member.length === null || index < member.length))
         return { status: "dynamic" };
@@ -360,9 +417,10 @@ const readStaticObjectProperty = (
     const { property, key } = member;
     if (key === null) return { status: "dynamic" };
     if (key !== name) continue;
-    return t.isObjectProperty(property)
-      ? { status: "explicit", property }
-      : { status: "dynamic" };
+    const value = objectDataPropertyValue(property);
+    return value === undefined
+      ? { status: "dynamic" }
+      : { status: "explicit", property, value };
   }
   return prototypeMaySupply ? { status: "dynamic" } : { status: "missing" };
 };
@@ -402,7 +460,7 @@ export const staticObjectPropertyNames = (
     if (member.kind === "prototype-setter") continue;
     if (
       member.kind === "unknown" ||
-      member.kind === "string-indices" ||
+      member.kind === "primitive-indices" ||
       member.kind === "array-indices"
     ) {
       // Indexed spread keys remain unenumerated; never claim a complete name
@@ -428,7 +486,7 @@ export const semanticFinalObjectProperty = (
   key: string,
 ): t.Node | undefined => {
   const property = staticObjectProperty(node, key);
-  return property.status === "explicit" ? property.property.value : undefined;
+  return property.status === "explicit" ? property.value : undefined;
 };
 
 export const semanticFinalObjectStringProperty = (

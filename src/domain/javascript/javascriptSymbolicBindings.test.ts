@@ -761,6 +761,13 @@ it.each([
 it.each([
   ["unknown spread", `{value:require("electron"),...input}`, "unknown"],
   ["unknown descriptor", `input`, "unknown"],
+  ["negative number spread", `{value:require("electron"),...-1}`, "external"],
+  ["negative bigint spread", `{value:require("electron"),...-1n}`, "external"],
+  [
+    "ordinary method value",
+    `{value(){return require("electron")}}`,
+    "function",
+  ],
   ["null prototype", `{__proto__:null,value:require("electron")}`, "external"],
   [
     "ignored primitive prototype",

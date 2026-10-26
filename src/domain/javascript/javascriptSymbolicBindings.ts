@@ -2,6 +2,7 @@ import * as t from "@babel/types";
 import {
   staticObjectPropertyReader,
   isObjectPrototypeSetter,
+  objectDataPropertyValue,
   semanticStaticPropertyKey,
   semanticWriteSiteTarget,
   semanticWriteTargets,
@@ -179,7 +180,7 @@ export class JavaScriptSymbolicBindings {
               properties("get").status !== "missing" ||
               properties("set").status !== "missing";
             if (value.status === "explicit" && !hasAccessor)
-              this.#addWrite(target, [key.value], value.property.value, node);
+              this.#addWrite(target, [key.value], value.value, node);
             else if (value.status !== "missing" || hasAccessor)
               // Unknown values, accessor replacements and invalid mixed
               // descriptors cannot preserve an earlier data export.
@@ -451,12 +452,10 @@ export class JavaScriptSymbolicBindings {
     property: t.ObjectMethod | t.ObjectProperty,
     environment: SymbolicEnvironment,
   ): SymbolicValue {
-    return t.isObjectMethod(property) && property.kind !== "method"
+    const value = objectDataPropertyValue(property);
+    return value === undefined
       ? symbolicUnknown("accessor property")
-      : this.evaluate(
-          t.isObjectProperty(property) ? property.value : property,
-          environment,
-        );
+      : this.evaluate(value, environment);
   }
 
   members(
