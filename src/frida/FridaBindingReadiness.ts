@@ -97,13 +97,17 @@ export const fridaBindingReadiness = async (
       );
     const result = parsed.data;
     if (result.status === "ready") return { ...identity, status: "ready" };
-    if (result.status === "unknown") return unknown(result.detail);
+    const detail =
+      output.stderr.length === 0
+        ? result.detail
+        : `${result.detail}\nstderr:\n${output.stderr}`;
+    if (result.status === "unknown") return unknown(detail);
     if (result.status === "absent")
       return {
         ...identity,
         status: "unavailable",
         reason: "dependency-absent",
-        detail: result.detail,
+        detail,
         remediation:
           "Frida is not installed. Reinstall REA with its owning package manager, including optional dependencies, to use Frida instrumentation; then rerun rea update.",
       };
@@ -113,7 +117,7 @@ export const fridaBindingReadiness = async (
       ...identity,
       status: "unavailable",
       reason: "module-load-failed",
-      detail: result.detail,
+      detail,
       remediation:
         fridaRoot === undefined
           ? "Frida could not load. Inspect the diagnostic and repair this installation, then rerun rea update."

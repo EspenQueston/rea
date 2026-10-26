@@ -244,6 +244,20 @@ registration but does not contribute to the derived tool timeout; raise
 `toolTimeoutMs` to cover a longer selected JADX deadline.
 This headroom is a practical default, not a guarantee for every analysis
 duration. Setup preserves positive timeout values already in the `rea` entry.
+
+Setup also forwards explicitly selected input/output schema profiles,
+`REA_MCP_MAX_RESPONSE_BYTES`, provider paths and supported Ghidra, JADX and Kuna
+settings. It also forwards explicit executable and resource selections for ADB,
+apktool, packet capture, GDB/Rizin/objdump, Cutter, WABT, Wakaru, firmware and
+signal tools, browser inspection, and pwntools/pwndbg. This includes their
+supported prlimit overrides, Darwin Swift compiler/SDK/module-cache selections,
+and compile timeout, logging level and explicitly configured reference-secret
+patterns. A provider being unavailable does not discard its selected paths;
+doctor reports its readiness separately. Explicit selections override discovered
+defaults, including when setup runs again with a changed selection. Unrelated
+environment variables, process ownership tokens and one-shot target paths are not
+copied. Existing client environment overrides remain intact unless setup supplies
+the same key.
 You can edit `startupTimeoutMs` and `toolTimeoutMs` there; doctor keeps positive
 caller-selected values aligned and reports a non-blocking advisory when a tool
 timeout is shorter than the known provider allowance.
@@ -565,9 +579,9 @@ with an installed native FreeBuff client/version; filesystem tests cover REA's
 editing, discovery, and ownership behavior only. Automatic applicability
 requires the FreeBuff profile directory even when the shared MCP file exists.
 
-FreeBuff is main-only and is not in a published release yet; npm 6.7.0 is the
-latest. `rea setup --client freebuff` against `@latest` reports an unsupported
-client until a release containing it is published.
+FreeBuff setup support requires `rea-agents@6.8.0` or later. Older versions
+reject `rea setup --client freebuff` as an unsupported client. See the
+[installation guide](installation.md#supported-agents) for client availability.
 
 ## DeepSeek Harness
 

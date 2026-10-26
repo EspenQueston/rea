@@ -2,7 +2,7 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 
-import { runUpdateCommand } from "../../../src/application/UpdateRuntime.js";
+import { UpdateCommandRunner } from "../../../src/application/UpdateCommandRunner.js";
 import { fridaBindingReadiness } from "../../../src/frida/FridaBindingReadiness.js";
 import { createTestTempDirectory } from "../../fixtures/temporaryDirectory.js";
 
@@ -111,13 +111,18 @@ describe("installed Frida native module readiness", () => {
     ).rejects.toMatchObject({
       code: "ENOENT",
     });
-    const repaired = await runUpdateCommand(
-      readiness.recovery.command,
-      process.env,
-      "structured",
-      readiness.recovery.workingDirectory,
-    );
-    expect(repaired).toMatchObject({ ok: true });
+    const commands = new UpdateCommandRunner();
+    try {
+      const repaired = await commands.runInstall(
+        readiness.recovery.command,
+        process.env,
+        "structured",
+        readiness.recovery.workingDirectory,
+      );
+      expect(repaired).toMatchObject({ ok: true });
+    } finally {
+      await commands.close();
+    }
     expect(await readFile(join(fridaRoot, "binding-ready"), "utf8")).toBe(
       "ready",
     );
@@ -128,6 +133,24 @@ describe("installed Frida native module readiness", () => {
 });
 
 describe("Frida resolution and repair ownership", () => {
+  it("retains native loader stderr alongside a reported module-load error", async () => {
+    const { packageRoot } = await readinessFixture(
+      [
+        'import { writeSync } from "node:fs";',
+        'writeSync(2, "native loader diagnostic\\n");',
+        'throw new Error("native binding unavailable");',
+      ].join("\n"),
+    );
+    await expect(
+      fridaBindingReadiness(packageRoot, "npm", process.env),
+    ).resolves.toMatchObject({
+      status: "unavailable",
+      reason: "module-load-failed",
+      detail:
+        "Error: native binding unavailable\nstderr:\nnative loader diagnostic\n",
+    });
+  });
+
   it("resolves a hoisted dependency and scopes Bun recovery to that package", async () => {
     const { root, packageRoot, fridaRoot } = await readinessFixture(
       'throw new Error("hoisted binding unavailable");',
