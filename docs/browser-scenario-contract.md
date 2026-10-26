@@ -497,9 +497,12 @@ id the application assigns:
   being read when the step times out or is cancelled saves nothing. A pointer
   that names no string or number fails the step, so later steps never send a
   missing value, as does a response over 4,000,000 characters: a request step
-  stops reading it there, and a UI step does not read one whose received size is
-  over 12,000,000 bytes, three per character, and fails one whose text is
-  longer.
+  stops reading it there, and a UI step reads one only when its decoded size is
+  bounded first: the bytes received, or the declared length of one served from
+  cache, times 1,032 for a gzip or deflate body (DEFLATE's most expansion), must
+  be at most 12,000,000 bytes, three per character, and another content coding
+  or an unknown size fails the step without reading it. A UI step also fails one
+  whose text is longer.
 - `{saved:name}` sends a saved value in a request step's `path`, including its
   query, and in a `goto` destination's `url`, percent-encoded; a destination's
   structured `query` values are sent as declared. A saved value that makes a

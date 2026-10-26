@@ -364,7 +364,9 @@ export class BrowserScenarioSecrets {
       text.length;
     let kept = savedUnits + this.secretSpellingUnits;
     const spellings =
-      secret && kept <= MAX_RETAINED_SAVED_CHARACTERS ? spellingUnits(text) : 0;
+      secret && kept <= MAX_RETAINED_SAVED_CHARACTERS
+        ? this.admittedSpellingUnits(text)
+        : 0;
     kept += spellings;
     if (kept > MAX_RETAINED_SAVED_CHARACTERS)
       throw new Error(
@@ -374,6 +376,14 @@ export class BrowserScenarioSecrets {
     this.savedUnits = savedUnits;
     this.secretSpellingUnits += spellings;
     if (secret) this.admitCredential(label, text);
+  }
+
+  /** The code units of the redaction spellings admitting `value` as a credential adds: it and its trimmed spelling, each unless already held. */
+  private admittedSpellingUnits(value: string): number {
+    const held = new Set(this.values.values());
+    return [...new Set([value.replace(/^[\t ]+|[\t ]+$/gu, ""), value])]
+      .filter((candidate) => candidate.length > 0 && !held.has(candidate))
+      .reduce((units, candidate) => units + spellingUnits(candidate), 0);
   }
 
   /** A saved value with the JSON type it was saved with. */

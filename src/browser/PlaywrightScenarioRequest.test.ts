@@ -1119,6 +1119,24 @@ describe("saved value retention", () => {
     ).toThrow("more than 4000000 characters of saved values");
   });
 
+  it("counts a secret save again only for spellings it adds, its trimmed one included", () => {
+    const again = resolved(scenario([requestStep({})]));
+    for (let save = 0; save < 4; save += 1)
+      again.save(
+        `s${String(save)}.token`,
+        "token",
+        "t".repeat(1_000_000),
+        true,
+      );
+    expect(String(again.savedValue("token"))).toHaveLength(1_000_000);
+    const padded = resolved(scenario([requestStep({})]));
+    // The padded secret also keeps its trimmed spelling, which the total must count.
+    padded.save("a.key", "key", ` ${"k".repeat(600_000)} `, true);
+    expect(() =>
+      padded.save("b.more", "more", "m".repeat(1_200_000), false),
+    ).toThrow("more than 4000000 characters of saved values");
+  });
+
   it("fails the step that would save past the limit", async () => {
     stubFetch(201, [`{"id":"${"y".repeat(200_000)}"}`]);
     const parsed = scenario([
@@ -1195,6 +1213,8 @@ interface FakeResponse {
   readonly size?: number;
   /** A body still arriving: the text resolves with it. */
   readonly late?: Promise<string>;
+  /** Response headers, such as its content coding or declared length. */
+  readonly headers?: Readonly<Record<string, string>>;
 }
 
 /**
@@ -1224,6 +1244,7 @@ const uiPage = (responses: readonly FakeResponse[], clickFails = false) => {
         request: () => request,
         url: () => response.url,
         status: () => response.status,
+        allHeaders: async () => response.headers ?? {},
         text: async () => {
           reads.count += 1;
           return response.late ?? response.body;
@@ -1385,6 +1406,66 @@ describe("saving from a UI step's response", () => {
   });
 });
 
+describe("saved response decoded-size bounds", () => {
+  const savingFrom = (response: Partial<FakeResponse>) =>
+    uiPage([
+      {
+        method: "POST",
+        url: `${ORIGIN}/api/items`,
+        status: 201,
+        body: '{"id":"item-7"}',
+        ...response,
+      },
+    ]);
+
+  it("reads a gzip or deflate response whose received size bounds its text within the limit", async () => {
+    for (const coding of ["gzip", "deflate", "gzip, identity"]) {
+      const parsed = clickSaving("/api/items");
+      const secrets = resolved(parsed);
+      const { page } = savingFrom({
+        size: 11_000,
+        headers: { "content-encoding": coding },
+      });
+      await perform(page, parsed.actions[0]!, secrets);
+      expect(secrets.savedValue("item"), coding).toBe("item-7");
+    }
+  });
+
+  it.each([
+    ["br", { size: 100, headers: { "content-encoding": "br" } }, "bounded"],
+    ["zstd", { size: 100, headers: { "content-encoding": "zstd" } }, "bounded"],
+    [
+      "a gzip body that could decode past the limit",
+      { size: 12_000, headers: { "content-encoding": "gzip" } },
+      "too large",
+    ],
+    ["no known size, as from the cache", { size: 0 }, "bounded"],
+  ] as const)(
+    "fails without reading a response with %s",
+    async (_, response, message) => {
+      const parsed = clickSaving("/api/items");
+      const secrets = resolved(parsed);
+      const { page, reads } = savingFrom(response);
+      await expect(perform(page, parsed.actions[0]!, secrets)).rejects.toThrow(
+        message,
+      );
+      expect(reads.count).toBe(0);
+      expect(() => secrets.savedValue("item")).toThrow();
+    },
+  );
+
+  it("reads a cached response by its declared length", async () => {
+    const parsed = clickSaving("/api/items");
+    const secrets = resolved(parsed);
+    const { page } = savingFrom({
+      size: 0,
+      headers: { "content-length": "15" },
+    });
+    await perform(page, parsed.actions[0]!, secrets);
+    expect(secrets.savedValue("item")).toBe("item-7");
+  });
+});
+
 describe("saved response limits and deadlines", () => {
   afterEach(() => {
     vi.useRealTimers();
@@ -1409,6 +1490,7 @@ describe("saved response limits and deadlines", () => {
         url: `${ORIGIN}/api/items`,
         status: 201,
         body: "",
+        size: 18,
         late,
       },
     ]);
@@ -1435,6 +1517,7 @@ describe("saved response limits and deadlines", () => {
         url: `${ORIGIN}/api/items`,
         status: 201,
         body: "",
+        size: 18,
         late,
       },
     ]);

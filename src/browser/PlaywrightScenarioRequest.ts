@@ -213,6 +213,33 @@ const MAX_SAVED_RESPONSE_CHARACTERS = 4_000_000;
 /** The most UTF-8 bytes text within that limit can take: three per UTF-16 code unit. */
 const MAX_SAVED_RESPONSE_BYTES = 3 * MAX_SAVED_RESPONSE_CHARACTERS;
 
+/** DEFLATE decodes at most 1032 bytes per byte it reads (zlib's limit), so a gzip or deflate body's received size bounds its decoded size. */
+const DEFLATE_MAX_EXPANSION = 1032;
+
+/** The most bytes a response decodes to, from the bytes received (or its declared length, for one served from cache) and its content codings; undefined when they cannot bound it. */
+const decodedBound = (
+  received: number,
+  headers: Readonly<Record<string, string>>,
+): number | undefined => {
+  const declared = headers["content-length"]?.trim();
+  const bytes =
+    received > 0
+      ? received
+      : declared !== undefined && /^\d+$/u.test(declared)
+        ? Number(declared)
+        : undefined;
+  if (bytes === undefined) return undefined;
+  let bound = bytes;
+  for (const coding of (headers["content-encoding"] ?? "").split(",")) {
+    const name = coding.trim().toLowerCase();
+    if (name === "" || name === "identity") continue;
+    if (name !== "gzip" && name !== "x-gzip" && name !== "deflate")
+      return undefined;
+    bound *= DEFLATE_MAX_EXPANSION;
+  }
+  return bound;
+};
+
 /** Send the request with the page's own fetch, from the page's main world, and read the whole answer. */
 const sendFromPage = (
   page: Page,
@@ -565,14 +592,25 @@ export const awaitSavedResponse = (
       throw new ScenarioRequestError(
         `Step ${stepId}: the ${spec.method} ${spec.path} response answered ${String(response.status())}; values are saved only from a 2xx response.`,
       );
-    // Playwright reads a body whole, so the size the browser received decides before it is read; its text is then held to the character limit.
+    // Playwright reads a body whole, so its decoded size is bounded before it is read; its text is then held to the character limit.
     const { responseBodySize } = await beforeStepEnds(
       response.request().sizes(),
       stepId,
       deadline,
       signal,
     );
-    if (responseBodySize > MAX_SAVED_RESPONSE_BYTES)
+    const headers = await beforeStepEnds(
+      response.allHeaders(),
+      stepId,
+      deadline,
+      signal,
+    );
+    const bound = decodedBound(responseBodySize, headers);
+    if (bound === undefined)
+      throw new ScenarioRequestError(
+        `Step ${stepId}: the response's decoded size cannot be bounded before it is read, since it has no known size or a content coding other than gzip or deflate, so nothing was saved.`,
+      );
+    if (bound > MAX_SAVED_RESPONSE_BYTES)
       throw new ScenarioRequestError(
         `Step ${stepId}: the response is too large to save values from.`,
       );
