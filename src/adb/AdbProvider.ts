@@ -1,3 +1,7 @@
+import {
+  absoluteCallerPath,
+  appendCallerPath,
+} from "../filesystem/callerPath.js";
 import { execFileFailureCapturedOutput } from "../process/ExecFileOutput.js";
 import { collectNumericIssues } from "./AdbNumericIssues.js";
 import { analysisClientFailureForOperation } from "../providers/AnalysisClientFailure.js";
@@ -16,7 +20,7 @@ import {
   stat,
   writeFile,
 } from "node:fs/promises";
-import { basename, dirname, extname, join, resolve } from "node:path";
+import { basename, dirname, extname, join } from "node:path";
 
 import {
   type ExecutionOptions,
@@ -101,6 +105,7 @@ import {
   type AdbBinarySelection,
   type AdbClientIdentity,
 } from "./AdbConfiguration.js";
+import { snapshotEnvironment } from "../process/snapshotEnvironment.js";
 import {
   displayDevicePath,
   parseAdbDevicesOutput,
@@ -443,7 +448,7 @@ const prepareOutputDirectory = async (
   operation: string,
   directory: string,
 ): Promise<Result<string, AnalysisError>> => {
-  const root = resolve(directory);
+  const root = absoluteCallerPath(directory);
   try {
     await mkdir(root, { recursive: true });
     await access(root, fsConstants.W_OK);
@@ -669,7 +674,7 @@ const publishBugreport = async (
   const stem =
     extension === "" ? fileName : fileName.slice(0, -extension.length);
   for (let suffix = 0; ; suffix += 1) {
-    const destination = join(
+    const destination = appendCallerPath(
       directory,
       suffix === 0 ? fileName : `${stem} (${String(suffix)})${extension}`,
     );
@@ -768,7 +773,7 @@ const reservePackageDestinations = async (
     readonly identity: OutputDirectoryIdentity;
   }[] = [];
   for (const entry of entries) {
-    const path = join(packageDirectory, entry.file_name);
+    const path = appendCallerPath(packageDirectory, entry.file_name);
     try {
       await mkdir(path);
       const created = await lstat(path);
@@ -880,7 +885,7 @@ export class AdbProvider {
   #outputCleanupPromise: Promise<void> | undefined;
 
   constructor(options: AdbProviderOptions = {}) {
-    this.environment = options.environment ?? process.env;
+    this.environment = snapshotEnvironment(options.environment ?? process.env);
     this.#createRuntimeRoot =
       options.createRuntimeRoot ??
       ((rootOptions) => PrivateRuntimeRoot.create(rootOptions));
@@ -1379,7 +1384,7 @@ export class AdbProvider {
         {
           device: "serial" in request.input ? request.input.serial : operation,
         },
-        selection.binary,
+        selection,
         adbArguments(
           "serial" in request.input ? request.input.serial : undefined,
           ["shell", ...arguments_],
@@ -1399,7 +1404,7 @@ export class AdbProvider {
         const ran = await runAdb(
           operation,
           { device: "adb-devices" },
-          selection.binary,
+          selection,
           ["devices", "-l"],
           {
             timeoutMs: DEVICES_TIMEOUT_MS,
@@ -1436,7 +1441,7 @@ export class AdbProvider {
         const ran = await runAdb(
           operation,
           { device: request.input.serial },
-          selection.binary,
+          selection,
           adbArguments(request.input.serial, ["shell", "getprop"]),
           {
             timeoutMs: SHELL_TIMEOUT_MS,
@@ -1671,7 +1676,7 @@ export class AdbProvider {
         const ran = await runAdbCapture(
           operation,
           { device: request.input.serial, path: request.input.device_path },
-          selection.binary,
+          selection,
           adbArguments(request.input.serial, [
             "shell",
             "sh",
@@ -1981,7 +1986,7 @@ export class AdbProvider {
     const paths = await runAdb(
       operation,
       { device: serial },
-      selection.binary,
+      selection,
       adbArguments(serial, ["shell", "pm", "path", packageName]),
       {
         timeoutMs: PM_PATH_TIMEOUT_MS,
@@ -2058,7 +2063,7 @@ export class AdbProvider {
       input.output_directory,
     );
     if (!directory.ok) return directory;
-    const packageDirectory = join(directory.value, packageName);
+    const packageDirectory = appendCallerPath(directory.value, packageName);
     let packageDirectoryCreated = false;
     let packageDirectoryIdentity: OutputDirectoryIdentity | undefined;
     try {
@@ -2198,7 +2203,7 @@ export class AdbProvider {
       return err(error);
     };
     for (const entry of parsed.paths) {
-      const localPath = join(packageDirectory, entry.file_name);
+      const localPath = appendCallerPath(packageDirectory, entry.file_name);
       const pulled = await runAdb(
         operation,
         {
@@ -2206,7 +2211,7 @@ export class AdbProvider {
           path: entry.device_path,
           localPath,
         },
-        selection.binary,
+        selection,
         adbArguments(serial, ["pull", entry.device_path, localPath]),
         { timeoutMs: PULL_TIMEOUT_MS, maxOutputBytes: PULL_MAX_OUTPUT_BYTES },
         signal,
@@ -2390,7 +2395,7 @@ export class AdbProvider {
       input.output_directory,
     );
     if (!directory.ok) return directory;
-    const localPath = join(directory.value, derived.fileName);
+    const localPath = appendCallerPath(directory.value, derived.fileName);
     const existing = await refuseExistingTarget(operation, localPath);
     if (existing !== undefined) return err(existing);
     const pulled = await runAdb(
@@ -2400,7 +2405,7 @@ export class AdbProvider {
         path: input.device_path,
         localPath,
       },
-      selection.binary,
+      selection,
       adbArguments(input.serial, ["pull", input.device_path, localPath]),
       { timeoutMs: PULL_TIMEOUT_MS, maxOutputBytes: PULL_MAX_OUTPUT_BYTES },
       signal,
@@ -2472,7 +2477,7 @@ export class AdbProvider {
     },
     signal: AbortSignal | undefined,
   ): Promise<Result<AnalysisExecution, AnalysisError>> {
-    const localPath = resolve(input.local_path);
+    const localPath = absoluteCallerPath(input.local_path);
     const info = await stat(localPath).then(
       (value) => value,
       () => null,
@@ -2505,7 +2510,7 @@ export class AdbProvider {
           operation,
           input.serial,
           input.device_path,
-          selection.binary,
+          selection,
           { timeoutMs: SETTINGS_TIMEOUT_MS, maxOutputBytes: 1024 },
           signal,
         );
@@ -2517,7 +2522,7 @@ export class AdbProvider {
           operation,
           input.serial,
           devicePath,
-          selection.binary,
+          selection,
           { timeoutMs: SETTINGS_TIMEOUT_MS, maxOutputBytes: 1024 },
           signal,
         );
@@ -2537,7 +2542,7 @@ export class AdbProvider {
             path: input.device_path,
             localPath: digest.path,
           },
-          selection.binary,
+          selection,
           adbArguments(input.serial, ["push", digest.path, input.device_path]),
           { timeoutMs: PULL_TIMEOUT_MS, maxOutputBytes: PULL_MAX_OUTPUT_BYTES },
           signal,
@@ -2578,7 +2583,7 @@ export class AdbProvider {
         const deviceDigest = await runAdb(
           operation,
           { device: input.serial, path: devicePath },
-          selection.binary,
+          selection,
           adbArguments(input.serial, ["shell", "sha256sum", devicePath]),
           { timeoutMs: SHELL_TIMEOUT_MS, maxOutputBytes: 1024 },
           signal,
@@ -2678,7 +2683,7 @@ export class AdbProvider {
     },
     signal: AbortSignal | undefined,
   ): Promise<Result<AnalysisExecution, AnalysisError>> {
-    const apkPath = resolve(input.apk_path);
+    const apkPath = absoluteCallerPath(input.apk_path);
     const info = await stat(apkPath).then(
       (value) => value,
       () => null,
@@ -2709,7 +2714,7 @@ export class AdbProvider {
         const installed = await runAdb(
           operation,
           { device: input.serial, path: apkPath, localPath: digest.path },
-          selection.binary,
+          selection,
           adbArguments(input.serial, [
             "install",
             ...(input.replace ? ["-r"] : []),
@@ -2781,7 +2786,7 @@ export class AdbProvider {
     const uninstalled = await runAdb(
       operation,
       { device: input.serial },
-      selection.binary,
+      selection,
       adbArguments(input.serial, [
         "shell",
         "pm",
@@ -2848,7 +2853,7 @@ export class AdbProvider {
     const resolved = await runAdb(
       operation,
       { device: input.serial },
-      selection.binary,
+      selection,
       adbArguments(input.serial, [
         "shell",
         "cmd",
@@ -2968,7 +2973,7 @@ export class AdbProvider {
     const started = await runAdb(
       operation,
       { device: serial },
-      selection.binary,
+      selection,
       adbArguments(serial, ["shell", "am", "start", "-W", ...arguments_]),
       { timeoutMs: SHELL_TIMEOUT_MS, maxOutputBytes: PM_PATH_MAX_OUTPUT_BYTES },
       signal,
@@ -3056,7 +3061,7 @@ export class AdbProvider {
     const stopped = await runAdb(
       operation,
       { device: input.serial },
-      selection.binary,
+      selection,
       adbArguments(input.serial, ["shell", "am", "force-stop", input.package]),
       { timeoutMs: SHELL_TIMEOUT_MS, maxOutputBytes: PM_PATH_MAX_OUTPUT_BYTES },
       signal,
@@ -3092,13 +3097,13 @@ export class AdbProvider {
       input.output_directory,
     );
     if (!directory.ok) return directory;
-    const localPath = join(directory.value, "screen.png");
+    const localPath = appendCallerPath(directory.value, "screen.png");
     const existing = await refuseExistingTarget(operation, localPath);
     if (existing !== undefined) return err(existing);
     const captured = await runAdbCapture(
       operation,
       { device: input.serial },
-      selection.binary,
+      selection,
       adbArguments(input.serial, ["exec-out", "screencap", "-p"]),
       {
         timeoutMs: SCREEN_TIMEOUT_MS,
@@ -3223,7 +3228,7 @@ export class AdbProvider {
     let publishedPath: string | undefined;
     try {
       stagingDirectory = await mkdtemp(
-        join(directory.value, ".rea-bugreport-"),
+        appendCallerPath(directory.value, ".rea-bugreport-"),
       );
     } catch (cause) {
       return err(
@@ -3252,7 +3257,7 @@ export class AdbProvider {
         const collected = await runAdb(
           operation,
           { device: input.serial },
-          selection.binary,
+          selection,
           adbArguments(input.serial, ["bugreport", stagingDirectory]),
           {
             timeoutMs: BUGREPORT_TIMEOUT_MS,
@@ -3268,7 +3273,14 @@ export class AdbProvider {
               "adb bugreport did not report an archive path; the build may use an unsupported format",
             ),
           );
-        if (dirname(resolve(reportedPath)) !== stagingDirectory)
+        const reportedParent = await stat(
+          dirname(absoluteCallerPath(reportedPath)),
+        );
+        if (
+          !reportedParent.isDirectory() ||
+          reportedParent.dev !== stagingIdentity.dev ||
+          reportedParent.ino !== stagingIdentity.ino
+        )
           return err(
             new AnalysisProtocolError(
               `adb bugreport reported an archive outside its staging directory: ${reportedPath}`,

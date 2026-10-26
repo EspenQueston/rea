@@ -641,11 +641,10 @@ complete observation.
   outcome instead of rounded reference identities.
   UID 0 cannot distinguish conditional nil from ordinary nil. Limits are
   64 MiB of input, 200,000 objects/references and 128 nesting levels.
-  XML dictionary entries decoded as `__proto__` are omitted with an explicit
-  count because REA results cannot represent that key. XML tag whitespace and
-  comments do not change that handling. XML key names combine their text and
-  CDATA segments without trimming or expanding literal CDATA entities. Other
-  values and the original archive digest are preserved.
+  XML, OpenStep and binary dictionary entries retain their source keys,
+  including `__proto__`, through archive projection and CLI/MCP results.
+  XML key names combine their text and CDATA segments without trimming or
+  expanding literal CDATA entities. The original archive digest is preserved.
   Symbol fallback accepts complete Objective-C class/metaclass symbol leaves,
   including qualified names. Pointer/string labels that merely contain a class
   marker do not establish classes. Provider namespace method labels are not
@@ -1006,7 +1005,7 @@ is present. A denied trace reports the `debugger-attach-denied` reason.
 
 ## Provider and verification boundaries
 
-Install a Ghidra 12.1.x release and the 64-bit full JDK it declares, then configure REA to
+Install a Ghidra 12.x (>=12.1) release and the 64-bit full JDK it declares, then configure REA to
 use them. Ghidra analysis supports Linux x64/arm64 and macOS x64/arm64; each installation requires
 the matching native decompiler. Experimental Windows x64 P0 admits native
 x86, x86-64, ARMNT (Thumb-2) and ARM64 PE applications and DLLs, plus explicitly selected

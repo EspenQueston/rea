@@ -1,5 +1,6 @@
 import { analysisDetailSchema } from "./analysisDetail.js";
 import { z } from "zod";
+import { jsonRecordSchema } from "../domain/jsonRecord.js";
 import { nativeFunctionAnnotationsInputSchema } from "../domain/native/nativeFunctionAnnotations.js";
 
 import { officialOutputSchemas } from "./toolOutputSchemaGroups.js";
@@ -17,7 +18,7 @@ import { nativeDataTypeInputSchema } from "../domain/native/nativeDataType.js";
 import { nativeInstructionInputSchema } from "../domain/native/nativeInstruction.js";
 import { functionInstructionInputSchema } from "./functionInstructionContract.js";
 import { HOPPER_MEMORY_TOOL_DEFINITIONS } from "./hopperMemoryContracts.js";
-import { analysisSearchInput } from "./analysisSearchContract.js";
+import { nativeSearchInput } from "../domain/native/nativeSearch.js";
 
 const hopperRegexDeadline =
   "Hopper regex mode uses ECMAScript Unicode syntax in a cancellable worker. The matching deadline is REA_REGEX_MATCHING_DEADLINE_MS (a positive decimal integer of milliseconds from 1 to 2147483647, default 5000). Unset keeps the default. A deadline failure names the effective milliseconds, source (default or setting), the default, and the maximum, and leaves the API usable. The worker old-generation request is REA_REGEX_WORKER_HEAP_REQUEST_MIB (a decimal integer of mebibytes from 7 to 16384, default 128). Unset keeps the default. A positive Node --max-old-space-size, including NODE_OPTIONS, overrides that request and is not limited by the setting's floor or maximum. A heap failure names the effective request, its source (default or setting), the default, the floor, and the maximum.";
@@ -205,12 +206,12 @@ export const OFFICIAL_TOOL_CONTRACTS = [
   official(
     "search_procedures",
     `Search every analyzed procedure name using literal matching by default or regex when requested. Results are deterministic and complete. ${hopperRegexDeadline} Select detail summary for counts and retained native-inventory pages; complete remains the default.`,
-    z.object({ ...analysisSearchInput, detail: analysisDetailSchema }),
+    z.object({ ...nativeSearchInput, detail: analysisDetailSchema }),
   ),
   official(
     "search_strings",
     `Search every provider-reported string object or candidate using literal matching by default or regex when requested. Results are deterministic and complete over that provider inventory, not every text sequence in artifact bytes. Kuna scans mapped sequences of at least five characters, including unterminated fragments, without computing references. Ghidra may omit packed or undefined literals, including Rust strings; an empty result does not prove text is absent. If an address is known, read_bytes and xrefs inspect its bytes and references. Hopper retains typed byte decoding, native display, and explicit decoding unknowns. Adjacent long-literal fragments match independently. ${hopperRegexDeadline} Select detail summary for counts and retained native-inventory pages; complete remains the default.`,
-    z.object({ ...analysisSearchInput, detail: analysisDetailSchema }),
+    z.object({ ...nativeSearchInput, detail: analysisDetailSchema }),
   ),
   official(
     "set_address_name",
@@ -220,7 +221,7 @@ export const OFFICIAL_TOOL_CONTRACTS = [
   official(
     "set_addresses_names",
     "Assign analyst names to multiple mapped addresses in one call and return per-address edit/readback success booleans. Hopper validates mapped destinations, native string representations, its 1024 UTF-16 code-unit symbol-name limit, and unique destinations/names before applying edits. Existing labels may move or swap only among explicitly selected addresses; unselected label owners remain unchanged. This mutates analysis metadata; verify failures individually.",
-    z.object({ names: z.record(z.string(), z.string()), document }),
+    z.object({ names: jsonRecordSchema(z.string()), document }),
   ),
   official(
     "set_bookmark",

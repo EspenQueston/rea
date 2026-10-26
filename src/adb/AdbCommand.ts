@@ -19,6 +19,7 @@ import {
 } from "../process/ExecFileOutput.js";
 import { packageChangeFailureReason } from "./AdbShellOutput.js";
 import { isSuccessfulDaemonStartNotice } from "./AdbDeviceOutput.js";
+import type { AdbBinarySelection } from "./AdbConfiguration.js";
 
 const STDERR_EXCERPT_CHARACTERS = 512;
 
@@ -120,7 +121,7 @@ export const adbSpawnCapacityError = (
 export const runAdbCapture = async (
   operation: string,
   target: AdbCommandTarget,
-  binary: string,
+  selection: AdbBinarySelection,
   arguments_: readonly string[],
   limits: AdbRunLimits,
   signal: AbortSignal | undefined,
@@ -129,7 +130,8 @@ export const runAdbCapture = async (
     return err(new AnalysisCancelledError(operation, { cause: signal.reason }));
   try {
     return ok(
-      await execFileBytes(binary, arguments_, {
+      await execFileBytes(selection.binary, arguments_, {
+        env: selection.environment,
         timeout: limits.timeoutMs,
         maxBuffer: limits.maxOutputBytes,
         stopSignal: "SIGTERM",
@@ -296,11 +298,11 @@ export const probeAdbPathExistence = async (
   operation: string,
   serial: string,
   path: string,
-  binary: string,
+  selection: AdbBinarySelection,
   limits: AdbRunLimits,
   signal: AbortSignal | undefined,
 ): Promise<Result<boolean, AnalysisError>> => {
-  return probeAdbPath(operation, serial, path, binary, limits, signal, "-e");
+  return probeAdbPath(operation, serial, path, selection, limits, signal, "-e");
 };
 
 /** Only the clean true/false result of test -d establishes directory status. */
@@ -308,17 +310,17 @@ export const probeAdbPathDirectory = async (
   operation: string,
   serial: string,
   path: string,
-  binary: string,
+  selection: AdbBinarySelection,
   limits: AdbRunLimits,
   signal: AbortSignal | undefined,
 ): Promise<Result<boolean, AnalysisError>> =>
-  probeAdbPath(operation, serial, path, binary, limits, signal, "-d");
+  probeAdbPath(operation, serial, path, selection, limits, signal, "-d");
 
 const probeAdbPath = async (
   operation: string,
   serial: string,
   path: string,
-  binary: string,
+  selection: AdbBinarySelection,
   limits: AdbRunLimits,
   signal: AbortSignal | undefined,
   predicate: "-d" | "-e",
@@ -328,7 +330,7 @@ const probeAdbPath = async (
   const probed = await runAdbCapture(
     operation,
     { device: serial, path },
-    binary,
+    selection,
     adbArguments(serial, ["shell", "test", predicate, path]),
     { ...limits, volatileOutput: true },
     signal,
