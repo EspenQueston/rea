@@ -172,6 +172,30 @@ export const binaryPlistCloneOffsetWidth = (
   );
 };
 
+/**
+ * Bytes a clone rewrite adds: the clone records and the rebuilt offset table,
+ * less the old table bytes it replaces. Decoder bounds admit an old table
+ * that runs into the trailer; only its bytes before the trailer are replaced.
+ */
+export const binaryPlistCloneGrowth = ({
+  trailerOffset,
+  tableOffset,
+  objectCount,
+  offsetSize,
+  normalizedOffsetSize,
+  cloneBytes,
+}: {
+  readonly trailerOffset: number;
+  readonly tableOffset: number;
+  readonly objectCount: number;
+  readonly offsetSize: number;
+  readonly normalizedOffsetSize: number;
+  readonly cloneBytes: number;
+}): number =>
+  cloneBytes +
+  objectCount * normalizedOffsetSize -
+  Math.min(objectCount * offsetSize, Math.max(0, trailerOffset - tableOffset));
+
 /** Normalize unsupported binary-plist UID widths for the pinned parser. */
 export const decodeBinaryPlistUids = (
   bytes: Buffer,
@@ -279,15 +303,17 @@ export const scanBinaryPlistScalars = (
   const safeMaximum = BigInt(Number.MAX_SAFE_INTEGER);
   if (countRaw === 0n || countRaw > safeMaximum || tableRaw > safeMaximum)
     return result(true);
-  if (tableRaw < 8n || tableRaw >= BigInt(trailer)) return result(true);
+  // Decoder bounds admit an offset table that runs into the trailer. Dates
+  // still end before the table, so observe them whenever the decoder can.
+  if (tableRaw < 8n || tableRaw >= BigInt(bytes.length)) return result(true);
   const offsetTable = Number(tableRaw);
-  const capacity = Math.floor((trailer - offsetTable) / offsetWidth);
+  const capacity = Math.floor((bytes.length - offsetTable) / offsetWidth);
   if (countRaw > BigInt(capacity)) return result(true);
   const count = Number(countRaw);
   const referenceWidth = bytes[trailer + 7] ?? 0;
   if (referenceWidth < 1) return result(true);
   const unsigned = (offset: number): number | undefined => {
-    if (offset < offsetTable || offset + offsetWidth > trailer)
+    if (offset < offsetTable || offset + offsetWidth > bytes.length)
       return undefined;
     let value = 0n;
     for (let index = 0; index < offsetWidth; index += 1)
@@ -555,7 +581,15 @@ const cloneBinaryPlistObjects = (
   );
   const newTableOffset = cloneStart + cloneBytes;
   const newLength =
-    bytes.length + cloneBytes + objectCount * (newOffsetSize - offsetSize);
+    bytes.length +
+    binaryPlistCloneGrowth({
+      trailerOffset,
+      tableOffset: oldTableOffset,
+      objectCount,
+      offsetSize,
+      normalizedOffsetSize: newOffsetSize,
+      cloneBytes,
+    });
   if (!Number.isSafeInteger(newLength))
     throw new RangeError(
       "binary plist cloned scalar representation is too large",

@@ -4,7 +4,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
-import { build, buildBinary, type PlistValue } from "plist";
+import { build, buildBinary, parseBinary, type PlistValue } from "plist";
 import { estimateBinaryPlistExpansion } from "./PropertyListDecodeBudget.js";
 import {
   decodeKeyedArchiveBytes,
@@ -561,6 +561,17 @@ const mutateCanonicalDate = (
   return bytes;
 };
 
+/** Move the last offset-table entry into the trailer's unused first byte. */
+const runOffsetTableIntoTrailer = (bytes: Buffer): Buffer => {
+  const trailer = bytes.length - 32;
+  const shifted = Buffer.concat([
+    bytes.subarray(0, trailer - 1),
+    bytes.subarray(trailer),
+  ]);
+  shifted[shifted.length - 32] = bytes[trailer - 1] ?? 0;
+  return shifted;
+};
+
 const dateScalar = (iso8601: string | null) => ({
   id: 1,
   kind: "scalar" as const,
@@ -757,6 +768,58 @@ describe("binary plist date object region", () => {
     expect(() =>
       decodeKeyedArchiveBytes(bytes, { offset: 0, limit: 1 }),
     ).toThrow(new TypeError("binary plist date object is truncated"));
+  });
+
+  it("keeps a sub-millisecond instant unknown when the offset table runs into the trailer", () => {
+    const submillisecond = mutateCanonicalDate((offset, copy) => {
+      copy.writeDoubleBE(0.1005, offset + 1);
+    });
+    // Decoder bounds admit this table, and plist@5 reads the same graph.
+    const overlapping = runOffsetTableIntoTrailer(submillisecond);
+    const decoded = parseBinary(overlapping) as { $objects: unknown[] };
+    expect(decoded.$objects[1]).toBeInstanceOf(Date);
+    const original = Buffer.from(overlapping);
+
+    const graph = decodeKeyedArchiveBytes(overlapping, {
+      offset: 0,
+      limit: 10,
+    });
+
+    expect(graph.objects[1]).toMatchObject(dateScalar(null));
+    expect(graph.limitations).toContain(unknownDateLimitation(1));
+    expect(graph.limitations.join("\n")).not.toContain(
+      "number metadata could not be completely observed",
+    );
+    expect(Buffer.compare(overlapping, original)).toBe(0);
+  });
+
+  it("rebuilds a complete trailer when isolating an overlapping date whose table runs into the trailer", () => {
+    // Isolating the sub-millisecond date clones it and rebuilds the offset
+    // table; only the old table's bytes before the trailer are replaced.
+    const bytes = runOffsetTableIntoTrailer(binaryArchiveWithOverlappingDate());
+    const decoded = parseBinary(bytes) as { $objects: unknown[] };
+    expect(decoded.$objects[1]).toBeInstanceOf(Date);
+    const original = Buffer.from(bytes);
+
+    const graph = decodeKeyedArchiveBytes(bytes, {
+      root: "root",
+      offset: 0,
+      limit: 4,
+    });
+
+    expect(graph.objects).toContainEqual(
+      expect.objectContaining({
+        id: 1,
+        value: { $plist_type: "date", iso8601: null },
+      }),
+    );
+    expect(graph.objects).toContainEqual(
+      expect.objectContaining({
+        id: 2,
+        value: { $plist_type: "data", base64: "" },
+      }),
+    );
+    expect(Buffer.compare(bytes, original)).toBe(0);
   });
 });
 
