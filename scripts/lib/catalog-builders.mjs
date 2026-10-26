@@ -24,6 +24,7 @@ export const toolFamilyCatalog = (sources) => {
           .REVERSE_ENGINEERING_TOOL_CONTRACTS,
         ...sources.gdbContracts.GDB_TOOL_CONTRACTS,
         ...sources.rizinDebugContracts.RIZIN_DEBUG_TOOL_CONTRACTS,
+        ...sources.unicornContracts.UNICORN_TOOL_CONTRACTS,
       ],
     },
     {
@@ -247,6 +248,10 @@ export const providerCatalog = (sources) => {
             name === "inspect_binary_layout" ||
             name === "inspect_recorded_crash",
         ),
+    },
+    {
+      identity: sources.unicornProvider.UNICORN_PROVIDER_IDENTITY,
+      contracts: sources.unicornContracts.UNICORN_TOOL_CONTRACTS,
     },
     {
       identity: sources.artifactProviders.PE_RESOURCES_PROVIDER,
