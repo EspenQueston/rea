@@ -8,6 +8,7 @@ import { readPeSectionHeader } from "../domain/peSectionHeader.js";
 import type { ManagedParseIssue } from "../domain/managed/managedArtifact.js";
 import { readPeCoffHeader } from "../domain/peCoffHeader.js";
 import { decodePeMachine } from "../domain/peMachine.js";
+import { readManagedCliHeaderPrefix } from "../domain/managed/managedCliHeaderPrefix.js";
 import {
   managedFailure,
   ManagedReaderFailure,
@@ -71,7 +72,10 @@ export interface ManagedPeLayout {
   readonly cliDirectoryState: "absent" | "present" | "unreadable";
   readonly cliIssue: ManagedParseIssue | null;
   rvaToOffset(rva: number, size: number, scope: string): number;
-  rvaAvailableBytes(rva: number, scope: string): number;
+  rvaFileRange(
+    rva: number,
+    scope: string,
+  ): { readonly offset: number; readonly available: number };
 }
 
 interface RvaMapping {
@@ -251,7 +255,17 @@ const readCliHeader = (
     size: 72,
     scope: "cli.header",
   });
-  const headerSize = bytes.readUInt32LE(offset);
+  const prefix = readManagedCliHeaderPrefix(
+    bytes.subarray(offset, offset + 16),
+  );
+  if (!prefix.ok)
+    throw managedFailure(
+      "invalid-cli-header",
+      "cli.header",
+      prefix.error.message,
+      offset,
+    );
+  const { headerSize, runtimeMajor, runtimeMinor, metadata } = prefix.value;
   if (headerSize < 72 || headerSize > directory.size)
     throw managedFailure(
       "invalid-cli-header",
@@ -259,7 +273,6 @@ const readCliHeader = (
       "CLI header size is outside its PE data directory",
       offset,
     );
-  const metadata = readDirectory(bytes, offset + 8);
   if (metadata.rva === 0 || metadata.size === 0)
     throw managedFailure(
       "invalid-cli-header",
@@ -283,8 +296,8 @@ const readCliHeader = (
   return {
     headerOffset: offset,
     headerSize,
-    runtimeMajor: bytes.readUInt16LE(offset + 4),
-    runtimeMinor: bytes.readUInt16LE(offset + 6),
+    runtimeMajor,
+    runtimeMinor,
     metadata,
     flags,
     entryPoint: bytes.readUInt32LE(offset + 20),
@@ -486,7 +499,7 @@ export const readManagedPeLayout = (bytes: Buffer): ManagedPeLayout => {
     cliIssue,
     rvaToOffset: (rva, size, scope) =>
       mapRva({ bytes, sections, rva, size, scope }),
-    rvaAvailableBytes: (rva, scope) =>
-      resolveRva({ bytes, sections, rva, size: 1, scope }).available,
+    rvaFileRange: (rva, scope) =>
+      resolveRva({ bytes, sections, rva, size: 1, scope }),
   };
 };

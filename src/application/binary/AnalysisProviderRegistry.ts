@@ -36,6 +36,7 @@ import type {
   AnalysisProviderCandidate,
   AnalysisProviderBoundClientFactory,
   AnalysisProviderInspectionOptions,
+  AnalysisProviderReadinessSnapshot,
   CapabilityDescriptor,
   ProviderAvailability,
   ProviderIdentity,
@@ -47,6 +48,7 @@ import {
   type AnalysisProviderCandidateEvaluation,
 } from "./AnalysisProviderEvaluation.js";
 import { compareUnicodeCodePoints } from "../../domain/unicodeCodePointOrder.js";
+import { ownedProcessPrerequisiteAvailability } from "../ownedProcessAvailability.js";
 
 /** Deterministic discovery truth for one configured deep provider. */
 export interface AnalysisProviderCandidateStatus {
@@ -734,21 +736,32 @@ const candidateStatus = async (
   const { signal, scope, resourceScope, operation } = context;
   if (signal.aborted)
     throw new AnalysisCancelledError(operation, { cause: signal.reason });
-  const readiness =
-    provider.inspectReadinessSnapshot === undefined
-      ? {
-          availability: await provider.inspectAvailability({
+  let readiness: AnalysisProviderReadinessSnapshot;
+  try {
+    readiness =
+      provider.inspectReadinessSnapshot === undefined
+        ? {
+            availability: await provider.inspectAvailability({
+              signal,
+              scope,
+              resourceScope,
+            }),
+            capabilities: provider.capabilities(),
+          }
+        : await provider.inspectReadinessSnapshot({
             signal,
             scope,
             resourceScope,
-          }),
-          capabilities: provider.capabilities(),
-        }
-      : await provider.inspectReadinessSnapshot({
-          signal,
-          scope,
-          resourceScope,
-        });
+          });
+  } catch (cause: unknown) {
+    // Status reports the gap per provider; execution keeps the prerequisite's owner.
+    const availability =
+      operation === "binary_session"
+        ? ownedProcessPrerequisiteAvailability(cause)
+        : undefined;
+    if (availability === undefined) throw cause;
+    readiness = { availability, capabilities: provider.capabilities() };
+  }
   return await projectCandidateStatus(provider, target, readiness, {
     signal,
     scope,

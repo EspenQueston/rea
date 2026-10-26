@@ -1,4 +1,10 @@
 import {
+  mcpToolResultSchema,
+  mcpTextBlocks,
+  parseMcpJsonOrText,
+} from "../providers/McpToolResult.js";
+import { StructuredContentMcpClient } from "../providers/StructuredContentMcpClient.js";
+import {
   createIdaDiagnosticRedactor,
   IDA_DIAGNOSTIC_SOURCE_BYTES,
 } from "./IdaDiagnosticRedactor.js";
@@ -8,7 +14,6 @@ import { ChildProcess } from "node:child_process";
 import { Socket } from "node:net";
 import { snapshotEnvironment } from "../process/snapshotEnvironment.js";
 import {
-  Client,
   ProtocolError,
   SdkError,
   SdkErrorCode,
@@ -24,7 +29,11 @@ import {
   idaRegistrationTimeoutGuidance,
   type IdaConfiguration,
 } from "./IdaConfiguration.js";
-import { jsonValueSchema, type JsonValue } from "../domain/jsonValue.js";
+import {
+  jsonObjectSchema,
+  jsonValueSchema,
+  type JsonValue,
+} from "../domain/jsonValue.js";
 import { err, ok, type Result } from "../domain/result.js";
 import {
   AnalysisTimeoutError,
@@ -67,12 +76,7 @@ export type IdaMcpConnectionDependencies = Readonly<{
   createDiagnosticRedactor?: typeof createIdaDiagnosticRedactor;
 }>;
 
-const toolResultSchema = z.object({
-  isError: z.boolean().optional(),
-  structuredContent: z.record(z.string(), z.unknown()).optional(),
-  content: z.array(
-    z.object({ type: z.string(), text: z.string().optional() }).passthrough(),
-  ),
+const toolResultSchema = mcpToolResultSchema.extend({
   _meta: z
     .object({
       ida_mcp: z
@@ -106,9 +110,7 @@ export const decodeIdaToolResult = (
   diagnostic: IdaDiagnosticRedactor = createIdaDiagnosticRedactor(),
 ): JsonValue => {
   const result = toolResultSchema.parse(input);
-  const blocks = result.content.flatMap((block) =>
-    block.type === "text" && block.text !== undefined ? [block.text] : [],
-  );
+  const blocks = mcpTextBlocks(result.content);
   if (result.isError === true) {
     const reason = diagnostic.blocks(blocks);
     throw new AnalysisProtocolError(
@@ -139,22 +141,16 @@ export const decodeIdaToolResult = (
     return parseIdaJsonText(text);
   }
   if (result.structuredContent !== undefined) {
-    const value = result.structuredContent;
-    return jsonValueSchema.parse(
-      Object.keys(value).length === 1 && "result" in value
-        ? value.result
-        : value,
-    );
+    const value = jsonObjectSchema.parse(result.structuredContent);
+    return Object.keys(value).length === 1 && Object.hasOwn(value, "result")
+      ? value.result!
+      : value;
   }
   if (text === undefined)
     throw new AnalysisProtocolError(
       "IDA MCP omitted a single structured or text result; unsupported content cannot establish an empty observation.",
     );
-  try {
-    return jsonValueSchema.parse(JSON.parse(text));
-  } catch {
-    return text;
-  }
+  return parseMcpJsonOrText(text);
 };
 
 // Retain only producer-sanitized JSON diagnostics, never a native parser cause.
@@ -360,7 +356,10 @@ export const createIdaMcpConnection = (
   environment: Readonly<NodeJS.ProcessEnv>,
   dependencies: IdaMcpConnectionDependencies = {},
 ): IdaMcpConnection => {
-  const client = new Client({ name: "rea-ida-provider", version: "1" });
+  const client = new StructuredContentMcpClient({
+    name: "rea-ida-provider",
+    version: "1",
+  });
   const redactor = (
     dependencies.createDiagnosticRedactor ?? createIdaDiagnosticRedactor
   )(config);

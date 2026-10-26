@@ -204,14 +204,25 @@ and Claude Code reports that autocompact is thrashing. To avoid this:
   `mcpServers.rea` entry in `~/.claude.json` (`$CLAUDE_CONFIG_DIR/.claude.json`
   when that variable is set), then restart Claude Code. Setup keeps this
   override.
+- To remove entire tool families from the upfront catalog, run
+  `rea setup --client claude_code --tool-families <ids>` with the families the
+  workflow needs (see [the advertising scope contract](mcp-contracts.md#tool-family-advertising-scope)).
+  Out-of-scope tools are not advertised and their calls fail with the SDK's
+  disabled-tool error, so widen the selection when a task needs another
+  family. Setup writes the scope into the entry's `env` as
+  `REA_MCP_TOOL_FAMILIES`; rerun setup with a different selection to refresh
+  it, then restart Claude Code.
 
 The sizes above come from REA's own `tools/list`. A live Claude Code session
 against DeepSeek's API is unverified.
 
-For a client whose stdio reader rejects the complete catalog frame, add
-`"REA_MCP_OUTPUT_SCHEMA_PROFILE": "off"` to REA's `env` object and restart the
-client. This omits only advertised output schemas; REA still validates complete
-structured results against its canonical contracts. See [MCP output schema
+For a client whose stdio reader rejects the complete catalog frame, set
+`"REA_MCP_OUTPUT_SCHEMA_PROFILE": "compact"` to bound every advertised output
+schema, or `"off"` to omit them, in REA's `env` object, then restart the client.
+Both keep canonical result validation and complete structured results; `compact`
+keeps a widened root shape and `off` advertises nothing. On catalogs large
+enough that full input schemas alone approach the frame limit, also keep the
+input profile at its `compact` default. See [MCP output schema
 profiles](mcp-contracts.md#output-schemas).
 
 ## Kimi Code
