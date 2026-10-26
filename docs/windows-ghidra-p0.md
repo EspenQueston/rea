@@ -80,8 +80,11 @@ Windows x64 package; changing MCP registration cannot supply that artifact.
 A filesystem or access failure identifies the failed native constraint.
 An incompatible host uses `unsupported_host`. Missing, mismatched or unloadable
 native artifacts use `runtime_missing` and doctor classification
-`missing_dependency`. A failed native invocation or invalid inspection uses
-`runtime_unavailable` and doctor classification `runtime_failure`; it does not
+`missing_dependency`. A verified artifact that Windows refuses to load, for
+example under Smart App Control or an App Control policy, reports failure stage
+`load`; restoring or reinstalling the file cannot fix it. A failed native
+invocation or invalid inspection uses `runtime_unavailable` and doctor
+classification `runtime_failure`; it does not
 mean Windows x64 itself is unsupported. Provider diagnostics retain the failure
 stage under `windows_native_failure`, together with the corresponding remediation.
 Self-test failures preserve the native operation and OS error text. Check the
@@ -223,7 +226,7 @@ Process creation assigns a suspended child atomically to an owned Job Object.
 Membership and kill-on-owner-close policy are verified before resume.
 Breakaway is disabled. Only the child's default file owner is normalized;
 the caller token stays unchanged. Caller priority is preserved, and caller CPU
-affinity whenever the caller and the child share a processor group. A child that
+affinity is preserved whenever the caller and the child share a processor group. A child that
 Windows places in another group keeps that group's default when the caller asked
 for no bound of its own; a caller pinned to fewer processors than its group
 holds is refused there rather than widened.

@@ -1,4 +1,4 @@
-import { skillDestinations } from "./SetupSkill.js";
+import { skillDestinations, SetupSkillInstallError } from "./SetupSkill.js";
 import type {
   ClientConfigurationInspection,
   ClientConfigurationResult,
@@ -9,7 +9,6 @@ import type {
 import type { SetupClient } from "./SupportedClients.js";
 import type { SetupHopperInstallResult } from "./SetupInstallFailure.js";
 import { err, ok, type Result } from "../domain/result.js";
-import { SetupSkillInstallError } from "./SetupSkill.js";
 import type {
   DoctorCheck,
   DoctorProviderInspection,
@@ -141,7 +140,7 @@ export class FakeSetupHost implements SetupHost {
     Promise.resolve(
       this.clientInspections.get(client.name) ?? { status: "update" },
     );
-  skillNeedsInstall = (): Promise<boolean> =>
+  skillNeedsInstall: SetupHost["skillNeedsInstall"] = (): Promise<boolean> =>
     Promise.resolve(this.skill !== "unchanged");
   validateSkillDirectories = (
     clientIds: readonly string[],

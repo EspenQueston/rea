@@ -22,7 +22,7 @@ it("projects an unsupported non-regular entry as unknown kind instead of file", 
     bytesRead: 0,
     limitations: [],
   };
-  const parsed = parseReferenceSourceEntries(read, new Set());
+  const parsed = parseReferenceSourceEntries(read, []);
   expect(parsed.entries).toContainEqual({
     path: "src/pipe",
     kind: "unknown",
@@ -49,7 +49,7 @@ it("keeps a failed regular file as file kind", () => {
     bytesRead: 0,
     limitations: [],
   };
-  const parsed = parseReferenceSourceEntries(read, new Set());
+  const parsed = parseReferenceSourceEntries(read, []);
   expect(parsed.entries).toContainEqual({
     path: "src/broken.ts",
     kind: "file",
@@ -85,10 +85,7 @@ it("keeps source entries when a module has an empty specifier", () => {
     limitations: [],
   };
 
-  const parsed = parseReferenceSourceEntries(
-    read,
-    new Set(files.map(([path]) => path)),
-  );
+  const parsed = parseReferenceSourceEntries(read, []);
 
   expect(parsed.entries.map(({ path }) => path)).toEqual([
     "main.mjs",
@@ -133,10 +130,7 @@ it("retains Kotlin source identity and language across the inventory projection"
     ),
     limitations: [],
   };
-  const parsed = parseReferenceSourceEntries(
-    read,
-    new Set(files.map(([path]) => path)),
-  );
+  const parsed = parseReferenceSourceEntries(read, []);
   for (const [path, content, classifications, language] of files)
     expect(parsed.entries).toContainEqual({
       path,
@@ -153,11 +147,14 @@ it("retains Kotlin source identity and language across the inventory projection"
   expect(parsed.relationships).toEqual([]);
 });
 
-it("resolves runtime require package mains without an index and before typed indexes", () => {
+it("resolves declared package mains and index fallback from source-owned fields", () => {
   const files = [
-    ["main.cjs", 'require("./pkg");\nrequire("./dep");\n'],
     [
-      "main.ts",
+      "main.cjs",
+      'require("./pkg");\nrequire("./dep");\nrequire("./fallback");\n',
+    ],
+    [
+      "main.cts",
       'import dep = require("./typed");\n' +
         'require("./typed");\n' +
         'import data = require("./json-package");\n' +
@@ -165,6 +162,9 @@ it("resolves runtime require package mains without an index and before typed ind
     ],
     ["pkg/package.json", '{"main":"actual.js"}\n'],
     ["pkg/actual.js", 'module.exports = "package main";\n'],
+    ["fallback/package.json", "{}\n"],
+    ["fallback/index.js", 'module.exports = "index";\n'],
+    ["fallback/phantom.js", 'module.exports = "host decoy";\n'],
     ["dep.js", 'module.exports = "file";\n'],
     ["dep/index.ts", 'export const value = "index";\n'],
     ["typed.js", 'module.exports = "runtime file";\n'],
@@ -190,11 +190,28 @@ it("resolves runtime require package mains without an index and before typed ind
     limitations: [],
   };
 
-  const parsed = parseReferenceSourceEntries(
-    read,
-    new Set(files.map(([path]) => path)),
-  );
+  const previous = Object.getOwnPropertyDescriptor(Object.prototype, "main");
+  let parsed: ReturnType<typeof parseReferenceSourceEntries>;
+  try {
+    Object.defineProperty(Object.prototype, "main", {
+      configurable: true,
+      writable: true,
+      value: "phantom.js",
+    });
+    parsed = parseReferenceSourceEntries(read, []);
+  } finally {
+    if (previous === undefined)
+      Reflect.deleteProperty(Object.prototype, "main");
+    else Object.defineProperty(Object.prototype, "main", previous);
+  }
 
+  expect(parsed.relationships).toContainEqual({
+    from_path: "main.cjs",
+    to: "fallback/index.js",
+    kind: "requires",
+    resolution: "internal",
+    parse_state: "parsed",
+  });
   expect(parsed.relationships).toContainEqual({
     from_path: "main.cjs",
     to: "pkg/actual.js",
@@ -210,28 +227,28 @@ it("resolves runtime require package mains without an index and before typed ind
     parse_state: "parsed",
   });
   expect(parsed.relationships).toContainEqual({
-    from_path: "main.ts",
+    from_path: "main.cts",
     to: "typed/index.ts",
     kind: "requires",
     resolution: "internal",
     parse_state: "parsed",
   });
   expect(parsed.relationships).toContainEqual({
-    from_path: "main.ts",
+    from_path: "main.cts",
     to: "typed.js",
     kind: "requires",
     resolution: "internal",
     parse_state: "parsed",
   });
   expect(parsed.relationships).toContainEqual({
-    from_path: "main.ts",
+    from_path: "main.cts",
     to: "json-package/data.json",
     kind: "requires",
     resolution: "internal",
     parse_state: "parsed",
   });
   expect(parsed.relationships).toContainEqual({
-    from_path: "main.ts",
+    from_path: "main.cts",
     to: "emitted.ts",
     kind: "requires",
     resolution: "internal",
@@ -278,10 +295,7 @@ it("matches package manifests by exact or unique canonical directory identity", 
     limitations: [],
   };
 
-  const parsed = parseReferenceSourceEntries(
-    read,
-    new Set(files.map(([path]) => path)),
-  );
+  const parsed = parseReferenceSourceEntries(read, []);
 
   expect(parsed.relationships.map(({ to }) => to)).toEqual([
     `${decomposed}/unique.js`,
@@ -316,10 +330,7 @@ it("resolves extensionless imports and requires to .mts and .cts files and direc
     ),
     limitations: [],
   };
-  const parsed = parseReferenceSourceEntries(
-    read,
-    new Set(files.map(([path]) => path)),
-  );
+  const parsed = parseReferenceSourceEntries(read, []);
   expect(parsed.relationships).toEqual(
     expect.arrayContaining([
       {

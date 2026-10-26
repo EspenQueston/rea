@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
+import { requireMcpEvidenceBundle } from "./lib/mcp-verifier-results.mjs";
 import { estimateTokenCount } from "tokenx";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -12,7 +13,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import { Ajv2020 } from "ajv/dist/2020.js";
 import { PrivateRuntimeRoot } from "../dist/process/PrivateRuntimeRoot.js";
 import { parseEvidence } from "../dist/domain/evidence.js";
-import { closeVerifierResources } from "./lib/verifier-cleanup.mjs";
+import { withVerifierCleanup } from "./lib/verifier-cleanup.mjs";
 import { createVerifierRun, completeVerifierRun } from "./lib/verifier-run.mjs";
 
 if (process.platform !== "linux")
@@ -107,8 +108,7 @@ const expectedAddressSpace = Math.min(
     .map((value) => (value === "unlimited" ? Infinity : Number(value))),
 );
 
-let primaryError;
-try {
+await withVerifierCleanup(async () => {
   await writeFile(path, source);
   await writeFile(bluetooth, bluetoothSource);
   await client.connect(transport);
@@ -179,11 +179,17 @@ try {
       ).stdout,
     );
     assert.deepEqual(parseEvidence(cli), evidence);
-    const bundle = await client.callTool({
-      name: "get_evidence_bundle",
-      arguments: {},
-    });
-    assert.ok(JSON.stringify(bundle).includes(evidence.evidence_id));
+    const bundle = requireMcpEvidenceBundle(
+      await client.callTool({
+        name: "get_evidence_bundle",
+        arguments: {},
+      }),
+    );
+    assert.ok(
+      bundle.records.some(
+        (record) => record.evidence_id === evidence.evidence_id,
+      ),
+    );
     cases++;
     return report;
   };
@@ -510,15 +516,7 @@ try {
     "network with spaces.pcap",
     "paged.pcap",
   ]);
-} catch (cause) {
-  primaryError = cause;
-  throw cause;
-} finally {
-  await closeVerifierResources(
-    [() => client.close(), () => transport.close(), () => root.close()],
-    primaryError,
-  );
-}
+}, [() => client.close(), () => transport.close(), () => root.close()]);
 console.log(
   JSON.stringify(
     {

@@ -1,9 +1,13 @@
 import type { EvmWorkerLimits } from "./EvmWorkerLimits.js";
 import { ArtifactReaderFailure } from "../artifacts/ArtifactReader.js";
-import { artifactFileCancellationCause } from "../artifacts/ArtifactFileOperation.js";
+import {
+  artifactFileCancellationCause,
+  artifactSelectedPathErrno,
+} from "../artifacts/ArtifactFileOperation.js";
 import {
   AnalysisError,
   type AnalysisCapturedOutput,
+  type AnalysisErrorOptions,
 } from "../domain/analysisErrorBase.js";
 import type { ProviderProcessSnapshot } from "../process/ProviderProcess.js";
 import {
@@ -29,6 +33,26 @@ import {
   EVM_INTERFACE_LIMITS,
   EVM_FILE_SIZE_FAILURE_EXIT,
 } from "./EvmoleRelease.js";
+import { fixedAllowanceOptions } from "../domain/fixedAllowanceRemediation.js";
+
+/** Both a structured worker refusal and reply-file admission name this allowance. */
+export const evmReplyBudgetFailure = (
+  reason: string,
+  options: AnalysisErrorOptions,
+) =>
+  new AnalysisResourceConstraintError(
+    "inspect_evm_interface",
+    "file-size",
+    reason,
+    { maximum_reply_bytes: EVM_INTERFACE_LIMITS.outputBytes },
+    {
+      ...options,
+      ...fixedAllowanceOptions(
+        `The complete EVMole worker reply allowance of ${String(EVM_INTERFACE_LIMITS.outputBytes)} bytes (this release has no runtime override)`,
+        "report",
+      ),
+    },
+  );
 
 const fixedEvmRecovery = (allowance: string): string =>
   `${allowance}. This release has no runtime override. timeout_ms does not raise it. Repeating the unchanged request fails the same way.`;
@@ -212,7 +236,8 @@ export const evmInterfaceFailure = (
         cause.code,
         { cause, ...cleanupOptions },
       );
-    if (cause.code === "ENOENT" || cause.code === "ENOTDIR")
+    const pathErrno = artifactSelectedPathErrno(cause);
+    if (pathErrno !== undefined)
       return new AnalysisInputError(
         "inspect_evm_interface",
         { cause, ...cleanupOptions },
@@ -220,7 +245,7 @@ export const evmInterfaceFailure = (
           {
             path: ["path"],
             reason: "invalid_value",
-            message: `Selected bytecode carrier could not be read (${String(cause.code)}): ${path}.`,
+            message: `Selected bytecode carrier could not be read (${pathErrno}): ${path}.`,
           },
         ],
       );

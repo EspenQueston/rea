@@ -44,6 +44,34 @@ const capture = async (inventory: unknown) => {
 };
 
 describe("web worker target inventory", () => {
+  it.each([
+    ["", "unattributed_origin"],
+    ["https://outside.example/worker.js", "disallowed_origin"],
+    ["file:///fixture/worker.js", "unsupported_url"],
+  ])(
+    "retains selected-worker URL exclusion evidence for %s",
+    async (url, reason) => {
+      const result = await capture({
+        targetInfos: [
+          {
+            targetId: "worker",
+            type: "worker",
+            url,
+            attached: false,
+            openerId: "page",
+          },
+        ],
+      });
+
+      expect(result.workers).toEqual([]);
+      expect(result.completeness.excluded).toContainEqual({
+        section: "workers",
+        reason,
+        count: 1,
+      });
+    },
+  );
+
   it("preserves an explicit empty inventory", async () => {
     const result = await capture({ targetInfos: [] });
 
@@ -125,3 +153,49 @@ describe("web worker target inventory", () => {
     );
   });
 });
+
+it.each([`${origin}/worker.js`, ""])(
+  "keeps an unattributed worker unavailable rather than policy filtered: %s",
+  async (url) => {
+    const result = await capture({
+      targetInfos: [
+        { targetId: "worker", type: "worker", url, attached: false },
+      ],
+    });
+    expect(result.workers).toEqual([]);
+    expect(result.completeness).toMatchObject({
+      status: "attach_limited",
+      conditions: ["attach_limited"],
+      unavailable_sections: ["workers"],
+      policy_filtered_sections: [],
+      excluded: [
+        { section: "workers", reason: "unattributed_target", count: 1 },
+      ],
+    });
+  },
+);
+
+it.each([{ openerId: "" }, { parentFrameId: null }])(
+  "retains invalid supplied relationship coverage: %j",
+  async (relationship) => {
+    const result = await capture({
+      targetInfos: [
+        {
+          targetId: "worker",
+          type: "worker",
+          url: `${origin}/worker.js`,
+          attached: false,
+          ...relationship,
+        },
+      ],
+    });
+    expect(result.workers).toEqual([]);
+    expect(result.completeness).toMatchObject({
+      unavailable_sections: ["workers"],
+      policy_filtered_sections: [],
+      excluded: [
+        { section: "workers", reason: "invalid_protocol_value", count: 1 },
+      ],
+    });
+  },
+);

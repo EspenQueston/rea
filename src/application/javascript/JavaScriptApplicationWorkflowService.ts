@@ -3,6 +3,7 @@ import {
   type EvidenceLookup,
 } from "../EvidenceInputResolver.js";
 import { retainedEvidenceReferenceSchema } from "../../domain/evidenceReference.js";
+import { parseAnalysisInput } from "../AnalysisInput.js";
 import type { ResolvedSourceToBundleReference } from "./SourceToBundleReference.js";
 import { z } from "zod";
 
@@ -37,6 +38,7 @@ import {
   applicationGraphEvidenceInputError,
   parseApplicationGraphEvidence,
   parseNativeApplicationEvidence,
+  type ApplicationGraphEvidenceSource,
 } from "./JavaScriptApplicationEvidenceGraph.js";
 import {
   createApplicationFeatureTraceEvidence,
@@ -81,6 +83,36 @@ const resolveWorkflowEvidence = (
     : ok(raw);
 };
 
+/** Resolve both selections before authenticating either graph, retaining diagnostic inputs. */
+const resolveApplicationGraphPair = (
+  operation: string,
+  input: { readonly left: unknown; readonly right: unknown },
+  lookup: EvidenceLookup | undefined,
+): Result<
+  {
+    readonly left: ApplicationGraphEvidenceSource;
+    readonly right: ApplicationGraphEvidenceSource;
+    readonly selected: { readonly left: unknown; readonly right: unknown };
+  },
+  AnalysisError
+> => {
+  const selectedLeft = resolveWorkflowEvidence(input.left, lookup);
+  if (!selectedLeft.ok) return selectedLeft;
+  const selectedRight = resolveWorkflowEvidence(input.right, lookup);
+  if (!selectedRight.ok) return selectedRight;
+  const left = parseApplicationGraphEvidence(selectedLeft.value, ["left"]);
+  if (!left.ok)
+    return err(applicationGraphEvidenceInputError(operation, left.error));
+  const right = parseApplicationGraphEvidence(selectedRight.value, ["right"]);
+  if (!right.ok)
+    return err(applicationGraphEvidenceInputError(operation, right.error));
+  return ok({
+    left: left.value,
+    right: right.value,
+    selected: { left: selectedLeft.value, right: selectedRight.value },
+  });
+};
+
 /** Authenticate Evidence and derive one bounded cross-layer feature trace. */
 export const traceApplicationFeatureEvidence = (
   rawInput: unknown,
@@ -90,16 +122,15 @@ export const traceApplicationFeatureEvidence = (
   AnalysisError
 > => {
   const operation = "trace_application_feature";
-  const request = featureTraceFrameSchema.safeParse(rawInput);
-  if (!request.success)
-    return err(
-      analysisInputErrorFromIssues(operation, request.error.issues, rawInput, {
-        cause: request.error,
-      }),
-    );
-  const selected = resolveWorkflowEvidence(request.data.application, lookup);
+  const request = parseAnalysisInput(
+    operation,
+    rawInput,
+    featureTraceFrameSchema,
+  );
+  if (!request.ok) return request;
+  const selected = resolveWorkflowEvidence(request.value.application, lookup);
   if (!selected.ok) return selected;
-  const input = { ...request.data, application: selected.value };
+  const input = { ...request.value, application: selected.value };
   const sourceResult = parseApplicationGraphEvidence(input.application, [
     "application",
   ]);
@@ -156,30 +187,16 @@ export const compareApplicationVersionsEvidence = (
   AnalysisError
 > => {
   const operation = "compare_application_versions";
-  const request = versionComparisonFrameSchema.safeParse(rawInput);
-  if (!request.success)
-    return err(
-      analysisInputErrorFromIssues(operation, request.error.issues, rawInput, {
-        cause: request.error,
-      }),
-    );
-  const selectedLeft = resolveWorkflowEvidence(request.data.left, lookup);
-  if (!selectedLeft.ok) return selectedLeft;
-  const selectedRight = resolveWorkflowEvidence(request.data.right, lookup);
-  if (!selectedRight.ok) return selectedRight;
-  const input = {
-    ...request.data,
-    left: selectedLeft.value,
-    right: selectedRight.value,
-  };
-  const leftResult = parseApplicationGraphEvidence(input.left, ["left"]);
-  if (!leftResult.ok)
-    return err(applicationGraphEvidenceInputError(operation, leftResult.error));
-  const rightResult = parseApplicationGraphEvidence(input.right, ["right"]);
-  if (!rightResult.ok)
-    return err(
-      applicationGraphEvidenceInputError(operation, rightResult.error),
-    );
+  const request = parseAnalysisInput(
+    operation,
+    rawInput,
+    versionComparisonFrameSchema,
+  );
+  if (!request.ok) return request;
+  const pair = resolveApplicationGraphPair(operation, request.value, lookup);
+  if (!pair.ok) return pair;
+  const { left, right } = pair.value;
+  const input = { ...request.value, ...pair.value.selected };
   const leftNativeResult = parseNativeApplicationEvidence(
     input.left_native_observations,
     ["left_native_observations"],
@@ -196,8 +213,6 @@ export const compareApplicationVersionsEvidence = (
     return err(
       applicationGraphEvidenceInputError(operation, rightNativeResult.error),
     );
-  const left = leftResult.value;
-  const right = rightResult.value;
   const leftNative = leftNativeResult.value;
   const rightNative = rightNativeResult.value;
   const identities = applicationVersionIdentitiesSchema.safeParse({
@@ -293,32 +308,16 @@ export const compareJavaScriptExportShapesEvidence = (
   AnalysisError
 > => {
   const operation = "compare_javascript_export_shapes";
-  const request = exportShapeFrameSchema.safeParse(rawInput);
-  if (!request.success)
-    return err(
-      analysisInputErrorFromIssues(operation, request.error.issues, rawInput, {
-        cause: request.error,
-      }),
-    );
-  const selectedLeft = resolveWorkflowEvidence(request.data.left, lookup);
-  if (!selectedLeft.ok) return selectedLeft;
-  const selectedRight = resolveWorkflowEvidence(request.data.right, lookup);
-  if (!selectedRight.ok) return selectedRight;
-  const input = {
-    ...request.data,
-    left: selectedLeft.value,
-    right: selectedRight.value,
-  };
-  const leftResult = parseApplicationGraphEvidence(input.left, ["left"]);
-  if (!leftResult.ok)
-    return err(applicationGraphEvidenceInputError(operation, leftResult.error));
-  const rightResult = parseApplicationGraphEvidence(input.right, ["right"]);
-  if (!rightResult.ok)
-    return err(
-      applicationGraphEvidenceInputError(operation, rightResult.error),
-    );
-  const left = leftResult.value;
-  const right = rightResult.value;
+  const request = parseAnalysisInput(
+    operation,
+    rawInput,
+    exportShapeFrameSchema,
+  );
+  if (!request.ok) return request;
+  const pair = resolveApplicationGraphPair(operation, request.value, lookup);
+  if (!pair.ok) return pair;
+  const { left, right } = pair.value;
+  const input = { ...request.value, ...pair.value.selected };
   const identities = javaScriptExportShapeIdentitiesSchema.safeParse({
     left: left.evidence,
     right: right.evidence,

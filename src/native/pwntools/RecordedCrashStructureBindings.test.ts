@@ -1,0 +1,82 @@
+import { expect, it } from "vitest";
+import { recordedCrashSchema } from "../../domain/native/recordedCrash.js";
+import {
+  recordedCrashFixture,
+  recordedCrashFixtureBytes,
+} from "../../../tests/fixtures/binaryDiagnostics/recordedCrash.js";
+import { validateRecordedCrashStructure } from "./RecordedCrashStructureBindings.js";
+
+it.each([
+  ["aarch64-little-endian", 0x70000000, "PT_AARCH64_ARCHEXT"],
+  ["aarch64-little-endian", 0x70000001, "PT_AARCH64_UNWIND"],
+  ["aarch64-little-endian", 0x70000003, 0x70000003],
+  ["x86_64-little-endian", 0x70000001, 0x70000001],
+] as const)(
+  "binds %s header type %i independently of its decoder label %s",
+  (architecture, typeId, label) => {
+    const report = recordedCrashFixture(undefined, architecture);
+    report.segments[0]!.type_id = typeId;
+    report.segments[0]!.type = label;
+    report.notes = [];
+    report.threads = [];
+    const bytes = recordedCrashFixtureBytes(report);
+    const parsed = recordedCrashSchema.parse(report);
+    expect(() =>
+      validateRecordedCrashStructure(parsed, bytes, parsed.decoder_diagnostics),
+    ).not.toThrow();
+    bytes.writeUInt32LE(typeId + 1, 64);
+    expect(() =>
+      validateRecordedCrashStructure(parsed, bytes, parsed.decoder_diagnostics),
+    ).toThrow(/original ELF\/note headers/);
+  },
+);
+
+it.each([3, 0x46494c45])(
+  "retains GNU-owned numeric note %i without CORE interpretation",
+  (typeId) => {
+    const report = recordedCrashFixture();
+    report.notes[0]!.type_id = typeId;
+    report.notes[0]!.type = typeId;
+    report.notes[0]!.owner_bytes_base64 =
+      Buffer.from("GNU\0\0").toString("base64");
+    report.notes[0]!.owner_display = "GNU";
+    report.threads = [];
+    const bytes = recordedCrashFixtureBytes(report);
+    const parsed = recordedCrashSchema.parse(report);
+    expect(() =>
+      validateRecordedCrashStructure(parsed, bytes, parsed.decoder_diagnostics),
+    ).not.toThrow();
+    report.notes[0]!.type = typeId === 3 ? "NT_PRPSINFO" : "NT_FILE";
+    expect(recordedCrashSchema.safeParse(report).success).toBe(false);
+  },
+);
+
+it("keeps snapshot rebinding independent of unused ELF section and header-size admission", () => {
+  const report = recordedCrashSchema.parse(recordedCrashFixture());
+  const bytes = recordedCrashFixtureBytes(report);
+  bytes.writeUInt16LE(0, 52);
+  bytes.writeBigUInt64LE(0xffffffffffffffffn, 40);
+  bytes.writeUInt16LE(0xffff, 60);
+  expect(() =>
+    validateRecordedCrashStructure(report, bytes, report.decoder_diagnostics),
+  ).not.toThrow();
+});
+
+it("binds PN_XNUM through raw section-zero info without full ELF numbering admission", () => {
+  const report = recordedCrashSchema.parse(recordedCrashFixture());
+  const original = recordedCrashFixtureBytes(report);
+  const bytes = Buffer.concat([original, Buffer.alloc(64)]);
+  bytes.writeUInt16LE(0xffff, 56);
+  bytes.writeBigUInt64LE(BigInt(original.length), 40);
+  bytes.writeUInt16LE(64, 58);
+  // Rebinding only needs the reported count; full ELF admission separately requires SHT_NULL and reserved thresholds.
+  bytes.writeUInt32LE(1, original.length + 4);
+  bytes.writeUInt32LE(report.segments.length, original.length + 44);
+  expect(() =>
+    validateRecordedCrashStructure(report, bytes, report.decoder_diagnostics),
+  ).not.toThrow();
+  bytes.writeUInt32LE(report.segments.length + 1, original.length + 44);
+  expect(() =>
+    validateRecordedCrashStructure(report, bytes, report.decoder_diagnostics),
+  ).toThrow(/original ELF\/note headers/);
+});

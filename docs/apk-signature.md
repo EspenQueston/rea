@@ -102,7 +102,11 @@ share the application workflow, projection, retention and publication owners.
   `SignerInfo`'s certificate and digest/signature algorithm OIDs. The PKCS#7
   `SignedData` envelope is read as BER, including constructed signature OCTET
   STRINGs; each embedded certificate is still interpreted as DER by the X.509
-  owner.
+  owner. Issuer matching preserves the encoded Name and also admits equivalent
+  ASCII PrintableString/UTF8String values for CN, C, L, ST, O and OU: case and
+  repeated/edge spaces are normalized, RDN sequence order is preserved, and
+  attribute order inside one multivalued RDN is ignored. Other name forms
+  require exact encoded identity; semantic equivalence remains unestablished.
   `certificate` is `null` when the block has more than one `SignerInfo` (with
   nothing verified there is no single signer) or names a certificate it does
   not carry. A block that cannot be read (malformed ASN.1, an unsupported
@@ -144,7 +148,10 @@ share the application workflow, projection, retention and publication owners.
 - **Per signer:** the certificate's **SHA-256 fingerprint over the raw embedded
   DER** (the same value `apksigner --print-certs` prints), plus subject, issuer,
   serial, ISO 8601 validity and public-key algorithm when the X.509 parser can
-  read them (each is `null` otherwise); raw signature algorithm IDs, declared
+  read the exact carried DER (each is `null` otherwise). The parser's returned
+  DER must equal those bytes before readable facts are combined with their
+  fingerprint; embedded PEM text and trailing data cannot select a different
+  certificate. Raw signature algorithm IDs, declared
   digest hex and digest algorithms, signature lengths and public-key length; and for
   v3/v3.1 the signer's declared min/max SDK.
 - **Key rotation (v3/v3.1):** the declared proof-of-rotation lineage, oldest
@@ -214,9 +221,9 @@ Not yet read: v4 `.apk.idsig` (a sibling file), verity (`0x0421`/`0x0423`/`0x042
 ## Bounds and errors
 
 The archive is read once, bounded at 512 MiB, without following symlinks and
-with change detection. Every size and offset in the ZIP tail and signing block
-is checked against its containing section before use, including the complete
-central-directory extent before ZIP end records. A process-wide queue permits
+with change detection. ZIP tail offsets, the central-directory size and signing
+block spans used by the reader are checked against their containing sections,
+including the complete central-directory extent before ZIP end records. A process-wide queue permits
 one active whole-file inspection and eight pending scans across provider
 instances; pending scans retain no APK bytes and can be cancelled with their
 original reason. Further requests receive a capacity error. The active slot
@@ -232,19 +239,34 @@ serialized size of the report together with its limitations (which repeat
 archive names) is then checked against an 8 MiB output budget (the exact check
 is authoritative); an over-budget report is refused, not truncated.
 
-The whole-file reader retains read chunks and a concatenated buffer; total
-process memory exceeds the selected file's size. It also computes the complete
+The whole-file reader allocates the selected snapshot and bounded read scratch;
+total process memory exceeds the selected file's size. It also computes the complete
 file SHA-256, so inspection is not header-only. Content digests are recomputed
 at most once per SHA-256/SHA-512 algorithm during one inspection. Input,
 inflation, decoded-record and serialized-output bounds keep work finite;
 resource refusals are distinct from malformed format errors.
 
+If the stable read completes but closing its descriptor fails or is cancelled,
+the error retains `details.partial_observation` with the selected path, complete
+file SHA-256 and byte count. These facts describe the acquired file; they do not
+establish any decoded signing facts. Failed cleanup remains visible until the
+provider releases the descriptor on a cleanup retry.
+
 A file that is not a ZIP is refused as an unsupported target. A damaged ZIP
 (local headers but no end-of-central-directory), a central directory that
 cannot be walked or whose declared record count does not account for all of
 its bytes, or a malformed signing block or signer is an input error naming the
-scheme and reason. Signer framing includes signature records, the public-key
-field and matching signed/outer v3 SDK ranges. Suffix bytes beyond known
+offset or scheme and reason. Zip64 tail damage includes a missing required
+locator, an impossible locator disk/count pair, a fixed end record that does
+not fit before its locator, or an incorrect end-record signature. These are
+input errors, not evidence of an unsupported format. Coherent multi-disk
+locator metadata and 64-bit offsets/counts/sizes beyond the reader's safe
+integer range remain unsupported. The locator offset is disk-relative, so
+multi-disk metadata is checked before applying local file bounds. This follows
+the record fields in [PKWARE APPNOTE 6.3.10, sections 4.3.14–4.3.15](https://pkware.cachefly.net/webdocs/casestudies/APPNOTE.TXT);
+it does not establish full validation of Zip64 versions or extensible data.
+Signer framing includes signature records, the public-key field and matching
+signed/outer v3 SDK ranges. Suffix bytes beyond known
 fields are counted as uninterpreted, as Android readers may ignore extensions;
 their presence does not establish malformed signing.
 When the central directory is not immediately followed by

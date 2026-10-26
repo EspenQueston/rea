@@ -1,3 +1,4 @@
+import { regularFileCancellation } from "../filesystem/OwnedRegularFile.js";
 import {
   AnalysisCleanupLease,
   AnalysisCleanupLeaseGroup,
@@ -53,6 +54,7 @@ import {
 } from "./KunaInstallation.js";
 import {
   kunaProjectKey,
+  KunaPublishedProjectCleanupError,
   type KunaProject,
   type KunaProjectCache,
 } from "./KunaProjectCache.js";
@@ -161,11 +163,13 @@ const waitFor = async <T>(
     : result;
 };
 
-/** A file the adopted export named is gone, e.g. evicted by another REA process. */
-const isMissing = (cause: unknown): boolean =>
+/** An adopted export file disappeared or changed since its digest was verified. */
+const isUnavailableProject = (cause: unknown): boolean =>
   cause instanceof Error &&
   "code" in cause &&
-  (cause.code === "ENOENT" || cause.code === "ENOTDIR");
+  (cause.code === "ENOENT" ||
+    cause.code === "ENOTDIR" ||
+    cause.code === "ESTALE");
 
 /** Read through a call so a check before an await does not narrow later ones. */
 const cancelled = (signal: AbortSignal | undefined): boolean =>
@@ -316,6 +320,8 @@ export class KunaSessionClient implements AnalysisClient {
   #status: KunaExportStatus | undefined;
   #key: string | undefined;
   #exportFailure: string | undefined;
+  /** Completed publication and its independently retained staging cleanup owner. */
+  #publicationCleanup: KunaPublishedProjectCleanupError | undefined;
   #releasePin: (() => void) | undefined;
   /** Set once close starts; new requests are refused from then on. */
   #closing = false;
@@ -477,8 +483,14 @@ export class KunaSessionClient implements AnalysisClient {
         ),
       );
     } catch (cause: unknown) {
-      if (cancelled(options.signal))
-        return err(new AnalysisCancelledError(operation, { cause }));
+      if (cancelled(options.signal)) {
+        const cancellation = regularFileCancellation(cause);
+        return err(
+          new AnalysisCancelledError(operation, {
+            cause: cancellation === undefined ? cause : cancellation.reason,
+          }),
+        );
+      }
       return err(failure(operation, cause));
     }
   }
@@ -623,7 +635,13 @@ export class KunaSessionClient implements AnalysisClient {
   /** Where the background export stands, for callers deciding whether to wait. */
   #exportState(): JsonValue {
     if (this.#reader !== undefined)
-      return { state: "ready", key: this.#reader.project.key };
+      return {
+        state: "ready",
+        key: this.#reader.project.key,
+        ...(this.#publicationCleanup === undefined
+          ? {}
+          : { cleanup_incomplete: this.#publicationCleanup.cleanupIncomplete }),
+      };
     if (this.#project === undefined) return { state: "not-started" };
     if (this.#exportFailure !== undefined)
       return { state: "failed", reason: this.#exportFailure };
@@ -1021,7 +1039,7 @@ export class KunaSessionClient implements AnalysisClient {
             source: { kind: "project-export", project: reader.project },
           });
         } catch (cause: unknown) {
-          if (!isMissing(cause) || recovered) throw cause;
+          if (!isUnavailableProject(cause) || recovered) throw cause;
           recovered = true;
           this.#invalidateProject(reader);
           await this.#startProject(installation);
@@ -1197,7 +1215,9 @@ export class KunaSessionClient implements AnalysisClient {
       project === undefined
         ? undefined
         : project.then((built) =>
-            built.ok && this.#reader !== undefined
+            (built.ok ||
+              built.error instanceof KunaPublishedProjectCleanupError) &&
+            this.#reader !== undefined
               ? EXPORT_READY
               : new Promise<never>(() => undefined),
           );
@@ -1548,9 +1568,20 @@ export class KunaSessionClient implements AnalysisClient {
         },
       })
       .then((result) => {
-        listed(result.ok ? result.value.inventory : undefined);
-        if (result.ok && !this.#closing) this.#adopt(result.value);
-        else if (!result.ok && !this.#closing)
+        const published = result.ok
+          ? result.value
+          : result.error instanceof KunaPublishedProjectCleanupError
+            ? result.error.project
+            : undefined;
+        listed(published?.inventory);
+        if (published !== undefined && !this.#closing) {
+          this.#adopt(published);
+          if (
+            !result.ok &&
+            result.error instanceof KunaPublishedProjectCleanupError
+          )
+            this.#publicationCleanup = result.error;
+        } else if (!result.ok && !this.#closing)
           this.#exportFailure =
             result.error.userMessage ?? result.error.message;
         return result;
@@ -1570,7 +1601,7 @@ export class KunaSessionClient implements AnalysisClient {
       try {
         return await read(reader.value);
       } catch (cause: unknown) {
-        if (!isMissing(cause) || attempt !== 0) throw cause;
+        if (!isUnavailableProject(cause) || attempt !== 0) throw cause;
         this.#invalidateProject(reader.value);
         await this.#startProject(installation);
       }
@@ -1728,7 +1759,12 @@ export class KunaSessionClient implements AnalysisClient {
       this.#project,
       Promise.resolve(undefined),
     ]);
-    if (settled === undefined || settled.ok) return undefined;
+    if (
+      settled === undefined ||
+      settled.ok ||
+      settled.error instanceof KunaPublishedProjectCleanupError
+    )
+      return undefined;
     return settled.error.userMessage ?? settled.error.message;
   }
 

@@ -12,7 +12,10 @@ import {
 import { AnalysisInputError } from "../../domain/analysisErrorCore.js";
 import { EvidenceIntegrityError } from "../../domain/evidenceErrors.js";
 import { UnknownRegistryError } from "../../domain/unknownRegistryError.js";
-import type { Evidence } from "../../domain/evidence.js";
+import {
+  evidenceSemanticContent,
+  type Evidence,
+} from "../../domain/evidence.js";
 import { safeParseImmutableEvidence } from "../../domain/evidenceValidation.js";
 import {
   createResidualUnknown,
@@ -25,17 +28,24 @@ import {
 import { err, ok, type Result } from "../../domain/result.js";
 import { compareUnicodeCodePoints } from "../../domain/unicodeCodePointOrder.js";
 import type { UnknownPage, UnknownQuery } from "./InvestigationRecordPort.js";
-import { requestInputError } from "../workflowInputError.js";
+import { analysisInputErrorFromIssues } from "../../domain/inputIssueProjection.js";
 
 type EvidenceLedgerFailure = EvidenceIntegrityError;
 type RecordResult = Result<"added" | "duplicate", EvidenceLedgerFailure>;
 
-/** Describes the state changes made by one atomic bundle import. */
+/** Same authenticated semantic identity with new local display/request metadata. */
+export interface EvidenceMetadataReplacement {
+  readonly kind: "metadata";
+  readonly previous: Evidence;
+  readonly current: Evidence;
+}
+
+/** Committed changes made by one atomic bundle import. */
 export interface EvidenceImportDelta {
   readonly recordsAdded: number;
   readonly unknownsAdded: number;
   readonly changed: boolean;
-  readonly metadataChanged: boolean;
+  readonly replacements: readonly EvidenceMetadataReplacement[];
 }
 
 type ImportResult = Result<
@@ -96,8 +106,7 @@ export class EvidenceLedger {
     // atomic merge without rebuilding and reparsing the entire ledger.
     if (bundle.unknowns.length === 0) {
       const additions = new Map<string, Evidence>();
-      const replacements = new Map<string, Evidence>();
-      let metadataChanged = false;
+      const replacements: EvidenceMetadataReplacement[] = [];
       for (const evidence of bundle.records) {
         const existing = this.#records.get(evidence.evidence_id);
         if (existing !== undefined) {
@@ -105,35 +114,39 @@ export class EvidenceLedger {
             return err(
               new EvidenceIntegrityError("Conflicting evidence record"),
             );
-          if (canonicalize(existing) !== canonicalize(evidence)) {
-            replacements.set(evidence.evidence_id, evidence);
-            metadataChanged = true;
+          if (!displayMetadataAgree(existing, evidence)) {
+            replacements.push({
+              kind: "metadata",
+              previous: existing,
+              current: evidence,
+            });
           }
           continue;
         }
         additions.set(evidence.evidence_id, evidence);
       }
-      for (const [id, evidence] of replacements)
-        this.#records.set(id, evidence);
+      for (const { current } of replacements)
+        this.#records.set(current.evidence_id, current);
       for (const [id, evidence] of additions) this.#records.set(id, evidence);
       return ok({
         recordsAdded: additions.size,
         unknownsAdded: 0,
-        changed: additions.size > 0 || metadataChanged,
-        metadataChanged,
+        changed: additions.size > 0 || replacements.length > 0,
+        replacements,
       });
     }
     const pending = new Map(this.#records);
-    let metadataChanged = false;
+    const replacements: EvidenceMetadataReplacement[] = [];
     for (const evidence of bundle.records) {
       const existing = pending.get(evidence.evidence_id);
       if (existing !== undefined && !recordsAgree(existing, evidence))
         return err(new EvidenceIntegrityError("Conflicting evidence record"));
-      if (
-        existing !== undefined &&
-        canonicalize(existing) !== canonicalize(evidence)
-      )
-        metadataChanged = true;
+      if (existing !== undefined && !displayMetadataAgree(existing, evidence))
+        replacements.push({
+          kind: "metadata",
+          previous: existing,
+          current: evidence,
+        });
       pending.set(evidence.evidence_id, evidence);
     }
     const pendingUnknowns = new Map(this.#unknownRevisions);
@@ -162,8 +175,8 @@ export class EvidenceLedger {
     return ok({
       recordsAdded: added,
       unknownsAdded,
-      changed: added > 0 || unknownsAdded > 0 || metadataChanged,
-      metadataChanged,
+      changed: added > 0 || unknownsAdded > 0 || replacements.length > 0,
+      replacements,
     });
   }
 
@@ -224,7 +237,11 @@ export class EvidenceLedger {
       );
     } catch (cause: unknown) {
       if (!(cause instanceof z.ZodError)) throw cause;
-      return err(requestInputError("record_unknown", cause, input));
+      return err(
+        analysisInputErrorFromIssues("record_unknown", cause.issues, input, {
+          cause,
+        }),
+      );
     }
     if (this.#unknownHeads.has(unknown.unknown_id))
       return err(new UnknownRegistryError("already-exists"));
@@ -306,7 +323,11 @@ export class EvidenceLedger {
       );
     } catch (cause: unknown) {
       if (!(cause instanceof z.ZodError)) throw cause;
-      return err(requestInputError("update_unknown", cause, input));
+      return err(
+        analysisInputErrorFromIssues("update_unknown", cause.issues, input, {
+          cause,
+        }),
+      );
     }
     const authenticated = readLedgerEvidence(
       mutationEvidence,
@@ -496,17 +517,10 @@ const unknownRevisionKey = (unknown: ResidualUnknown): string =>
   `${unknown.unknown_id}:${String(unknown.revision)}`;
 
 const recordsAgree = (left: Evidence, right: Evidence): boolean =>
-  canonicalize(withoutLocalPath(left)) ===
-  canonicalize(withoutLocalPath(right));
+  canonicalize(evidenceSemanticContent(left)) ===
+  canonicalize(evidenceSemanticContent(right));
 
-const withoutLocalPath = (evidence: Evidence): Evidence => ({
-  ...evidence,
-  subject:
-    evidence.subject === null
-      ? null
-      : {
-          ...evidence.subject,
-          name: "<non-identity-name>",
-          local_path: "<non-identity-local-path>",
-        },
-});
+const displayMetadataAgree = (left: Evidence, right: Evidence): boolean =>
+  left.subject?.name === right.subject?.name &&
+  left.subject?.local_path === right.subject?.local_path &&
+  left.caller_input_path === right.caller_input_path;

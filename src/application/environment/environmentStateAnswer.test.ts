@@ -8,6 +8,11 @@ import {
   environmentStateServeFixture,
   environmentStateServeInputs,
 } from "../../../tests/fixtures/environmentServe.js";
+import { servedFrom } from "../../../tests/fixtures/environmentStateServing.js";
+import {
+  book,
+  bookClock,
+} from "../../../tests/fixtures/environmentStateWrites.js";
 import { projectAnalysisError } from "../../domain/analysisErrorProjection.js";
 import {
   REPLAY_BODY_LIMIT_BYTES,
@@ -20,6 +25,8 @@ import {
 import { EnvironmentStateStore } from "./environmentStateStore.js";
 
 const grafana = environmentStateServeInputs();
+
+const bk = (id: number, name: string) => book(id, name, bookClock(id));
 
 const servingOf = (
   inputs: typeof grafana = grafana,
@@ -51,6 +58,21 @@ const answer = (
   if (!result.ok) throw result.error;
   return result.value;
 };
+
+it("finds state entities using the recorded path's repeated separators", () => {
+  const serving = servingFrom([
+    ["GET", "/api//books/1", { id: 1, title: "Book" }],
+  ]);
+  const tool = serving.source.manifest.tools.find(
+    (candidate) => candidate.path_template === "/api//books/{numeric}",
+  );
+  if (tool === undefined) throw new Error("Missing double-separator item tool");
+  const result = answerFromState(serving, tool, { id: "1" });
+  expect(result).toMatchObject({
+    ok: true,
+    value: { body: { id: 1, title: "Book" }, state: { source: "state" } },
+  });
+});
 
 const refusal = (
   serving: StateServing,
@@ -169,6 +191,61 @@ describe("item answers", () => {
     });
   });
 
+  it("answers a state item whose route has a repeated path separator", () => {
+    const serving = servingFrom([
+      ["GET", "/api/books/1", { id: 1, title: "Single separator" }],
+      ["GET", "/api//books/1", { id: 1, title: "Repeated separator" }],
+    ]);
+    const itemAnswer = (template: string) => {
+      const tool = serving.source.manifest.tools.find(
+        (candidate) => candidate.path_template === template,
+      );
+      if (tool === undefined) throw new Error(`Fixture lacks ${template}`);
+      const result = answerFromState(serving, tool, { id: "1" });
+      if (!result.ok) throw result.error;
+      return result.value;
+    };
+    // The repeated separator route is answered from the collection it was
+    // extracted under, instead of reporting its own entity as missing.
+    expect(itemAnswer("/api//books/{numeric}")).toMatchObject({
+      body: { title: "Repeated separator" },
+      state: {
+        source: "state",
+        view: "item",
+        collection: "/api//books",
+        id: "1",
+      },
+    });
+    // The single separator route stays distinct.
+    expect(itemAnswer("/api/books/{numeric}")).toMatchObject({
+      body: { title: "Single separator" },
+      state: { source: "state", collection: "/api/books", id: "1" },
+    });
+  });
+
+  it("creates into a collection whose route has a repeated path separator", () => {
+    const serving = servedFrom([
+      ["GET", "/api//books", [bk(1, "One"), bk(2, "Two")]],
+      ["GET", "/api//books/1", bk(1, "One")],
+      ["GET", "/api//books/2", bk(2, "Two")],
+      ["POST", "/api//books", bk(3, "Recorded"), 201, { name: "Recorded" }],
+      ["GET", "/api//books/3", bk(3, "Recorded")],
+      ["GET", "/api//books", [bk(1, "One"), bk(2, "Two"), bk(3, "Recorded")]],
+    ]);
+    const post = serving.source.manifest.tools.find(
+      (tool) => tool.method === "POST",
+    );
+    if (post === undefined) throw new Error("Fixture lacks a create tool");
+    // A generated create (an unrecorded body) builds from state and must not be
+    // refused for the empty literal segment in /api//books.
+    const result = serving.call(post.name, { body: { name: "New" } });
+    if (!result.ok) throw result.error;
+    expect(result.value).toMatchObject({
+      status: 201,
+      state: { source: "state", view: "create", collection: "/api//books" },
+    });
+  });
+
   it("refuses an entity the state does not hold or one missing a field the view requires", () => {
     const serving = servingOf();
     expect(refusal(serving, "get_users_by_id", { id: "999" })).toMatchObject({
@@ -243,6 +320,30 @@ describe("loaded later pages", () => {
 });
 
 describe("list answers", () => {
+  it("replays repeated query values instead of applying scalar state-query semantics", () => {
+    const serving = servingFrom([
+      ["GET", "/api/items?tag=a&tag=b", { selected: "b" }],
+      ["GET", "/api/items?tag=a&tag=c", { selected: "c" }],
+    ]);
+    const tool = serving.source.manifest.tools.find(
+      (candidate) => candidate.path_template === "/api/items",
+    );
+    if (tool === undefined) throw new Error("Missing items query tool");
+    const argument = tool.query_parameter_names.find((name) => name === "tag");
+    if (argument === undefined) throw new Error("Missing tag query argument");
+    const result = answerFromState(serving, tool, { [argument]: ["a", "c"] });
+    if (!result.ok) throw result.error;
+    expect(result.value.body).toEqual({ selected: "c" });
+    expect(result.value.replay).toMatchObject({
+      exact_match: true,
+      recorded_query: "?tag=a&tag=c",
+    });
+    expect(result.value.state).toEqual({
+      source: "recording",
+      reason: "query-multiplicity",
+    });
+  });
+
   it("lists every entity of the collection in state order when membership is all", () => {
     const serving = servingOf();
     const args = { uid: "acb4v6" };
@@ -326,7 +427,9 @@ describe("list answers", () => {
       state: { source: "state", listed: 1 },
     });
   });
+});
 
+describe("list answer coverage and bounds", () => {
   it("answers an unfiltered call from a paging-only line of the parent its path arguments name", () => {
     const books = servingFrom([
       ["GET", "/api/orgs/1/books?limit=50", [{ id: 1 }, { id: 2 }]],

@@ -1,3 +1,4 @@
+import { parseMcpToolError } from "../../fixtures/mcpToolError.js";
 import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
 import { Ajv2020 } from "ajv/dist/2020.js";
 import { createHash } from "node:crypto";
@@ -142,10 +143,10 @@ const assertAdvertisedActivityExtras = async (
   if (advertised === undefined) throw new Error("Missing ADB activity tool");
   const ajv = new Ajv2020({ strict: false, validateFormats: false });
   expect(ajv.validateSchema(advertised.inputSchema)).toBe(true);
-  const validateInput = ajv.compile(advertised.inputSchema);
-  expect(validateInput(input)).toBe(true);
+  const validateCompactInput = ajv.compile(advertised.inputSchema);
+  expect(validateCompactInput(input)).toBe(true);
   expect(
-    validateInput({
+    validateCompactInput({
       ...input,
       extras: [
         { key: "bool", type: "boolean", value: "false" },
@@ -155,18 +156,7 @@ const assertAdvertisedActivityExtras = async (
       ],
     }),
   ).toBe(true);
-  for (const [type, value] of [
-    ["boolean", ""],
-    ["boolean", "yes"],
-    ["int", "1.5"],
-    ["long", ""],
-    ["float", "1e3"],
-  ])
-    expect(
-      validateInput({ ...input, extras: [{ key: "invalid", type, value }] }),
-      `${type}: ${value}`,
-    ).toBe(false);
-
+  // Canonical validation rejects malformed extras before starting ADB.
   const callsBeforeInvalidExtra = await calls();
   const invalidExtra = await client.callTool({
     name: "start_adb_activity",
@@ -175,7 +165,10 @@ const assertAdvertisedActivityExtras = async (
       extras: [{ key: "invalid", type: "boolean", value: "yes" }],
     },
   });
-  expect(invalidExtra.isError).toBe(true);
+  expect(parseMcpToolError(invalidExtra).error).toMatchObject({
+    code: "invalid_request",
+    category: "invalid_input",
+  });
   expect(await calls()).toEqual(callsBeforeInvalidExtra);
 };
 
@@ -224,6 +217,7 @@ it
             extras: [
               { key: "mode", type: "string" as const, value: "test" },
               { key: "empty", type: "string" as const, value: "" },
+              { key: "scale", type: "float" as const, value: "1e-3" },
             ],
           };
     const success = await client.callTool({
@@ -312,6 +306,7 @@ it
                 "-n com.example/.Main",
                 "--es mode test",
                 "--es empty ''",
+                "--ef scale 1e-3",
               ]),
         ].join(" "),
       ),

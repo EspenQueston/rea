@@ -1,14 +1,30 @@
+import { readMachoSegmentHeader } from "../../domain/apple/machoSegmentHeader.js";
+import {
+  MachoLoadCommandCursor,
+  readMachoHeaderDeclarations,
+} from "../../domain/apple/machoLoadCommands.js";
+import {
+  MAX_JVM_CLASS_IDENTITY_BYTES,
+  JVM_CLASS_IDENTITY_LIMIT_REASON,
+} from "../../domain/apple/jvmClassFile.js";
 import type {
   MachoDependency,
   MachoImageFacts,
   MachoSlice,
 } from "../../domain/apple/dylibResolution.js";
-import { machoCpuSubtypeBase } from "../../domain/apple/machoCpuIdentity.js";
 import {
-  machoLoadCommandAlignment,
+  machoArchitectureName,
+  machoCpuSubtypeBase,
+} from "../../domain/apple/machoCpuIdentity.js";
+import {
+  legacyMachoPlatform,
+  type MachoVersionMinPlatform,
+} from "../../domain/apple/machoPlatform.js";
+import {
   classifyFatContainerIdentity,
   readFatContainerHeader,
-  readMachoHeaderPrefixFacts,
+  readFatSliceDeclarations,
+  validateFatSlice,
   validateFatSliceIdentity,
   type FatSliceDeclaration,
 } from "../../domain/apple/machoContainer.js";
@@ -51,52 +67,18 @@ const LC_LOAD_UPWARD_DYLIB = 0x80000023;
 const LC_RPATH = 0x8000001c;
 const LC_DYLD_ENVIRONMENT = 0x27;
 const LC_CODE_SIGNATURE = 0x1d;
-const LC_VERSION_MIN_MACOSX = 0x24;
-const LC_VERSION_MIN_IPHONEOS = 0x25;
-const LC_VERSION_MIN_TVOS = 0x2f;
-const LC_VERSION_MIN_WATCHOS = 0x30;
 const LC_BUILD_VERSION = 0x32;
 
-// `mach-o/loader.h` `PLATFORM_*` numbers observed via Apple linker output.
-const PLATFORM_MACOS = 1;
-const PLATFORM_IOS = 2;
-const PLATFORM_TVOS = 3;
-const PLATFORM_WATCHOS = 4;
-const PLATFORM_IOSSIMULATOR = 7;
-const PLATFORM_TVOSSIMULATOR = 8;
-const PLATFORM_WATCHOSSIMULATOR = 9;
+const CPU_TYPE_ARM64 = 0x0100000c;
 
-const CPU_TYPE_I386 = 7;
-const CPU_TYPE_X86_64 = 0x01000007;
-
-/**
- * Legacy `LC_VERSION_MIN_*` commands predate explicit simulator platform
- * IDs. Per Apple's dyld rules the image CPU type distinguishes simulator
- * from device: Intel images are simulator, ARM images are device
- * (tvOS simulator applies to x86_64 only). `LC_BUILD_VERSION` platform
- * numbers are preserved verbatim; unknown future numbers stay unknown
- * downstream, never mapped to nearest.
- */
-const legacyVersionMinPlatform = (
-  command: number,
-  cpuType: number,
-): number | undefined => {
-  const isIntel = cpuType === CPU_TYPE_I386 || cpuType === CPU_TYPE_X86_64;
-  switch (command) {
-    case LC_VERSION_MIN_MACOSX:
-      return PLATFORM_MACOS;
-    case LC_VERSION_MIN_IPHONEOS:
-      return isIntel ? PLATFORM_IOSSIMULATOR : PLATFORM_IOS;
-    case LC_VERSION_MIN_TVOS:
-      return cpuType === CPU_TYPE_X86_64
-        ? PLATFORM_TVOSSIMULATOR
-        : PLATFORM_TVOS;
-    case LC_VERSION_MIN_WATCHOS:
-      return isIntel ? PLATFORM_WATCHOSSIMULATOR : PLATFORM_WATCHOS;
-    default:
-      return undefined;
-  }
-};
+/** loader.h command codes and their device platform identities. */
+const VERSION_MIN_PLATFORMS: ReadonlyMap<number, MachoVersionMinPlatform> =
+  new Map([
+    [0x24, 1], // LC_VERSION_MIN_MACOSX
+    [0x25, 2], // LC_VERSION_MIN_IPHONEOS
+    [0x2f, 3], // LC_VERSION_MIN_TVOS
+    [0x30, 4], // LC_VERSION_MIN_WATCHOS
+  ]);
 
 /** `mach-o/loader.h` `dylib_use_command`: `nameoff == 28` and this marker. */
 const DYLIB_USE_MARKER = 0x1a741800;
@@ -167,7 +149,7 @@ export const readMachoImage = async (
     const view = viewOf(head);
     const magic = view.getUint32(0, false);
     let header: ReturnType<typeof readFatContainerHeader>;
-    if (magic === FAT_MAGIC && size <= MAX_LOAD_COMMAND_BYTES) {
+    if (magic === FAT_MAGIC && size <= MAX_JVM_CLASS_IDENTITY_BYTES) {
       const complete = await readAt(0, size);
       header =
         complete.byteLength === size
@@ -205,18 +187,20 @@ export const readMachoImage = async (
         // A large CAFEBABE input whose bounded prefix resembles an invalid
         // known-CPU FAT table remains unknown until its JVM identity can be
         // checked; do not turn the resource limit into a malformed claim.
-        if (magic === FAT_MAGIC && size > MAX_LOAD_COMMAND_BYTES)
+        if (magic === FAT_MAGIC && size > MAX_JVM_CLASS_IDENTITY_BYTES)
           throw new MachoFormatIssue(
             "unsupported",
-            "FAT/JVM identity is unresolved because the class identity scan exceeds the 16 MiB limit",
+            JVM_CLASS_IDENTITY_LIMIT_REASON,
           );
         throw new MachoFormatIssue(identity.category, identity.reason);
       }
       if (identity.state === "needs-slice-header")
         return { status: "not-mach-o" };
+      const hiddenSlice = await readAppleHiddenArm64Slice(readAt, size, header);
       return {
         status: "parsed",
         slices: await readFatSlices(readAt, header.slices),
+        ...(hiddenSlice === null ? {} : { hiddenSlices: [hiddenSlice] }),
       };
     }
     if (magic === MH_CIGAM || magic === MH_CIGAM_64)
@@ -232,6 +216,54 @@ export const readMachoImage = async (
       return { status: cause.status, reason: cause.message };
     throw cause;
   }
+};
+
+/**
+ * Apple lipo stores one hidden ARM64 row after the declared 32-bit FAT table.
+ * It remains separate from the raw nfat_arch declarations and is only admitted
+ * from the single table-to-first-slice slot cctools recognizes.
+ */
+const readAppleHiddenArm64Slice = async (
+  readAt: ReadAt,
+  fileSize: number,
+  header: Extract<
+    ReturnType<typeof readFatContainerHeader>,
+    { state: "parsed" }
+  >,
+): Promise<MachoSlice | null> => {
+  if (header.wide) return null;
+  const firstOffset = Math.min(...header.slices.map(({ offset }) => offset));
+  const end = header.tableEnd + 20;
+  if (end > fileSize || end > firstOffset) return null;
+  const bytes = await readAt(header.tableEnd, 20);
+  if (bytes.byteLength < 20)
+    throw new MachoFormatIssue(
+      "malformed",
+      "Hidden ARM64 FAT row is truncated",
+    );
+  const row = readFatSliceDeclarations(bytes, {
+    count: 1,
+    wide: false,
+    littleEndian: header.littleEndian,
+  });
+  if (row.status !== "parsed")
+    throw new MachoFormatIssue("malformed", row.reason);
+  const declaration = { ...row.slices[0]!, index: header.count };
+  if (declaration.cpuType !== CPU_TYPE_ARM64) return null;
+  const rangeIssue = validateFatSlice(declaration, fileSize, end);
+  if (rangeIssue !== null) throw new MachoFormatIssue("malformed", rangeIssue);
+  const slice = await readSlice(readAt, declaration.offset, declaration.size, {
+    fatCpuType: declaration.cpuType,
+    fatCpuSubtype: declaration.cpuSubtype,
+    alignmentExponent: declaration.alignmentExponent,
+  });
+  const identityIssue = validateFatSliceIdentity(declaration, {
+    cpuType: slice.cpu_type,
+    cpuSubtype: slice.cpu_subtype,
+  });
+  if (identityIssue !== null)
+    throw new MachoFormatIssue("malformed", identityIssue);
+  return { ...slice, hidden: true };
 };
 
 const readFatSlices = async (
@@ -282,24 +314,13 @@ const readSlice = async (
     readonly alignmentExponent: number;
   } | null = null,
 ): Promise<MachoSlice> => {
-  const header = viewOf(await readExact(readAt, base, 28, "Mach-O header"));
-  const headerBytes = new Uint8Array(
-    header.buffer,
-    header.byteOffset,
-    header.byteLength,
-  );
-  const identity = readMachoHeaderPrefixFacts(headerBytes).identity;
-  const magic = header.getUint32(0, true);
-  if (magic === MH_MAGIC_64 || magic === MH_MAGIC) {
-    if (identity === null)
-      throw new MachoFormatIssue(
-        "malformed",
-        `slice at offset ${base} has no Mach-O header`,
-      );
-    const wide = magic === MH_MAGIC_64;
-    const headerSize = wide ? 32 : 28;
-    const commandCount = header.getUint32(16, true);
-    const commandBytes = header.getUint32(20, true);
+  const header = await readExact(readAt, base, 28, "Mach-O header");
+  const parsed = readMachoHeaderDeclarations(header, length);
+  if (!parsed.ok)
+    throw new MachoFormatIssue("malformed", "Mach-O header is truncated");
+  if (parsed.value !== null && parsed.value.littleEndian) {
+    const { wide, headerSize, commandCount, commandBytes, fileType, identity } =
+      parsed.value;
     if (commandBytes > MAX_LOAD_COMMAND_BYTES)
       throw new MachoFormatIssue(
         "unsupported",
@@ -320,7 +341,7 @@ const readSlice = async (
       wide,
       cpuType: identity.cpuType,
       cpuSubtype: identity.cpuSubtype,
-      fileType: header.getUint32(12, true),
+      fileType,
       commandCount,
       sliceOffset: base,
       sliceSize: length,
@@ -343,10 +364,10 @@ const readSlice = async (
     return slice;
   }
   throw new MachoFormatIssue(
-    magic === swap(MH_MAGIC) || magic === swap(MH_MAGIC_64)
+    parsed.value !== null && !parsed.value.littleEndian
       ? "unsupported"
       : "malformed",
-    magic === swap(MH_MAGIC) || magic === swap(MH_MAGIC_64)
+    parsed.value !== null && !parsed.value.littleEndian
       ? "big-endian Mach-O slices are not supported"
       : `slice at offset ${base} has no Mach-O header`,
   );
@@ -374,9 +395,8 @@ const decodeCommands = (
   )[];
   readonly maxVmOffset: bigint;
 } => {
-  const view = viewOf(bytes);
   const slice: MachoSlice = {
-    architecture: architectureName(header.cpuType, header.cpuSubtype),
+    architecture: machoArchitectureName(header.cpuType, header.cpuSubtype),
     slice_offset: header.sliceOffset,
     slice_size: header.sliceSize,
     cpu_type: header.cpuType,
@@ -402,24 +422,17 @@ const decodeCommands = (
   let unreadableSegment: number | undefined;
   let lazyInfo = false;
   let lazyInfoCount = 0;
-  let offset = 0;
-  for (let index = 0; index < header.commandCount; index++) {
-    if (offset + 8 > bytes.byteLength)
-      throw new MachoFormatIssue(
-        "malformed",
-        `load command ${index} starts beyond sizeofcmds`,
-      );
-    const command = view.getUint32(offset, true);
-    const size = view.getUint32(offset + 4, true);
-    if (
-      size < 8 ||
-      size % machoLoadCommandAlignment(header.wide) !== 0 ||
-      offset + size > bytes.byteLength
-    )
-      throw new MachoFormatIssue(
-        "malformed",
-        `load command ${index} at offset ${offset} has invalid cmdsize ${size}`,
-      );
+  const commands = new MachoLoadCommandCursor({
+    wide: header.wide,
+    littleEndian: true,
+    commandCount: header.commandCount,
+    commandBytes: bytes.byteLength,
+  });
+  while (commands.nextOffset !== null) {
+    const offset = commands.nextOffset;
+    const frame = commands.read(bytes.subarray(offset, offset + 8));
+    if (!frame.ok) throw new MachoFormatIssue("malformed", frame.error);
+    const { index, command, size } = frame.value;
     const body = bytes.subarray(offset, offset + size);
     if (command === LC_SEGMENT || command === LC_SEGMENT_64) {
       const span = readSegmentSpan(body, command === LC_SEGMENT_64);
@@ -437,13 +450,9 @@ const decodeCommands = (
     }
     const decoded = decodeCommand(command, body, index, slice);
     if (decoded !== undefined) dependencies.push(decoded);
-    offset += size;
   }
-  if (offset !== bytes.byteLength)
-    throw new MachoFormatIssue(
-      "malformed",
-      `load commands declare ${header.commandCount} commands but sizeofcmds holds ${bytes.byteLength} bytes`,
-    );
+  const complete = commands.finish();
+  if (!complete.ok) throw new MachoFormatIssue("malformed", complete.error);
   if (lazyInfo && unreadableSegment !== undefined)
     throw new MachoFormatIssue(
       "malformed",
@@ -487,20 +496,16 @@ const readSegmentSpan = (
   body: Uint8Array,
   wide: boolean,
 ): SegmentSpan | undefined => {
-  if (body.byteLength < (wide ? 72 : 56)) return undefined;
-  const view = viewOf(body);
-  const nameBytes = body.subarray(8, 24);
+  const parsed = readMachoSegmentHeader(body, wide, true);
+  if (!parsed.ok) return undefined;
+  const { nameBytes, address: vmaddr, memorySize: vmsize } = parsed.value;
   const end = nameBytes.indexOf(0);
   return {
     name: new TextDecoder("utf-8", { fatal: false }).decode(
       end < 0 ? nameBytes : nameBytes.subarray(0, end),
     ),
-    vmaddr: wide
-      ? view.getBigUint64(24, true)
-      : BigInt(view.getUint32(24, true)),
-    vmsize: wide
-      ? view.getBigUint64(32, true)
-      : BigInt(view.getUint32(28, true)),
+    vmaddr,
+    vmsize,
   };
 };
 
@@ -638,14 +643,14 @@ const decodeCommand = (
     slice.platforms.push(platform);
     return;
   }
-  const legacyPlatform = legacyVersionMinPlatform(command, slice.cpu_type);
+  const legacyPlatform = VERSION_MIN_PLATFORMS.get(command);
   if (legacyPlatform !== undefined) {
     if (body.byteLength < 16)
       throw new MachoFormatIssue(
         "malformed",
         `load command ${index} is too short for a version-min command`,
       );
-    slice.platforms.push(legacyPlatform);
+    slice.platforms.push(legacyMachoPlatform(legacyPlatform, slice.cpu_type));
     return;
   }
   if (command === LC_LAZY_LOAD_DYLIB_INFO)
@@ -995,29 +1000,6 @@ const readExact = async (
   return bytes;
 };
 
-const CPU_ARCH_ABI64 = 0x01000000;
-const CPU_ARCH_ABI64_32 = 0x02000000;
-const CPU_TYPE_X86 = 7;
-const CPU_TYPE_ARM = 12;
-const CPU_SUBTYPE_ARM64E = 2;
-const CPU_SUBTYPE_ARM64E_X1 = 12;
-const CPU_SUBTYPE_X86_64_H = 8;
-
-const architectureName = (cpuType: number, cpuSubtype: number): string => {
-  const subtype = machoCpuSubtypeBase(cpuSubtype);
-  if (cpuType === (CPU_TYPE_ARM | CPU_ARCH_ABI64))
-    // Both pointer-authentication subtypes belong to the arm64e family.
-    return subtype === CPU_SUBTYPE_ARM64E || subtype === CPU_SUBTYPE_ARM64E_X1
-      ? "arm64e"
-      : "arm64";
-  if (cpuType === (CPU_TYPE_ARM | CPU_ARCH_ABI64_32)) return "arm64_32";
-  if (cpuType === (CPU_TYPE_X86 | CPU_ARCH_ABI64))
-    return subtype === CPU_SUBTYPE_X86_64_H ? "x86_64h" : "x86_64";
-  if (cpuType === CPU_TYPE_X86) return "i386";
-  if (cpuType === CPU_TYPE_ARM) return "arm";
-  return `cpu-${cpuType.toString(16)}`;
-};
-
 const fileTypeName = (fileType: number): MachoSlice["file_type"] =>
   fileType === 2
     ? "execute"
@@ -1029,13 +1011,6 @@ const fileTypeName = (fileType: number): MachoSlice["file_type"] =>
 
 const version = (value: number): string =>
   `${value >>> 16}.${(value >>> 8) & 0xff}.${value & 0xff}`;
-
-const swap = (value: number): number =>
-  (((value & 0xff) << 24) |
-    ((value & 0xff00) << 8) |
-    ((value >>> 8) & 0xff00) |
-    (value >>> 24)) >>>
-  0;
 
 const viewOf = (bytes: Uint8Array): DataView =>
   new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);

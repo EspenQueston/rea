@@ -9,10 +9,8 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { CdpBrowserProvider } from "../dist/browser/CdpBrowserProvider.js";
-import {
-  BROWSER_DEVTOOLS_STARTUP_TIMEOUT_MS,
-  waitForBrowserDevtoolsPort,
-} from "../dist/browser/BrowserProcessStartup.js";
+import { importVerifierSource } from "./lib/verifier-source-loader.mjs";
+
 import { createBrowserScenarioProvider } from "../dist/composition/browserScenario.js";
 import {
   inspectWebPageInputSchema,
@@ -39,7 +37,7 @@ import {
   verifyScenarioFailureEvidence,
 } from "./lib/browser-scenario-verifier.mjs";
 import { completeVerifierRun, createVerifierRun } from "./lib/verifier-run.mjs";
-import { closeVerifierResources } from "./lib/verifier-cleanup.mjs";
+import { withVerifierCleanup } from "./lib/verifier-cleanup.mjs";
 import { requireOrdinaryWindowsVerifierCaller } from "./lib/windows-ordinary-user-verifier.mjs";
 import { verifyLargeScreenshotE2e } from "./lib/browser-screenshot-e2e.mjs";
 import { verifyViewportScreenshotE2e } from "./lib/browser-viewport-screenshot-e2e.mjs";
@@ -57,6 +55,12 @@ import { verifyScenarioStorageFingerprints } from "./lib/browser-scenario-storag
 import { verifyScenarioServiceWorkers } from "./lib/browser-scenario-service-workers-e2e.mjs";
 import { verifyBrowserUrlUserInfo } from "./lib/browser-url-userinfo-e2e.mjs";
 
+const { BROWSER_DEVTOOLS_STARTUP_TIMEOUT_MS, waitForBrowserDevtoolsPort } =
+  await importVerifierSource(
+    new URL("./lib/browser-process-startup.mts", import.meta.url).href,
+    import.meta.url,
+  );
+
 const SCENARIO_SECRET_VALUE = "rea-browser-verifier-secret";
 const SCENARIO_URL_SECRET_VALUE = "rea-browser-url-verifier-secret";
 process.env.REA_BROWSER_VERIFIER_SECRET = SCENARIO_SECRET_VALUE;
@@ -70,8 +74,7 @@ let site;
 let browser;
 let pageProxy;
 let report;
-let verificationError;
-try {
+await withVerifierCleanup(async () => {
   profile = await mkdtemp(join(tmpdir(), "rea-real-browser-"));
   site = await startBrowserVerifierSite();
   browser = spawn(
@@ -148,19 +151,18 @@ try {
         `Passive browser result included unselected structured data: ${secret}`,
       );
 
-  const withSource = await provider.inspectPage(
-    inspectWebPageInputSchema.parse({
-      cdp_endpoint: endpoint,
-      allowed_origins: [site.origin],
-      target_id: target,
-      observation_ms: 1_000,
-      include_accessibility_text: true,
-      include_script_sources: true,
-      include_console_text: true,
-      include_json_body_shapes: true,
-      include_websocket_shapes: true,
-    }),
-  );
+  const sourceCaptureInput = inspectWebPageInputSchema.parse({
+    cdp_endpoint: endpoint,
+    allowed_origins: [site.origin],
+    target_id: target,
+    observation_ms: 1_000,
+    include_accessibility_text: true,
+    include_script_sources: true,
+    include_console_text: true,
+    include_json_body_shapes: true,
+    include_websocket_shapes: true,
+  });
+  const withSource = await provider.inspectPage(sourceCaptureInput);
   if (!withSource.ok) throw withSource.error;
   const source = withSource.value.scripts.items.find(
     (script) =>
@@ -183,10 +185,14 @@ try {
 
   const bundle = await verifyPublicBundle(endpoint, target, site.origin);
 
+  // Equality needs the same selected facts on both sides. The earlier passive
+  // capture deliberately omits source, so it cannot establish source equality.
+  const repeatedSource = await provider.inspectPage(sourceCaptureInput);
+  if (!repeatedSource.ok) throw repeatedSource.error;
   const captureDiff = await provider.compareCaptures(
     compareWebCapturesInputSchema.parse({
-      before: { inspection: observed.value },
-      after: { inspection: withSource.value },
+      before: { inspection: withSource.value },
+      after: { inspection: repeatedSource.value },
     }),
   );
   if (!captureDiff.ok) throw captureDiff.error;
@@ -194,7 +200,16 @@ try {
     captureDiff.value.dimensions.dom_structure.status !== "unchanged" ||
     captureDiff.value.dimensions.scripts.status !== "unchanged"
   )
-    throw new Error("Real Chrome stable capture identities did not reconcile");
+    throw new Error(
+      `Real Chrome stable capture identities did not reconcile: ${JSON.stringify(
+        {
+          dom_structure: captureDiff.value.dimensions.dom_structure,
+          scripts: captureDiff.value.dimensions.scripts,
+          before_completeness: withSource.value.completeness,
+          after_completeness: repeatedSource.value.completeness,
+        },
+      )}`,
+    );
 
   const screenshot = await provider.captureScreenshot(
     captureWebScreenshotInputSchema.parse({
@@ -432,40 +447,35 @@ try {
     viewportScreenshot,
     verified: true,
   };
-} catch (cause) {
-  verificationError = cause;
-  throw cause;
-} finally {
-  const cleanup = [];
-  if (pageProxy !== undefined) {
-    cleanup.push(async () => {
+}, [
+  async () => {
+    if (pageProxy !== undefined) {
       process.stderr.write("Browser verifier cleanup: closing page proxy\n");
       await pageProxy.close();
-    });
-  }
-  if (browser !== undefined) {
-    cleanup.push(async () => {
+    }
+  },
+  async () => {
+    if (browser !== undefined) {
       process.stderr.write("Browser verifier cleanup: stopping owned Chrome\n");
       await stopProcess(browser);
-    });
-  }
-  if (site !== undefined) {
-    cleanup.push(async () => {
+    }
+  },
+  async () => {
+    if (site !== undefined) {
       process.stderr.write("Browser verifier cleanup: closing fixture site\n");
       await site.close();
-    });
-  }
-  if (profile !== undefined)
-    cleanup.push(() =>
-      rm(profile, {
+    }
+  },
+  async () => {
+    if (profile !== undefined)
+      await rm(profile, {
         recursive: true,
         force: true,
         maxRetries: 10,
         retryDelay: 100,
-      }),
-    );
-  await closeVerifierResources(cleanup, verificationError);
-}
+      });
+  },
+]);
 process.stdout.write(
   `${JSON.stringify({
     verifier_run: await completeVerifierRun(verifierRun),

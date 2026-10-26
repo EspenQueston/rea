@@ -22,13 +22,15 @@ const GUARDED_WORKFLOWS = new Set([
 // Sources compiled by build-conformance-fixtures.mjs. The readiness journey
 // analyzes the built C fixture as well as its own applications.
 const FIXTURE_SOURCES = [
+  "scripts/build-conformance-fixtures.mjs",
+  "scripts/verify-conformance-fixtures.mjs",
+  "scripts/lib/conformance-fixtures.mjs",
   "tests/conformance/c/**",
   "tests/conformance/napi/**",
   "tests/conformance/objc/**",
   "tests/conformance/swift/**",
   "tests/conformance/versions/**",
 ];
-const READINESS_SOURCES = ["tests/conformance/readiness/**"];
 // These reporters affect CI output only; they do not select a host or provider
 // verification lane when changed on their own.
 const PORTABLE_CI_REPORTERS = new Set([
@@ -109,7 +111,7 @@ function classifyPackage(base, head) {
       continue;
     }
     if (
-      /^(test(?::|$)|check(?::|$)|lint(?::|$)|format(?::|$)|knip$|jscpd$)/.test(
+      /^(test(?::|$)|check(?::|$)|lint(?::|$)|format(?::|$)|knip(?::|$)|jscpd$)/.test(
         script,
       )
     )
@@ -281,7 +283,6 @@ if (tier === "reused") {
         selected.fixtures = true;
         selected.readiness = true;
       }
-      if (matchesAny(file, READINESS_SOURCES)) selected.readiness = true;
       if (file.startsWith("tests/")) continue;
       if (
         /^(src\/process\/|src\/filesystem\/|src\/contracts\/tool|src\/server\/createServer|src\/cli\.ts|scripts\/ci\/)/.test(

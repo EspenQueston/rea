@@ -1,10 +1,11 @@
 import { chmod, lstat, readFile, unlink } from "node:fs/promises";
 import { createHash } from "node:crypto";
-import { basename, dirname } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { expect, it, onTestFinished } from "vitest";
 import { z } from "zod";
 
 import { toolContract } from "../../../src/contracts/toolContracts.js";
+import { createTestTempDirectory } from "../../fixtures/temporaryDirectory.js";
 import {
   execFileOutput,
   execFileOutputFailure,
@@ -188,6 +189,55 @@ it.each(["string:key", ":", "string"])(
   },
 );
 
+it.each([16, 17])(
+  "enforces the activity extra count before host admission: %d entries",
+  async (count) => {
+    const root = await createTestTempDirectory("rea-adb-extra-limit-");
+    const missingAdb = join(root, "missing-adb");
+    const extras = Array.from({ length: count }, (_, index) => [
+      "--extra",
+      `string:key${index}:value${index}`,
+    ]).flat();
+    const result = await execFileOutput(
+      process.execPath,
+      [
+        "scripts/rea.mjs",
+        "start-adb-activity",
+        "emulator-5554",
+        "android.intent.action.VIEW",
+        ...extras,
+        "--json",
+      ],
+      {
+        env: { ...process.env, REA_ADB_PATH: missingAdb },
+        timeout: 20_000,
+        stopSignal: "SIGTERM",
+        maxBuffer: 1024 * 1024,
+      },
+    ).then(
+      (output) => ({ exitCode: 0, stdout: output.stdout }),
+      (cause: unknown) => {
+        const failure = execFileOutputFailure(cause);
+        if (failure === undefined || typeof failure.code !== "number")
+          throw cause;
+        return { exitCode: failure.code, stdout: failure.stdout };
+      },
+    );
+    if (count === 16) {
+      expectConfigurationRefusal(
+        result,
+        `The selected adb binary was not found: ${missingAdb}. Set REA_ADB_PATH`,
+      );
+    } else {
+      expect(JSON.parse(result.stdout)).toMatchObject({
+        code: "VALIDATION_ERROR",
+        fieldErrors: [{ code: "too_big", path: "extra" }],
+      });
+    }
+    expect(result.exitCode, result.stdout).toBe(1);
+  },
+);
+
 it.skipIf(process.platform === "win32")(
   "starts an explicitly selected nested Android activity through the CLI",
   async () => {
@@ -244,7 +294,11 @@ it.each([
   ["boolean:key:yes", "invalid_request"],
   ["int:key:1.5", "invalid_request"],
   ["long:key:1.5", "invalid_request"],
-  ["float:key:1e3", "invalid_request"],
+  ["float:key:garbage", "invalid_request"],
+  ["float:key:1e-3", "capability_unavailable"],
+  ["float:key:1E-3", "capability_unavailable"],
+  ["float:key:.5", "capability_unavailable"],
+  ["float:key:1.", "capability_unavailable"],
   ["boolean:key:false", "capability_unavailable"],
   ["int:key:-3", "capability_unavailable"],
   ["long:key:9007199254740993", "capability_unavailable"],

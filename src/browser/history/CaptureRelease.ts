@@ -1,15 +1,16 @@
 import {
   CAPTURE_DECODER_SEMI_SPACE_MIB,
   DEFAULT_CAPTURE_DECODER_OLD_GENERATION_MIB,
-} from "../../config/captureDecoderHeap.js";
+} from "../../domain/analysisResourceLimits.js";
 import { javaScriptRuntime } from "../../domain/runtimeVersion.js";
 import { javaScriptWorkerMemoryLimitBytes } from "../../process/JavaScriptWorkerMemoryLimit.js";
 
-/** Exact upstream package profile for unchanged offline HAR validation and numeric parsing. */
+/** Upstream packages and owned schema corrections for offline HAR decoding. */
 export const HAR_CAPTURE_PROVIDER_IDENTITY = {
   id: "har-schema/lossless-json",
   name: "REA HAR capture adapter",
-  version: "har-schema@2.0.0;jsonc-parser@3.3.1;lossless-json@4.3.1",
+  version:
+    "har-schema@2.0.0;har-schema-corrections@1;jsonc-parser@3.3.1;lossless-json@4.3.1",
 } as const;
 
 /**

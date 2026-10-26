@@ -3,9 +3,16 @@ import type {
   CaptureWebScreenshotInput,
   WebScreenshot,
 } from "../domain/webScreenshot.js";
-import { createWebScreenshotArtifact } from "../domain/webScreenshot.js";
+import {
+  createWebScreenshotArtifact,
+  decodeCanonicalBase64,
+} from "../domain/webScreenshot.js";
 import { BrowserObservationError } from "../domain/browserObservationError.js";
-import { cdpFrameIdentity } from "./CdpCaptureEventHelpers.js";
+import { cdpOriginScopeRefusal } from "./CdpOriginScopeError.js";
+import {
+  cdpFrameIdentity,
+  cdpFrameRecordIdentity,
+} from "./CdpCaptureEventHelpers.js";
 import type { CdpEndpointDiscovery, CdpEndpointTarget } from "./CdpEndpoint.js";
 import type { CdpConnection, CdpEvent } from "./CdpConnection.js";
 import {
@@ -17,11 +24,9 @@ import {
   observeCdpFrameUrl,
   observeMainFrameUrl,
   classifyCdpFrameUrl,
-  captureFrames,
 } from "./CdpCaptureDocuments.js";
 
 import { CdpCaptureCompleteness } from "./CdpCaptureCompleteness.js";
-import { decodeCanonicalBase64 } from "../domain/webScreenshot.js";
 import { readPngHeaderDimensions } from "../domain/pngHeader.js";
 
 interface ScreenshotContext {
@@ -57,31 +62,36 @@ export const captureCdpScreenshot = async (
     context.sessionId,
     context.signal,
   );
-  const beforeObservation = observeMainFrameUrl(before);
+  const initialFrame = recordValue(
+    recordValue(recordValue(before)?.frameTree)?.frame,
+  );
+  const beforeObservation = observeCdpFrameUrl(initialFrame);
   const beforeFacts = classifyCdpFrameUrl(beforeObservation, origins);
   if (
     beforeFacts.scope === "outside_policy" ||
     beforeFacts.scope === "unsupported"
   )
-    throw new BrowserObservationError("inspect_web_page", "target_not_allowed");
+    throw cdpOriginScopeRefusal("capture_web_screenshot");
   if (beforeObservation.kind !== "observed")
     throw new BrowserObservationError("inspect_web_page", "protocol_error");
   const beforeUrl = beforeFacts.url;
-  const mainFrame = captureFrames(before, origins, 1).items[0];
+  const mainFrame = cdpFrameRecordIdentity(initialFrame);
   if (
     beforeUrl === undefined ||
     beforeFacts.origin === null ||
-    mainFrame === undefined
+    mainFrame.frameId === null ||
+    mainFrame.identityIssue !== null ||
+    mainFrame.parentRelation !== "root"
   )
-    throw new BrowserObservationError("inspect_web_page", "target_not_allowed");
-  const initialFrame = recordValue(
-    recordValue(recordValue(before)?.frameTree)?.frame,
-  );
+    throw new BrowserObservationError(
+      "capture_web_screenshot",
+      "protocol_error",
+    );
   const navigation = {
     changed: false,
     leftScope: false,
     invalidIdentity: false,
-    frameId: mainFrame.frame_id,
+    frameId: mainFrame.frameId,
     url: beforeUrl,
     loaderId: cdpStringValue(initialFrame?.loaderId),
     completeness: new CdpCaptureCompleteness(),
@@ -92,10 +102,7 @@ export const captureCdpScreenshot = async (
   });
   const assertCurrentDocument = () => {
     if (navigation.leftScope)
-      throw new BrowserObservationError(
-        "inspect_web_page",
-        "target_not_allowed",
-      );
+      throw cdpOriginScopeRefusal("capture_web_screenshot");
     if (navigation.invalidIdentity)
       throw new BrowserObservationError("inspect_web_page", "protocol_error");
     if (navigation.changed)
@@ -140,14 +147,14 @@ export const captureCdpScreenshot = async (
   }
   assertCurrentDocument();
   if (navigation.leftScope)
-    throw new BrowserObservationError("inspect_web_page", "target_not_allowed");
+    throw cdpOriginScopeRefusal("capture_web_screenshot");
   const afterObservation = observeMainFrameUrl(after);
   const afterFacts = classifyCdpFrameUrl(afterObservation, origins);
   if (
     afterFacts.scope === "outside_policy" ||
     afterFacts.scope === "unsupported"
   )
-    throw new BrowserObservationError("inspect_web_page", "target_not_allowed");
+    throw cdpOriginScopeRefusal("capture_web_screenshot");
   if (navigation.invalidIdentity || afterObservation.kind !== "observed")
     throw new BrowserObservationError("inspect_web_page", "protocol_error");
   const afterUrl = afterFacts.url;
