@@ -96,6 +96,24 @@ const spellingUnits = (secret: string): number =>
     ),
   ].reduce((units, spelling) => units + spelling.length, 0);
 
+const URI_KEPT = /[\w.!~*'()-]/u;
+const FORM_KEPT = /[\w .*-]/u;
+
+/** A lower bound that refuses over-budget spellings before allocating encoded copies. */
+const leastSpellingUnits = (secret: string): number => {
+  let uri = 0;
+  let form = 0;
+  for (const character of secret) {
+    const point = character.codePointAt(0) ?? 0;
+    const escaped =
+      3 * (point < 0x80 ? 1 : point < 0x800 ? 2 : point < 0x10000 ? 3 : 4);
+    uri += URI_KEPT.test(character) ? 1 : escaped;
+    form += FORM_KEPT.test(character) ? 1 : escaped;
+  }
+  const encoded = Math.max(uri, form);
+  return secret.length + (encoded > secret.length ? encoded : 0);
+};
+
 const declaredPatterns = (
   values: ReadonlyMap<string, string>,
   spellings: SecretSpellings,
@@ -487,10 +505,14 @@ export class BrowserScenarioSecrets {
   ): void {
     const available =
       MAX_RETAINED_SAVED_CHARACTERS - savedUnits - this.secretSpellingUnits;
-    const spellings = additions.reduce(
-      (units, value) => units + spellingUnits(value),
+    const minimum = additions.reduce(
+      (units, value) => units + leastSpellingUnits(value),
       0,
     );
+    const spellings =
+      minimum > available
+        ? minimum
+        : additions.reduce((units, value) => units + spellingUnits(value), 0);
     if (available < 0 || spellings > available)
       throw new Error(
         `${name} cannot be saved: the scenario would keep more than ${String(MAX_RETAINED_SAVED_CHARACTERS)} characters of saved values.`,

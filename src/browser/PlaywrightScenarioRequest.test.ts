@@ -1140,6 +1140,21 @@ describe("values a URL path or Basic header cannot carry", () => {
 });
 
 describe("bounded derived credentials", () => {
+  it("refuses over-budget Unicode spellings before building encoded copies", () => {
+    const secrets = resolved(scenario([requestStep({})]));
+    const encode = vi.spyOn(globalThis, "encodeURIComponent");
+    try {
+      expect(() =>
+        secrets.save("create.token", "token", "私".repeat(1_000_000), true),
+      ).toThrow("more than 4000000 characters");
+      expect(encode).not.toHaveBeenCalled();
+      expect(() => secrets.savedValue("token")).toThrow(
+        "No earlier step saved",
+      );
+    } finally {
+      encode.mockRestore();
+    }
+  });
   it("charges distinct Basic credentials while admitting repeated identical spellings once", () => {
     const secrets = resolved(scenario([requestStep({})]));
     const password = "x".repeat(300_000);
