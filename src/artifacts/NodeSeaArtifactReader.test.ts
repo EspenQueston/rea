@@ -728,3 +728,48 @@ it("retains SEA admission for a complete segment with a nonaligned command size"
     await handle.close();
   }
 });
+
+it.each([0xfeedface, 0xfeedfacf, 0xcefaedfe, 0xcffaedfe])(
+  "classifies four-byte thin magic %i without admitting a truncated SEA carrier",
+  async (magic) => {
+    const bytes = Buffer.alloc(4);
+    bytes.writeUInt32BE(magic);
+    const path = await writeCarrier("thin-prefix", bytes);
+    const inventory = await scanCanonicalArtifactInventory(path);
+    expect(inventory.manifest.root_format).toBe("mach-o");
+    const handle = await open(path, "r");
+    try {
+      expect(await locateNodeSea(handle, bytes.length)).toBeUndefined();
+    } finally {
+      await handle.close();
+    }
+  },
+);
+
+it("confirms SEA naming before rejecting an unrelated cyclic PE resource branch", async () => {
+  const fixture = peResourceFixture(true, [
+    { type: 3, name: 1, language: 1033, payload: Buffer.from("other") },
+    {
+      type: 10,
+      name: "NODE_SEA_BLOB",
+      language: 1033,
+      payload: buildNodeSeaBlob(populated),
+    },
+  ]);
+  const other = fixture.entryOffsets.find(
+    (at) => fixture.bytes.readUInt32LE(at) === 3,
+  );
+  if (other === undefined) throw new Error("Expected unrelated resource type");
+  fixture.bytes.writeUInt32LE(0x80000000, other + 4);
+  const handle = await open(
+    await writeCarrier("sea-with-unrelated-cycle", fixture.bytes),
+    "r",
+  );
+  try {
+    await expect(
+      locateNodeSea(handle, fixture.bytes.length),
+    ).rejects.toMatchObject({ reason: "format" });
+  } finally {
+    await handle.close();
+  }
+});
