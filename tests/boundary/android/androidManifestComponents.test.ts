@@ -71,6 +71,75 @@ it("keeps pre-projection package parses independent", () => {
   }
 });
 
+
+it("projects exact declared component attributes without inferring runtime defaults", () => {
+  const xml = '<manifest xmlns:android="http://schemas.android.com/apk/res/android" xmlns:other="urn:other" package="com.example"><application android:enabled="false" android:process=":app"><activity android:name=".Main" android:enabled="true" android:process=" :worker " other:enabled="false"/><provider android:name=".Files" android:grantUriPermissions="false"/><provider android:name=".Unknown" android:enabled="@bool/flag" android:grantUriPermissions="?attr/grants" android:process=""/></application></manifest>';
+  const result = parseAndroidManifestComponents(xml, "complete", "33");
+  expect(result.items[0]).toMatchObject({
+    enabled: true,
+    process: " :worker ",
+    grant_uri_permissions: null,
+  });
+  expect(result.items[1]).toMatchObject({
+    enabled: null,
+    process: null,
+    grant_uri_permissions: false,
+  });
+  expect(result.items[2]).toMatchObject({
+    enabled: null,
+    process: "",
+    grant_uri_permissions: null,
+  });
+  expect(result.status).toBe("complete");
+  expect(result.limitations.join(" ")).toContain("nonliteral boolean");
+  expect(result.limitations.join(" ")).toContain("URI-grant state is unknown");
+});
+
+it("ignores foreign namespace aliases of component access attributes", () => {
+  const result = parseAndroidManifestComponents(
+    '<manifest xmlns:android="http://schemas.android.com/apk/res/android" xmlns:other="urn:other" package="com.example"><application><provider android:name=".Provider" other:enabled="true" other:process="foreign" other:grantUriPermissions="true"/></application></manifest>',
+    "complete",
+    "33",
+  );
+  expect(result.status).toBe("complete");
+  expect(result.items[0]).toMatchObject({
+    enabled: null,
+    process: null,
+    grant_uri_permissions: null,
+  });
+});
+
+it("bounds the total copied component process declarations", () => {
+  const oversized = "a".repeat(ANDROID_MANIFEST_LIMITS.processBytes + 1);
+  const result = parseAndroidManifestComponents(
+    `<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="com.example"><application><service android:name=".Oversized" android:process="${oversized}"/><service android:name=".Valid" android:process=":valid"/></application></manifest>`,
+    "complete",
+    "33",
+  );
+  expect(result.items.map((item) => item.process)).toEqual([null, ":valid"]);
+  expect(result.status).toBe("partial");
+  expect(result.limitations.join(" ")).toContain("process declarations are capped");
+});
+
+it("keeps older component Evidence valid with unknown new fields", () => {
+  const item = parseAndroidManifestComponents(
+    '<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="com.example"><application><receiver android:name=".Receiver"/></application></manifest>',
+    "complete",
+    "33",
+  ).items[0];
+  const { enabled: _enabled, process: _process, grant_uri_permissions: _grants, ...oldItem } = item!;
+  const parsed = androidResultSchemas.inspect_android_package.shape.components.parse({
+    status: "complete",
+    items: [oldItem],
+    limitations: [],
+  });
+  expect(parsed.items[0]).toMatchObject({
+    enabled: null,
+    process: null,
+    grant_uri_permissions: null,
+  });
+});
+
 const MANIFEST = `<?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android" package="com.example.app">
   <application android:label="Example">
