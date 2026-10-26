@@ -53,7 +53,9 @@ const report = {
   target: values.target,
   project: values.project,
 };
-let client, transport, account, serverLog, serverLogFinished, wire;
+let client, transport, account, serverLog, serverLogFinished;
+// This workflow has a fixed number of public calls; pseudocode stays on disk.
+const transcript = [];
 let phase = "initialize";
 const started = performance.now();
 const tree = join(values.output, "tree");
@@ -109,8 +111,6 @@ try {
   const original = await fingerprint();
   report.project_sha256 = original.sha256;
   account = await mkdtemp(join(tmpdir(), "rea-directory-investigation-"));
-  wire = createWriteStream(join(values.output, "wire.jsonl"));
-  wire.on("error", () => {});
   transport = new StdioClientTransport({
     command: process.execPath,
     args: [join(values.runtime, "scripts/rea.mjs"), "mcp"],
@@ -141,16 +141,14 @@ try {
   transport.start = async () => {
     const receive = transport.onmessage;
     transport.onmessage = (message) => {
-      wire.write(
-        JSON.stringify({ phase, direction: "response", message }) + "\n",
-      );
+      transcript.push({ phase, direction: "response", message });
       receive?.(message);
     };
     await start();
   };
   const send = transport.send.bind(transport);
   transport.send = async (message) => {
-    wire.write(JSON.stringify({ phase, direction: "request", message }) + "\n");
+    transcript.push({ phase, direction: "request", message });
     await send(message);
   };
   serverLog = createWriteStream(join(values.output, "server.log"));
@@ -312,11 +310,6 @@ try {
   process.exitCode = 1;
 } finally {
   report.elapsed_ms = performance.now() - started;
-  if (wire !== undefined) {
-    const completion = finished(wire);
-    wire.end();
-    await completion;
-  }
   const published = await finalizeRetainedQueryReceipt({
     report,
     client,
@@ -325,6 +318,7 @@ try {
     serverLog,
     serverLogFinished,
     output: values.output,
+    transcript,
   });
   if (!published) process.exitCode = 1;
 }
