@@ -1,3 +1,4 @@
+import type { AnalysisSettingValues } from "../../domain/analysisSettings.js";
 import {
   DEFAULT_ASAR_HEADER_ADMISSION,
   type AsarHeaderAdmission,
@@ -7,7 +8,7 @@ import {
   buildJavaScriptRouteInventorySteps,
   type JavaScriptRouteInventory,
 } from "../../domain/javascript/javascriptRouteInventory.js";
-import { access, lstat, realpath } from "node:fs/promises";
+import { access, realpath, stat } from "node:fs/promises";
 import { setImmediate } from "node:timers/promises";
 
 import { ArtifactReaderFailure } from "../../artifacts/ArtifactReader.js";
@@ -86,6 +87,7 @@ export const reconstructJavaScriptArtifact = async (
   signal?: AbortSignal,
   progress?: ProgressReporter,
   asarHeaderAdmission: AsarHeaderAdmission = DEFAULT_ASAR_HEADER_ADMISSION,
+  overrides?: Readonly<Partial<AnalysisSettingValues>>,
 ): Promise<JavaScriptArtifactReconstructionResult> =>
   scope.run(async () => {
     const reportPhase = async (
@@ -173,9 +175,12 @@ export const reconstructJavaScriptArtifact = async (
       const worker = await createJavaScriptSourceAnalysis(
         {
           heapMb:
-            input.max_heap_mb ?? JAVASCRIPT_ANALYSIS_RESOURCE_DEFAULTS.heapMb,
+            input.max_heap_mb ??
+            overrides?.["javascript.max_heap_mb"] ??
+            JAVASCRIPT_ANALYSIS_RESOURCE_DEFAULTS.heapMb,
           timeoutMs:
             input.analysis_timeout_ms ??
+            overrides?.["javascript.analysis_timeout_ms"] ??
             JAVASCRIPT_ANALYSIS_RESOURCE_DEFAULTS.timeoutMs,
         },
         files.files.filter(
@@ -438,8 +443,10 @@ const resolveSelectedInput = async (
   inputPath: string,
 ): Promise<{ readonly path: string; readonly metadata: Stats }> => {
   try {
+    // Native lookup must admit the selected traversal first: Darwin realpath
+    // can collapse file/.. even though that path cannot be opened.
+    const metadata = await stat(inputPath);
     const path = await realpath(inputPath);
-    const metadata = await lstat(path);
     // Directory enumeration needs read access; resolving its entries also needs search access.
     await access(
       path,

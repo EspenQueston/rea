@@ -1,5 +1,6 @@
 import type { JsonValue } from "../jsonValue.js";
 import {
+  ownMember,
   decodedSegment,
   isParam,
   normalizedPath,
@@ -148,10 +149,10 @@ export const siblingTrimmedClocks = (
     const peer = trimmed.get(`${rule.format.separator}${rule.format.zone}`);
     if (peer === undefined) return rule;
     const format = later.some((fields) =>
-      showsFixedWidth(rule.format, fields[rule.field]),
+      showsFixedWidth(rule.format, ownMember(fields, rule.field)),
     )
       ? rule.format
-      : trimmedLike(rule.format, peer, values?.[rule.field]);
+      : trimmedLike(rule.format, peer, ownMember(values, rule.field));
     return format === rule.format ? rule : { ...rule, format };
   });
 };
@@ -178,7 +179,7 @@ export const keptOrders = (body: JsonObject, stored: JsonObject): string[] =>
   Object.keys(body).filter(
     (member) =>
       sortedStrings(body[member]) !== undefined &&
-      same(stored[member], body[member]),
+      same(ownMember(stored, member), body[member]),
   );
 
 /** One part of a composed string: literal text, or another written field as written, slugged, or as a clock's calendar digits. */
@@ -253,10 +254,15 @@ export interface StateWritePlan {
   readonly served: boolean;
   readonly reason: WriteReason | null;
   readonly exemplar_ordinal: number | null;
-  /** The record whose response showed the written entity or document, and where. */
+  /** The record whose response showed the written entity or document, and where; a create's later read whose fields the entity adds to the response's. */
   readonly observation: {
     readonly ordinal: number;
     readonly pointer: string;
+    readonly read?: {
+      readonly ordinal: number;
+      readonly pointer: string;
+      readonly shape: "item" | "list";
+    };
   } | null;
   readonly response: WriteResponse | null;
   readonly body: WriteBody | null;

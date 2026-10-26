@@ -1,10 +1,14 @@
+import type { AsarHeaderAdmission } from "../../config/asarHeaderAdmission.js";
 import { resolveAsarHeaderAdmission } from "../AsarHeader.js";
 import { locateGodotPck } from "../GodotPckLocation.js";
 import { withArtifactRegularFile } from "../ArtifactFileOperation.js";
-import type { ArtifactCleanupAttempt } from "../ArtifactResourceScope.js";
+import type {
+  ArtifactCleanupAttempt,
+  ArtifactResourceOwner,
+  ArtifactResourceScope,
+} from "../ArtifactResourceScope.js";
 import { lstat, realpath } from "node:fs/promises";
 import { dirname } from "node:path";
-import { absoluteCallerPath } from "../../filesystem/callerPath.js";
 import { isPathWithinRoot } from "../../domain/localPath.js";
 import { SafeOutputTreeDestinationRefusal } from "../SafeOutputTreeAdmission.js";
 
@@ -43,10 +47,6 @@ import {
   type ArtifactOccurrence,
 } from "../../domain/artifactGraph.js";
 import { AnalysisUnsupportedTargetError } from "../../domain/analysisErrorCore.js";
-import type {
-  ArtifactResourceOwner,
-  ArtifactResourceScope,
-} from "../ArtifactResourceScope.js";
 import type { BinaryTarget } from "../../domain/binaryTargetTypes.js";
 import type { ArtifactInventorySnapshot } from "../../domain/artifactInventorySnapshot.js";
 import { scanArtifactInventoryForExtractionInScope } from "../inventory/ArtifactInventory.js";
@@ -55,6 +55,7 @@ import type { ArtifactIntegrityPolicyName } from "../../domain/artifactIntegrity
 
 /** Local extraction input with the output root chosen by the adapter. */
 export interface ArtifactExtractionInput {
+  readonly asarHeaderAdmission?: AsarHeaderAdmission;
   readonly inputPath: string;
   readonly inputFormat: BinaryTarget["format"];
   readonly outputRoot: string;
@@ -83,7 +84,9 @@ const extractArtifactInScope = async (
       resourceScope: input.resourceScope,
       signal,
       environment: input.environment,
-      asarHeaderAdmission: resolveAsarHeaderAdmission(input.environment),
+      asarHeaderAdmission:
+        input.asarHeaderAdmission ??
+        resolveAsarHeaderAdmission(input.environment),
       integrity: { mode: input.integrityPolicy },
     });
   const activeZipSource =
@@ -145,9 +148,10 @@ export const materializeArtifactInventoryInScope = async (
   if (zipSource === undefined) {
     const canonicalSource = await realpath(sourcePath);
     if ((await lstat(canonicalSource)).isDirectory()) {
-      const parent = await realpath(
-        dirname(absoluteCallerPath(input.outputRoot)),
+      const { canonicalOutput } = await SafeOutputTree.resolveDestination(
+        input.outputRoot,
       );
+      const parent = dirname(canonicalOutput);
       if (isPathWithinRoot(canonicalSource, parent))
         throw new SafeOutputTreeDestinationRefusal(
           `Extraction output parent ${parent} is inside source directory ${canonicalSource}. Choose a temporary directory outside the source.`,
@@ -581,7 +585,11 @@ const createReader = async (
   path: string,
   input: Pick<
     ArtifactExtractionInput,
-    "inputPath" | "inputFormat" | "environment" | "resourceScope"
+    | "inputPath"
+    | "inputFormat"
+    | "environment"
+    | "resourceScope"
+    | "asarHeaderAdmission"
   >,
   containerFormat: ArtifactGraphManifest["root_format"],
   signal?: AbortSignal,
@@ -603,7 +611,9 @@ const createReader = async (
     return new DirectoryArtifactReader(path);
   if (format === "asar")
     return new AsarArtifactReader(path, {
-      headerAdmission: resolveAsarHeaderAdmission(input.environment),
+      headerAdmission:
+        input.asarHeaderAdmission ??
+        resolveAsarHeaderAdmission(input.environment),
     });
   if (isZipPackageFormat(format)) return new ZipArtifactReader(path, format);
   return new MachOSliceArtifactReader(path, input.environment);

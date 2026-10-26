@@ -8,7 +8,8 @@ import {
 } from "../metadata/BinaryContainer.js";
 import { architectureForElfMachine } from "../metadata/ElfImage.js";
 import { isUtf8 } from "node:buffer";
-import { readElfStringBytes, readElfSymbol } from "../metadata/ElfSymbol.js";
+import { readElfStringBytes } from "../metadata/ElfStringTable.js";
+import { readElfSymbol } from "../../domain/elfSymbol.js";
 import {
   readElfDirectoryFromBuffer,
   type NativeSection,
@@ -35,13 +36,11 @@ const MAXIMUM_NAME_BYTES = 4096;
 /** Text retained across all rows; names can repeat one long string table entry. */
 const MAXIMUM_RETAINED_TEXT_BYTES = 16 * 1024 * 1024;
 
-/** Charge every retained row and its text before it is stored. */
+/** Charge retained text and rows at their owning storage boundary. */
 const createRetention = () => {
   let rows = 0;
   let text = 0;
-  return (...strings: readonly (string | null)[]): void => {
-    rows++;
-    rowBudget(rows, "Export inventory");
+  const retainText = (...strings: readonly (string | null)[]): void => {
     for (const value of strings) text += value?.length ?? 0;
     if (text > MAXIMUM_RETAINED_TEXT_BYTES)
       throw new BinaryResourceFailure(
@@ -49,6 +48,14 @@ const createRetention = () => {
         MAXIMUM_RETAINED_TEXT_BYTES,
         `Export names exceed the ${String(MAXIMUM_RETAINED_TEXT_BYTES)}-byte retained-text allowance`,
       );
+  };
+  return {
+    text: retainText,
+    row: (...strings: readonly (string | null)[]): void => {
+      rows++;
+      rowBudget(rows, "Export inventory");
+      retainText(...strings);
+    },
   };
 };
 
@@ -114,7 +121,7 @@ const parsePeExports = (bytes: Buffer, artifact: Artifact): NativeExports => {
   const mappings = imageFileMappings(image);
   const map = (rva: number, size: number): number =>
     mappedFileOffset(mappings, base + BigInt(rva), size, image.zero_fills);
-  const cString = (rva: number): string => {
+  const cStringBytes = (rva: number): Buffer => {
     const value = readMappedCString(
       bytes,
       image,
@@ -126,7 +133,7 @@ const parsePeExports = (bytes: Buffer, artifact: Artifact): NativeExports => {
         "malformed",
         `Export name at RVA ${hex(rva)} is empty`,
       );
-    return value.toString("latin1");
+    return value;
   };
 
   const header = map(directory.address, PE_EXPORT_DIRECTORY_BYTES);
@@ -144,7 +151,7 @@ const parsePeExports = (bytes: Buffer, artifact: Artifact): NativeExports => {
   const issues: NativeExportIssue[] = [];
   let dllName: string | null = null;
   try {
-    dllName = cString(reader.u32(header + 12));
+    dllName = cStringBytes(reader.u32(header + 12)).toString("latin1");
   } catch (cause) {
     issues.push({
       code: "name_unreadable",
@@ -153,6 +160,7 @@ const parsePeExports = (bytes: Buffer, artifact: Artifact): NativeExports => {
     });
   }
 
+  const retain = createRetention();
   const namesByFunction = new Map<number, string[]>();
   const namedFunctions = new Set<number>();
   for (let index = 0; index < nameCount; index++) {
@@ -168,8 +176,13 @@ const parsePeExports = (bytes: Buffer, artifact: Artifact): NativeExports => {
     }
     namedFunctions.add(functionIndex);
     try {
+      const nameBytes = cStringBytes(nameRva);
+      // Validate unused slots too, but retain names only for populated slots.
+      if (reader.u32(functions + functionIndex * 4) === 0) continue;
+      const name = nameBytes.toString("latin1");
+      retain.text(name);
       const list = namesByFunction.get(functionIndex) ?? [];
-      list.push(cString(nameRva));
+      list.push(name);
       namesByFunction.set(functionIndex, list);
     } catch (cause) {
       issues.push({
@@ -181,7 +194,6 @@ const parsePeExports = (bytes: Buffer, artifact: Artifact): NativeExports => {
   }
 
   const forwarderEnd = directory.address + directory.size;
-  const retain = createRetention();
   const exports: PeExport[] = [];
   for (let index = 0; index < functionCount; index++) {
     const rva = reader.u32(functions + index * 4);
@@ -191,7 +203,10 @@ const parsePeExports = (bytes: Buffer, artifact: Artifact): NativeExports => {
     let target: Pick<PeExport, "address" | "forwarder">;
     if (rva >= directory.address && rva < forwarderEnd) {
       try {
-        target = { address: null, forwarder: cString(rva) };
+        target = {
+          address: null,
+          forwarder: cStringBytes(rva).toString("latin1"),
+        };
       } catch (cause) {
         issues.push({
           code: "malformed_entry",
@@ -204,12 +219,12 @@ const parsePeExports = (bytes: Buffer, artifact: Artifact): NativeExports => {
     const exportNames = namesByFunction.get(index);
     if (exportNames !== undefined)
       for (const name of exportNames) {
-        retain(name, target.forwarder);
+        retain.row(target.forwarder);
         exports.push({ name, ordinal, ...target });
       }
     // A slot whose only name was unreadable is reported through its issue.
     else if (!namedFunctions.has(index)) {
-      retain(target.forwarder);
+      retain.row(target.forwarder);
       exports.push({ name: null, ordinal, ...target });
     }
   }
@@ -548,11 +563,17 @@ const parseElfExports = (bytes: Buffer, artifact: Artifact): NativeExports => {
   const exports: ElfExport[] = [];
   for (let index = 1; index < count; index++) {
     const at = table + index * width;
-    const symbol = readElfSymbol(
+    const parsedSymbol = readElfSymbol(
       bytes.subarray(at, at + width),
       directory.bits,
       directory.little,
     );
+    if (!parsedSymbol.ok)
+      throw new BinaryFormatFailure(
+        parsedSymbol.error.kind,
+        parsedSymbol.error.message,
+      );
+    const symbol = parsedSymbol.value;
     const binding = ELF_BINDINGS[symbol.binding];
     const visibility = symbol.other & 3;
     // Undefined, local and hidden/internal symbols are not exports.
@@ -612,7 +633,7 @@ const parseElfExports = (bytes: Buffer, artifact: Artifact): NativeExports => {
       });
       continue;
     }
-    retain(
+    retain.row(
       name,
       typeof version === "object" ? (version?.name ?? null) : null,
       rawNameBase64,

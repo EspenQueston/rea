@@ -1,6 +1,7 @@
 import { jsonTextCodeUnits } from "../jsonSerialization.js";
 import type { JsonValue } from "../jsonValue.js";
 import {
+  ownMember,
   isObject,
   locateItem,
   at,
@@ -39,6 +40,7 @@ import {
   type UpdateCall,
   conflictsWithPlan,
   refinedBody,
+  reconciledUpdateRule,
 } from "./environmentStateWriteCalls.js";
 import {
   laterObservation,
@@ -58,7 +60,6 @@ import {
   observationNeeds,
 } from "./environmentStateWriteAddress.js";
 import {
-  alikeRules,
   keptOrders,
   pathValuesOf,
   siblingTrimmedClocks,
@@ -103,7 +104,7 @@ export const clockEvidence = (
   draft: WriteDraft,
   field: string,
 ): JsonValue | undefined =>
-  draft.fixedWidth.get(field) ?? draft.observed?.[field];
+  draft.fixedWidth.get(field) ?? ownMember(draft.observed, field);
 
 /** A write observation plus the fields its selected read view actually covers, if any. */
 type UpdateObservation = Observed & {
@@ -394,7 +395,7 @@ const refineUpdate = (
       const shown = later.get(rule.field);
       return shown === undefined
         ? rule
-        : (alikeRules(rule, shown, draft.kept) ?? rule);
+        : (reconciledUpdateRule(rule, shown, draft.kept) ?? rule);
     }),
     ...evidence.explained.rules.filter((rule) => !ruled.has(rule.field)),
   ];
@@ -599,8 +600,8 @@ export const updateEntity = (
     (rule) =>
       recordedGeneratedValue(
         rule,
-        entity.fields[rule.field],
-        after.object[rule.field],
+        ownMember(entity.fields, rule.field),
+        ownMember(after.object, rule.field),
       ),
     referencedIn(context),
   );
@@ -663,7 +664,7 @@ const fitUpdateClocks = (
       return rule;
     const format = fittedClockFormat(
       rule.format,
-      after[rule.field],
+      ownMember(after, rule.field),
       clockEvidence(draft, rule.field),
     );
     return format === undefined ? rule : { ...rule, format };
@@ -682,7 +683,10 @@ const fitUpdateClocks = (
         const held = planned.get(rule.field);
         return rule.rule === "clock" &&
           held?.rule === "clock" &&
-          matchesClockFormat(held.format, readClock(after[rule.field]))
+          matchesClockFormat(
+            held.format,
+            readClock(ownMember(after, rule.field)),
+          )
           ? { ...rule, format: held.format }
           : rule;
       }),
@@ -703,10 +707,14 @@ const contradictsGeneratedClock = (
     if (
       rule.rule !== "clock" ||
       !Object.hasOwn(after, rule.field) ||
-      explained.unstamped.includes(rule.field)
+      explained.unstamped.includes(rule.field) ||
+      explained.rules.some(
+        (candidate) =>
+          candidate.field === rule.field && candidate.rule === "held-clock",
+      )
     )
       return false;
-    const previous = readClock(before[rule.field]);
+    const previous = readClock(ownMember(before, rule.field));
     if (previous === undefined) return false;
     const next = readClock(after[rule.field]);
     return (
