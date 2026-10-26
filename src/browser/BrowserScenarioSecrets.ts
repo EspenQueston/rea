@@ -29,6 +29,17 @@ export const MIN_REDACTED_PAGE_VALUE_LENGTH = 8;
 /** The most saved-value text a scenario keeps at once, with the redaction spellings of values saved as secret: as much as one saved response can carry. */
 export const MAX_RETAINED_SAVED_CHARACTERS = 4_000_000;
 
+export type ScenarioRedactionScope = "current" | "response";
+interface ResponseRedactionFacts {
+  readonly text: readonly SecretReplacement[];
+  readonly url: readonly SecretReplacement[];
+  readonly needles: readonly SecretNeedle[];
+  readonly costPerCharacter: number;
+}
+const normalizedSecretValues = (value: string): readonly string[] => [
+  ...new Set([value.replace(/^[\t ]+|[\t ]+$/gu, ""), value]),
+];
+
 const encodedSecretValues = (secret: string): ReadonlySet<string> =>
   new Set([
     encodeURIComponent(secret),
@@ -223,6 +234,7 @@ const replaceSecretLiterals = (
   value: string,
   replacements: readonly SecretReplacement[],
   patterns: readonly SecretPattern[],
+  markerPatterns: readonly SecretPattern[] = patterns,
 ): string => {
   const normalizedValue = replacements.some(
     ({ percentInsensitive }) => percentInsensitive,
@@ -248,7 +260,7 @@ const replaceSecretLiterals = (
         next = { ...replacement, index };
     }
     if (next === undefined) break;
-    const marker = redactionMarker(next.id, patterns);
+    const marker = redactionMarker(next.id, markerPatterns);
     parts.push(value.slice(offset, next.index), marker);
     offset = next.index + next.text.length;
   }
@@ -276,22 +288,27 @@ export class BrowserScenarioSecrets {
   private textReplacements: readonly SecretReplacement[] = [];
   private textNeedles: readonly SecretNeedle[] = [];
   private redactionCostPerCharacter = 8;
-  private learnedSecrets = false;
+  private readonly declaredIds: ReadonlySet<string>;
+  private readonly declaredValues: ReadonlySet<string>;
+  private readonly responseValues = new Set<string>();
+  private responseFacts: ResponseRedactionFacts | undefined;
 
   /** Pixel privacy is established before the scenario can render a future marked response. */
   withholdsScreenshots(): boolean {
     return this.plansSensitiveValues || this.textPatterns.length > 0;
   }
 
-  /** Runtime redaction facts are independent of source request identity/readiness. */
-  hasLearnedSecrets(): boolean {
-    return this.learnedSecrets;
+  /** Explicit response facts, independent of source readiness and subsequent-only page credentials. */
+  hasLearnedResponseSecrets(): boolean {
+    return this.responseValues.size > 0;
   }
 
   private constructor(
     private readonly values: Map<string, string>,
     private readonly plansSensitiveValues: boolean,
   ) {
+    this.declaredIds = new Set(values.keys());
+    this.declaredValues = new Set(values.values());
     this.compile();
   }
 
@@ -302,19 +319,54 @@ export class BrowserScenarioSecrets {
     this.urlReplacements = secretReplacements(values, "url");
     this.textReplacements = secretReplacements(values, "text");
     this.textNeedles = secretNeedles(this.textReplacements, this.textPatterns);
-    this.redactionCostPerCharacter = 8;
+    this.redactionCostPerCharacter = this.costOf(
+      this.textReplacements,
+      this.urlReplacements,
+    );
+    this.responseFacts = undefined;
+  }
+
+  private costOf(
+    text: readonly SecretReplacement[],
+    url: readonly SecretReplacement[],
+  ): number {
+    let cost = 8;
     for (const [replacements, patterns] of [
-      [this.textReplacements, this.textPatterns],
-      [this.urlReplacements, this.urlPatterns],
+      [text, this.textPatterns],
+      [url, this.urlPatterns],
     ] as const)
       for (const replacement of replacements)
-        this.redactionCostPerCharacter = Math.max(
-          this.redactionCostPerCharacter,
+        cost = Math.max(
+          cost,
           8 +
             (Buffer.byteLength(redactionMarker(replacement.id, patterns)) * 8 +
               128) /
               replacement.text.length,
         );
+    return cost;
+  }
+
+  /** Borrow compiled pattern/byte owners; invalidate on admission or scope promotion, not per event. */
+  private responseRedactions(): ResponseRedactionFacts {
+    if (this.responseFacts !== undefined) return this.responseFacts;
+    const eligible = ({ id }: { readonly id: string }): boolean =>
+      this.declaredIds.has(id) ||
+      this.responseValues.has(this.values.get(id) ?? "");
+    const text = this.textReplacements.filter(eligible),
+      url = this.urlReplacements.filter(eligible);
+    return (this.responseFacts = {
+      text,
+      url,
+      needles: this.textNeedles.filter(eligible),
+      costPerCharacter: this.costOf(text, url),
+    });
+  }
+
+  private markResponseValue(value: string): void {
+    for (const candidate of normalizedSecretValues(value))
+      if (candidate.length > 0 && !this.declaredValues.has(candidate))
+        this.responseValues.add(candidate);
+    this.responseFacts = undefined;
   }
 
   /**
@@ -355,9 +407,8 @@ export class BrowserScenarioSecrets {
 
   /** Fetch trims surrounding header whitespace; both source and sent spellings remain owned here. */
   private valuesToAdmit(value: string, shortest: number): readonly string[] {
-    const sent = value.replace(/^[\t ]+|[\t ]+$/gu, "");
     const held = new Set(this.values.values());
-    return [...new Set([sent, value])].filter(
+    return normalizedSecretValues(value).filter(
       (candidate) => candidate.length >= shortest && !held.has(candidate),
     );
   }
@@ -371,7 +422,6 @@ export class BrowserScenarioSecrets {
       this.values.set(id, value);
     }
     this.compile();
-    this.learnedSecrets = true;
   }
 
   static resolve(
@@ -485,6 +535,7 @@ export class BrowserScenarioSecrets {
         this.savedUnits,
         entry.name,
       );
+      this.markResponseValue(String(value));
     }
     if (selected.value.values.length === source.entries.length)
       this.markResponseSecretsReady(request);
@@ -507,8 +558,16 @@ export class BrowserScenarioSecrets {
       readonly maxBytes: number;
       readonly maxAllocationBytes: number;
     },
+    scope: ScenarioRedactionScope = "current",
   ): Buffer {
-    if (body.length === 0 || this.textPatterns.length === 0) return body;
+    if (
+      body.length === 0 ||
+      (scope === "response"
+        ? this.responseRedactions().text
+        : this.textPatterns
+      ).length === 0
+    )
+      return body;
     const text = new TextDecoder("utf-8", {
       fatal: true,
       ignoreBOM: true,
@@ -516,7 +575,7 @@ export class BrowserScenarioSecrets {
     const redacted = redactResponseSource(
       text,
       [],
-      (value) => this.redact(value),
+      (value) => this.redact(value, scope),
       retention.maxBytes,
       retention.maxAllocationBytes,
     );
@@ -566,6 +625,7 @@ export class BrowserScenarioSecrets {
     const additions =
       secret && available >= 0 ? this.valuesToAdmit(text, 1) : [];
     this.retainSavedRedactions(label, additions, savedUnits, name);
+    if (secret) this.markResponseValue(text);
     this.saved.set(name, value);
     this.savedUnits = savedUnits;
   }
@@ -597,8 +657,16 @@ export class BrowserScenarioSecrets {
    * Callers measuring untrusted observations must reserve this cost before
    * invoking redaction. A one-byte secret can otherwise expand every byte.
    */
-  redactionAllocationCost(length: number): number {
-    return Math.ceil(length * this.redactionCostPerCharacter);
+  redactionAllocationCost(
+    length: number,
+    scope: ScenarioRedactionScope = "current",
+  ): number {
+    return Math.ceil(
+      length *
+        (scope === "response"
+          ? this.responseRedactions().costPerCharacter
+          : this.redactionCostPerCharacter),
+    );
   }
 
   redactFailure(error: AnalysisError): AnalysisError {
@@ -606,13 +674,18 @@ export class BrowserScenarioSecrets {
     return redactSensitiveFailure(error, (value) => this.redact(value));
   }
 
-  redact(value: string): string {
-    const patterns = this.textPatterns;
+  redact(value: string, scope: ScenarioRedactionScope = "current"): string {
+    const replacements =
+      scope === "response"
+        ? this.responseRedactions().text
+        : this.textReplacements;
+    const patterns = scope === "response" ? replacements : this.textPatterns;
     if (patterns.length === 0) return value;
     const output = replaceSecretLiterals(
       value,
-      this.textReplacements,
+      replacements,
       patterns,
+      this.textPatterns,
     );
     return containsSecretPattern(
       output,
@@ -624,10 +697,15 @@ export class BrowserScenarioSecrets {
   }
 
   /** Replace declared UTF-8, URI/form, and JSON-escaped secret spellings. */
-  redactBytes(value: Buffer): Buffer {
-    const patterns = this.textPatterns;
-    if (patterns.length === 0) return value;
-    const candidates = this.textNeedles;
+  redactBytes(
+    value: Buffer,
+    scope: ScenarioRedactionScope = "current",
+  ): Buffer {
+    const candidates =
+      scope === "response"
+        ? this.responseRedactions().needles
+        : this.textNeedles;
+    if (candidates.length === 0) return value;
     const hasPercentPatterns = candidates.some(
       ({ percentInsensitive }) => percentInsensitive,
     );
@@ -682,10 +760,22 @@ export class BrowserScenarioSecrets {
   }
 
   /** Remove only declared secret values from one URL and report that action. */
-  sanitizeUrl(value: string): SanitizedBrowserUrl {
-    const patterns = this.urlPatterns;
+  sanitizeUrl(
+    value: string,
+    scope: ScenarioRedactionScope = "current",
+  ): SanitizedBrowserUrl {
+    const replacements =
+      scope === "response"
+        ? this.responseRedactions().url
+        : this.urlReplacements;
+    const patterns = scope === "response" ? replacements : this.urlPatterns;
     if (patterns.length === 0) return sanitizeBrowserUrl(value);
-    const output = replaceSecretLiterals(value, this.urlReplacements, patterns);
+    const output = replaceSecretLiterals(
+      value,
+      replacements,
+      patterns,
+      this.urlPatterns,
+    );
     if (
       containsSecretPattern(output, normalizePercentEscapes(output), patterns)
     )

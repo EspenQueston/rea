@@ -294,7 +294,7 @@ export class PlaywrightScenarioEvents {
   private async finalizeEventPrivacy(): Promise<void> {
     if (this.eventPrivacyFinalized) return;
     const sources = this.network?.sourcePrivacy() ?? new Map<string, boolean>();
-    const learnedSecrets = this.secrets.hasLearnedSecrets();
+    const learnedSecrets = this.secrets.hasLearnedResponseSecrets();
     if (sources.size === 0 && !learnedSecrets) return;
     let retained = 0;
     for (const original of this.items) {
@@ -330,7 +330,7 @@ export class PlaywrightScenarioEvents {
       );
       let reason: BrowserScenarioEventBudgetReason | undefined =
         "transaction_id" in original &&
-        this.secrets.redactionAllocationCost(extra) + 4096 >
+        this.secrets.redactionAllocationCost(extra, "response") + 4096 >
           this.limits.max_network_metadata_allocation_bytes
           ? "max-network-metadata-allocation-bytes"
           : undefined;
@@ -338,12 +338,18 @@ export class PlaywrightScenarioEvents {
         original.kind === "network-content" &&
         original.body.state === "captured"
           ? Math.max(
-              this.secrets.redactionAllocationCost(original.body.bytes),
+              this.secrets.redactionAllocationCost(
+                original.body.bytes,
+                "response",
+              ),
               Math.ceil(original.body.bytes / 3) * 4 * 8 + 2,
             )
           : 0;
       const workingCost =
-        oldCost + this.secrets.redactionAllocationCost(extra) + bodyCopy + 4096;
+        oldCost +
+        this.secrets.redactionAllocationCost(extra, "response") +
+        bodyCopy +
+        4096;
       reason ??=
         workingCost > this.limits.max_event_allocation_bytes
           ? "max-event-allocation-bytes"
@@ -385,7 +391,7 @@ export class PlaywrightScenarioEvents {
   }
 
   private protectUrl(value: SanitizedBrowserUrl): SanitizedBrowserUrl {
-    const url = this.secrets.sanitizeUrl(value.url);
+    const url = this.secrets.sanitizeUrl(value.url, "response");
     return { ...url, redacted: url.redacted || value.redacted };
   }
 
@@ -395,14 +401,17 @@ export class PlaywrightScenarioEvents {
         return {
           ...event,
           url: event.url === null ? null : this.protectUrl(event.url),
-          level: this.secrets.redact(event.level),
-          text: this.secrets.redact(event.text),
+          level: this.secrets.redact(event.level, "response"),
+          text: this.secrets.redact(event.text, "response"),
         };
       case "page-error":
         return {
           ...event,
-          message: this.secrets.redact(event.message),
-          stack: event.stack === null ? null : this.secrets.redact(event.stack),
+          message: this.secrets.redact(event.message, "response"),
+          stack:
+            event.stack === null
+              ? null
+              : this.secrets.redact(event.stack, "response"),
         };
       case "websocket-frame-sent":
       case "websocket-frame-received":
@@ -410,7 +419,7 @@ export class PlaywrightScenarioEvents {
           ? {
               ...event,
               url: this.protectUrl(event.url),
-              payload_text: this.secrets.redact(event.payload_text),
+              payload_text: this.secrets.redact(event.payload_text, "response"),
             }
           : { ...event, url: this.protectUrl(event.url) };
       case "websocket-opened":
@@ -420,13 +429,19 @@ export class PlaywrightScenarioEvents {
         return {
           ...event,
           url: this.protectUrl(event.url),
-          suggested_filename: this.secrets.redact(event.suggested_filename),
+          suggested_filename: this.secrets.redact(
+            event.suggested_filename,
+            "response",
+          ),
         };
       default:
         return {
           ...event,
           url: event.url === null ? null : this.protectUrl(event.url),
-          name: event.name === null ? null : this.secrets.redact(event.name),
+          name:
+            event.name === null
+              ? null
+              : this.secrets.redact(event.name, "response"),
         };
     }
   }
@@ -457,18 +472,18 @@ export class PlaywrightScenarioEvents {
         event.headers.state === "unavailable"
           ? {
               ...event.headers,
-              message: this.secrets.redact(event.headers.message),
+              message: this.secrets.redact(event.headers.message, "response"),
             }
           : event.headers.state !== "captured"
             ? event.headers
             : {
                 state: "captured",
                 items: event.headers.items.map((item) => {
-                  const name = this.secrets.redact(item.name),
+                  const name = this.secrets.redact(item.name, "response"),
                     value =
                       item.value === null
                         ? null
-                        : this.secrets.redact(item.value);
+                        : this.secrets.redact(item.value, "response");
                   return {
                     ...item,
                     name,
@@ -482,7 +497,10 @@ export class PlaywrightScenarioEvents {
               };
       let body = event.body;
       if (body.state === "unavailable")
-        body = { ...body, message: this.secrets.redact(body.message) };
+        body = {
+          ...body,
+          message: this.secrets.redact(body.message, "response"),
+        };
       if (body.state === "captured") {
         const prior = body;
         const source = {
@@ -498,6 +516,7 @@ export class PlaywrightScenarioEvents {
           source,
           this.secrets,
           {
+            redactionScope: "response",
             timeoutMs: 5000,
             maxBodyBytes: this.limits.max_network_body_bytes,
             maxBodyAllocationBytes: Math.min(
@@ -525,17 +544,21 @@ export class PlaywrightScenarioEvents {
       : { url: "", origin: null, query_parameter_names: [], redacted: true };
     const metadata = {
       url: { ...url, redacted: url.redacted || event.url.redacted },
-      method: this.secrets.redact(event.method),
-      resource_type: this.secrets.redact(event.resource_type),
+      method: this.secrets.redact(event.method, "response"),
+      resource_type: this.secrets.redact(event.resource_type, "response"),
       header_names: event.header_names.map((name) =>
-        ready ? this.secrets.redact(name) : "[REDACTED:source-unavailable]",
+        ready
+          ? this.secrets.redact(name, "response")
+          : "[REDACTED:source-unavailable]",
       ),
     };
     return event.kind === "request-failed"
       ? {
           ...event,
           ...metadata,
-          failure: ready ? this.secrets.redact(event.failure) : message,
+          failure: ready
+            ? this.secrets.redact(event.failure, "response")
+            : message,
         }
       : { ...event, ...metadata };
   }

@@ -255,6 +255,7 @@ try {
     );
     let final = first;
     let id;
+    let legacyPreReadObserved;
     if (!saved) {
       const selected = await invoke("inspect_analysis_view", {
         source: {
@@ -295,6 +296,38 @@ try {
       (r) => r.evidence_id === final.normalized_result.parent_evidence_id,
     );
     assert.ok(parent);
+    if (!saved) {
+      const legacy = bundle.records.find(
+        (record) => record.evidence_id === firstSummary.parent_evidence_id,
+      );
+      assert.ok(legacy);
+      const login = decodeBodies(legacy.normalized_result).filter(
+        (body) => typeof body?.token === "string",
+      );
+      assert.equal(login.length, 1);
+      const preReadLogin = decodeBodies({
+        events: legacy.normalized_result.events.items.filter(
+          (event) => event.step_index < firstActions.length,
+        ),
+      }).filter((body) => typeof body?.token === "string");
+      legacyPreReadObserved = preReadLogin.length === 1;
+      if (legacyPreReadObserved) {
+        assert.ok(
+          !preReadLogin[0].token.startsWith("[REDACTED:"),
+          "An observed pre-read login response must preserve its unmarked token",
+        );
+        const later = legacy.normalized_result.events.items.filter(
+          (event) => event.step_index >= firstActions.length,
+        );
+        assert.ok(
+          !JSON.stringify({
+            events: later,
+            bodies: decodeBodies({ events: later }),
+          }).includes(preReadLogin[0].token),
+          "Post-read facts must use the current page-value policy",
+        );
+      }
+    }
     const recordBodies = decodeBodies(parent.normalized_result).filter(
       (b) => b?.collectionName === "rea_items" && typeof b.id === "string",
     );
@@ -325,6 +358,7 @@ try {
     }
     runs.push({
       temperature,
+      legacy_pre_read_observed: legacyPreReadObserved,
       elapsed_ms: completedMs,
       task_calls: taskCalls,
       evidence_id: parent.evidence_id,

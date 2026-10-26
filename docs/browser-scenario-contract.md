@@ -535,12 +535,19 @@ id the application assigns:
   body are also protected using the admitted values. Unresolved source values
   withhold that transaction's affected metadata/content with an explicit
   limitation. Before publication, retained events are rechecked
-  with the final known secret values, including immediate follow-up requests
+  with the final marked-response values, including immediate follow-up requests
   and their response bodies, console/page errors, WebSocket text and event URL/name fields. Learned redaction facts are independent of source-identity readiness. Unknown source values withhold only the selected
   source transaction. Other saved values, such as ids, stay visible, since
   environments model them. The environment build warns about saved values
   named like credentials that are not marked secret
   (`credential-named-saved-values`).
+- Page-derived cookie/local-storage values and constructed Basic credentials
+  remain redacted only from observations made after they were read/built.
+  They do not retroactively rewrite earlier facts. The final event projection
+  borrows only declared and response-marked patterns; promotion of an already
+  held page value to an explicit response secret preserves its first marker.
+  Projection state is session-local, references admitted pattern/byte owners,
+  and is invalidated on admission or response classification changes.
 - Screenshots are withheld as `missing` from the start when the scenario plans
   any response save marked `secret: true`, page-derived or Basic authentication
   header values, or whenever nonempty sensitive values

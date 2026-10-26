@@ -411,6 +411,7 @@ const sourceTransactionCapture = async (
     followup?: boolean;
     metadataOnly?: boolean;
     learnDirect?: boolean;
+    latePageValue?: string;
     value?: string;
     padding?: number;
     metadataLimit?: number;
@@ -429,7 +430,13 @@ const sourceTransactionCapture = async (
   } as unknown as Page;
   const value = options.value ?? "credential-82ea";
   const url = `https://example.test/exchange?token=${value.repeat(options.padding ?? 1)}&safe=visible`;
-  const body = JSON.stringify({ token: value, public: "kept" });
+  const body = JSON.stringify({
+    token: value,
+    ...(options.latePageValue === undefined
+      ? {}
+      : { page: options.latePageValue }),
+    public: "kept",
+  });
   const parsed = browserScenarioSchema.parse({
     browser: { mode: "launch", executable_path: "/fixture/browser" },
     start_url: { url: "https://example.test/" },
@@ -484,6 +491,8 @@ const sourceTransactionCapture = async (
         expect.objectContaining({ kind: "network-content", phase: "request" }),
       ),
     );
+  if (options.latePageValue !== undefined)
+    secrets.admitPageValue("later.cookie", options.latePageValue);
   const sourceId = capture
     .result()
     .items.find((event) => event.kind === "request")!.transaction_id;
@@ -786,4 +795,112 @@ it("accounts for late non-network redaction expansion and reports omissions once
   });
   await capture.finish();
   expect(capture.result().dropped).toBe(1);
+});
+
+it.each(["page", "basic"])(
+  "preserves pre-read %s facts while backfilling only response-marked values",
+  async (kind) => {
+    for (const responseSave of [false, true]) {
+      const listeners = new Map<string, (value: unknown) => void>();
+      const page = {
+        on: (name: string, listener: (value: unknown) => void) =>
+          listeners.set(name, listener),
+        off: vi.fn(),
+      } as unknown as Page;
+      const parsed = browserScenarioSchema.parse({
+        browser: { mode: "launch", executable_path: "/fixture/browser" },
+        start_url: { url: "https://example.test/" },
+        actions: [
+          { step_id: "wait", action: "wait_for_timeout", duration_ms: 1 },
+        ],
+      });
+      const secrets = resolveScenarioSecrets(parsed, {});
+      const capture = new PlaywrightScenarioEvents({
+        page,
+        enabled: new Set(["console"]),
+        secrets,
+      });
+      const value =
+        kind === "page"
+          ? "csrf-page-value-729d"
+          : Buffer.from("user:password").toString("base64");
+      const message = `${value} response-value-82ea`;
+      const emit = () =>
+        listeners.get("console")!({
+          type: () => "log",
+          text: () => message,
+          location: () => ({ url: "" }),
+        });
+      emit();
+      if (kind === "page") secrets.admitPageValue("request.cookie", value);
+      else secrets.basicCredential("request.auth", "user", "password");
+      emit();
+      if (responseSave)
+        secrets.save("response.token", "token", "response-value-82ea", true);
+      await capture.finish();
+      const events = capture.result().items;
+      expect(events).toHaveLength(2);
+      expect(events[0]).toMatchObject({
+        kind: "console",
+        text: expect.stringContaining(value),
+      });
+      expect(events[1]).toMatchObject({
+        kind: "console",
+        text: expect.not.stringContaining(value),
+      });
+      expect(JSON.stringify(events).includes("response-value-82ea")).toBe(
+        !responseSave,
+      );
+    }
+  },
+);
+
+it("preserves a response field recorded before a later page-value read while backfilling response secrets", async () => {
+  const pageValue = "csrf-page-value-729d";
+  const { capture, sourceId, value } = await sourceTransactionCapture({
+    latePageValue: pageValue,
+  });
+  const first = capture
+    .result()
+    .items.find(
+      (event) =>
+        event.kind === "network-content" &&
+        event.transaction_id === sourceId &&
+        event.phase === "request",
+    );
+  expect(first).toBeDefined();
+  if (first?.kind !== "network-content" || first.body.state !== "captured")
+    throw new Error("Expected retained earlier request bytes");
+  const body = JSON.parse(Buffer.from(first.body.content, "base64").toString());
+  expect(body.page).toBe(pageValue);
+  expect(body.token).toBe("[REDACTED:page:click.token]");
+  expect(body.token).not.toContain(value);
+});
+
+it("promotes an already held page value to response scope without changing its first marker", () => {
+  const parsed = browserScenarioSchema.parse({
+    browser: { mode: "launch", executable_path: "/fixture/browser" },
+    start_url: { url: "https://example.test/" },
+    actions: [{ step_id: "wait", action: "wait_for_timeout", duration_ms: 1 }],
+  });
+  const secrets = resolveScenarioSecrets(parsed, {});
+  const value = "existing-page-value-82ea";
+  secrets.admitPageValue("cookie.token", value);
+  expect(secrets.redact(value, "response")).toBe(value);
+  expect(secrets.hasLearnedResponseSecrets()).toBe(false);
+  secrets.save("response.token", "token", value, true);
+  expect(secrets.hasLearnedResponseSecrets()).toBe(true);
+  expect(secrets.redact(value, "response")).toBe(
+    "[REDACTED:page:cookie.token]",
+  );
+  expect(secrets.redactBytes(Buffer.from(value), "response").toString()).toBe(
+    "[REDACTED:page:cookie.token]",
+  );
+  secrets.admitPageValue("later.unrelated", "unrelated-page-value-729d");
+  expect(secrets.redact("unrelated-page-value-729d", "response")).toBe(
+    "unrelated-page-value-729d",
+  );
+  expect(secrets.redact(value, "response")).toBe(
+    "[REDACTED:page:cookie.token]",
+  );
 });
