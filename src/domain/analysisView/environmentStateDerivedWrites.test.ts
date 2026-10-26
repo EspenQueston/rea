@@ -1082,8 +1082,9 @@ describe("slugs the held entities' spellings refuse", () => {
         expect.objectContaining({ field: "slug", rule: "slug" }),
       );
       // The slug kept as recorded fits only the recorded name.
-      expect(plan.body.accepted).not.toContain("name");
-      expect(plan.body.fixed).toContainEqual({ member: "name", sent: name });
+      expect(plan.body).not.toBeNull();
+      expect(plan.body?.accepted).not.toContain("name");
+      expect(plan.body?.fixed).toContainEqual({ member: "name", sent: name });
     },
   );
 });
