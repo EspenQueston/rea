@@ -1,3 +1,4 @@
+import { safeParseUtf8Json } from "../../domain/safeJson.js";
 import {
   AnalysisCleanupLease,
   AnalysisCleanupLeaseGroup,
@@ -17,8 +18,10 @@ import { constants } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
-import type { ExecutionOptions } from "../../application/AnalysisProvider.js";
-import type { ProviderIdentity } from "../../application/AnalysisProvider.js";
+import type {
+  ExecutionOptions,
+  ProviderIdentity,
+} from "../../application/AnalysisProvider.js";
 import type {
   AnalysisCapturedOutput,
   AnalysisPartialObservation,
@@ -385,7 +388,9 @@ export class PwntoolsDecoder<
           undefined,
           this.#resources,
         );
-        reply = replySchema.parse(JSON.parse(file.bytes.toString("utf8")));
+        const decoded = safeParseUtf8Json(file.bytes);
+        if (!decoded.ok) throw decoded.cause;
+        reply = replySchema.parse(decoded.value);
       } catch (cause: unknown) {
         if (
           cause instanceof ArtifactReaderFailure &&

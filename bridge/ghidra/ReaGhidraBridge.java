@@ -404,6 +404,8 @@ public final class ReaGhidraBridge extends HeadlessScript {
                     writeSuccess(writer, request.id, result);
                     return;
                 }
+                decompileTimeoutSeconds = request.decompileTimeoutSeconds() == null
+                    ? descriptor.decompileTimeoutSeconds() : request.decompileTimeoutSeconds();
                 writeSuccess(writer, request.id, handleRequest(request, descriptor));
             }
             catch (RequestFailure failure) {
@@ -432,6 +434,8 @@ public final class ReaGhidraBridge extends HeadlessScript {
                 "Ghidra auto-analysis did not complete for this Program"
             );
         }
+        if (descriptor.existingProject && isMutatingOperation(request.method))
+            throw new RequestFailure("method_unavailable", "Existing Ghidra project sessions are read-only");
         return switch (request.method) {
             case "read_binary_inventory_summary" -> binaryInventorySummary(request.params);
             case "inspect_native_load_image" -> inspectNativeLoadImage(request.params);
@@ -484,6 +488,10 @@ public final class ReaGhidraBridge extends HeadlessScript {
         };
     }
 
+    private static boolean isMutatingOperation(String method) {
+        return method.equals("annotate_native_function") || method.equals("set_address_name") || method.equals("set_addresses_names");
+    }
+
     private JsonObject sessionInfo(SessionDescriptor descriptor) throws Exception {
         boolean timedOut = analysisTimeoutOccurred();
         JsonObject provider = new JsonObject();
@@ -509,14 +517,16 @@ public final class ReaGhidraBridge extends HeadlessScript {
         result.addProperty("run_id", descriptor.runId);
         result.addProperty("profile_digest", descriptor.profileDigest);
         result.add("provider", provider);
-        boolean readOnly = !descriptor.transport.equals("unix-socket");
+        boolean readOnly = descriptor.existingProject || !descriptor.transport.equals("unix-socket");
         result.addProperty("read_only", readOnly);
-        result.addProperty("analysis_complete", !timedOut);
+        if (descriptor.existingProject) {
+            result.add("analysis_complete", JsonNull.INSTANCE);
+            result.addProperty("existing_project", true);
+        } else result.addProperty("analysis_complete", !timedOut);
         result.addProperty("analysis_timed_out", timedOut);
         result.add("capabilities", GSON.toJsonTree(
             java.util.Arrays.stream(CAPABILITIES)
-                .filter(value -> !readOnly || !(value.equals("annotate_native_function")
-                    || value.equals("set_address_name") || value.equals("set_addresses_names")))
+                .filter(value -> !readOnly || !isMutatingOperation(value))
                 .toArray(String[]::new)
         ));
         result.add("target", target);
@@ -3381,7 +3391,7 @@ public final class ReaGhidraBridge extends HeadlessScript {
                 "decompile_timed_out",
                 "Ghidra decompilation of " + canonicalAddress(function.getEntryPoint()) +
                 " exceeded the " + decompileTimeoutSeconds +
-                "-second limit set by REA_GHIDRA_DECOMPILE_TIMEOUT_SECONDS"
+                "-second configured decompilation limit (ghidra.decompile_timeout_seconds; launch seed REA_GHIDRA_DECOMPILE_TIMEOUT_SECONDS)"
             );
         }
         if (!results.decompileCompleted()) {
@@ -4750,6 +4760,8 @@ public final class ReaGhidraBridge extends HeadlessScript {
             keys.add("analysis_extensions");
         if (parsed.isJsonObject() && parsed.getAsJsonObject().has("decompile_timeout_seconds"))
             keys.add("decompile_timeout_seconds");
+        if (parsed.isJsonObject() && parsed.getAsJsonObject().has("existing_project"))
+            keys.add("existing_project");
         JsonObject object = requireObject(parsed, keys);
         int decompileTimeout = 0;
         if (object.has("decompile_timeout_seconds")) {
@@ -4766,12 +4778,24 @@ public final class ReaGhidraBridge extends HeadlessScript {
             requireString(object, "provider_version"),
             requireString(object, "profile_digest"),
             object.has("analysis_extensions") ? object.getAsJsonArray("analysis_extensions") : new JsonArray(),
-            decompileTimeout
+            decompileTimeout,
+            object.has("existing_project") && requireBoolean(object, "existing_project")
         );
     }
 
     private static Request parseRequest(String line, String expectedToken) {
-        JsonObject object = requireObject(JsonParser.parseString(line), REQUEST_KEYS);
+        JsonElement parsed = JsonParser.parseString(line);
+        Set<String> keys = new HashSet<>(REQUEST_KEYS);
+        if (parsed.isJsonObject() && parsed.getAsJsonObject().has("decompile_timeout_seconds"))
+            keys.add("decompile_timeout_seconds");
+        JsonObject object = requireObject(parsed, keys);
+        Integer timeout = null;
+        if (object.has("decompile_timeout_seconds")) {
+            JsonElement value = object.get("decompile_timeout_seconds");
+            timeout = value.isJsonNull() ? 0 : requireInteger(object, "decompile_timeout_seconds");
+            if (!value.isJsonNull() && (timeout < 1 || timeout > MAX_DECOMPILE_TIMEOUT_SECONDS))
+                throw new IllegalArgumentException("Invalid per-request decompile deadline");
+        }
         int id = requireInteger(object, "id");
         if (id <= 0 || !constantTimeEquals(requireString(object, "token"), expectedToken)) {
             throw new IllegalArgumentException("Bridge request authentication failed");
@@ -4780,7 +4804,7 @@ public final class ReaGhidraBridge extends HeadlessScript {
         if (params == null || !params.isJsonObject()) {
             throw new IllegalArgumentException("Bridge request parameters are invalid");
         }
-        return new Request(id, requireString(object, "method"), params.getAsJsonObject());
+        return new Request(id, requireString(object, "method"), params.getAsJsonObject(), timeout);
     }
 
     private static JsonObject requireObject(JsonElement element, Set<String> keys) {
@@ -4972,9 +4996,10 @@ public final class ReaGhidraBridge extends HeadlessScript {
         String providerVersion,
         String profileDigest,
         JsonArray analysisExtensions,
-        int decompileTimeoutSeconds
+        int decompileTimeoutSeconds,
+        boolean existingProject
     ) {}
-    private record Request(int id, String method, JsonObject params) {}
+    private record Request(int id, String method, JsonObject params, Integer decompileTimeoutSeconds) {}
 
     private static final class RequestFailure extends RuntimeException {
         private final String code;

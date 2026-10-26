@@ -29,6 +29,7 @@ import {
 } from "./hashStableRootArtifact.js";
 import type { ArtifactInventoryOptions } from "./types.js";
 import { readMachoHeaderPrefixFacts } from "../../domain/apple/machoContainer.js";
+import { hasDiskImageSignature } from "../../domain/apple/diskImageFormat.js";
 import {
   observeMzWindowsHeader,
   type MzWindowsHeaderSignatureEvidence,
@@ -48,37 +49,6 @@ type RootInventoryClassification = RootClassification & {
 export interface RootInventorySource extends StableRegularFileDescriptor {
   readonly owner: OwnedFileHandle;
 }
-
-/** Classify and hash one file root through the same stable open descriptor. */
-export const classifyAndHashRoot = async (
-  path: string,
-  directory: boolean,
-  expectedMetadata: Stats,
-  options: Pick<ArtifactInventoryOptions, "resourceScope" | "signal">,
-): Promise<RootClassification> => {
-  return options.resourceScope.run(async () => {
-    const result = await classifyAndHashRootForInventory(
-      path,
-      directory,
-      expectedMetadata,
-      options,
-    );
-    const rootSource = result.rootSource;
-    if (rootSource !== undefined) {
-      const owner: ArtifactResourceOwner = {
-        kind: "file-handle",
-        handle: rootSource.owner,
-        resource: `root artifact descriptor for ${path}`,
-      };
-      const cleanupAttempt = await options.resourceScope.release(owner);
-      if (cleanupAttempt.kind === "failed")
-        throw options.resourceScope.cleanupFailure({ kind: "completed" }, [
-          cleanupAttempt,
-        ]);
-    }
-    return { format: result.format, digest: result.digest };
-  });
-};
 
 /** Classify a root and retain its admitted ZIP descriptor for child inventory. */
 export const classifyAndHashRootForInventory = async (
@@ -183,9 +153,27 @@ const classifyRootFormat = async (
     evidence.prefix.subarray(0, 4).equals(Buffer.from("xar!"))
   )
     return "pkg";
+  // Fill each range: a short result is end of file, not a partial host read.
+  const read = async (position: number, length: number): Promise<Buffer> => {
+    const bytes = Buffer.alloc(length);
+    let filled = 0;
+    while (filled < length) {
+      abortIfNeeded(signal);
+      const observed = await handle.read(
+        bytes,
+        filled,
+        length - filled,
+        position + filled,
+      );
+      abortIfNeeded(signal);
+      if (observed.bytesRead === 0) break;
+      filled += observed.bytesRead;
+    }
+    return bytes.subarray(0, filled);
+  };
   if (
     lower.endsWith(".dmg") &&
-    (await hasKolyTrailer(handle, archiveBytes, signal))
+    (await hasDiskImageSignature(archiveBytes, read))
   )
     return "dmg";
   if (await locateGodotPck(handle, archiveBytes, signal, evidence.prefix))
@@ -211,13 +199,7 @@ const classifyRootFormat = async (
   if (
     (format === "file" || format === "unknown") &&
     !claimsExecutableHeader(evidence.prefix, archiveBytes) &&
-    (await locateTrailingZipArchive(archiveBytes, async (position, length) => {
-      abortIfNeeded(signal);
-      const bytes = Buffer.alloc(length);
-      const read = await handle.read(bytes, 0, length, position);
-      abortIfNeeded(signal);
-      return bytes.subarray(0, read.bytesRead);
-    })) !== undefined
+    (await locateTrailingZipArchive(archiveBytes, read)) !== undefined
   )
     return zipRootPackageFormat(lower);
   if (["elf", "pe", "mach-o", "mach-o-universal"].includes(format)) {
@@ -335,27 +317,4 @@ const readRootMzWindowsHeaderSignature = async (
   }
   if (available === 0) return undefined;
   return { offset, bytes: window.subarray(0, available) };
-};
-
-const hasKolyTrailer = async (
-  handle: FileHandle,
-  size: number,
-  signal?: AbortSignal,
-): Promise<boolean> => {
-  if (size < 512) return false;
-  const trailer = Buffer.alloc(4);
-  let bytes = 0;
-  while (bytes < trailer.length) {
-    abortIfNeeded(signal);
-    const read = await handle.read(
-      trailer,
-      bytes,
-      trailer.length - bytes,
-      size - 512 + bytes,
-    );
-    abortIfNeeded(signal);
-    if (read.bytesRead === 0) return false;
-    bytes += read.bytesRead;
-  }
-  return trailer.equals(Buffer.from("koly"));
 };

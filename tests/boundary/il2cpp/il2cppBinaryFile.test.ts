@@ -5,11 +5,12 @@ import {
   readUInt32,
 } from "../../../src/il2cpp/Il2cppBinaryImage.js";
 import { expect, it } from "vitest";
+import { linkIl2cppBinarySteps } from "../../../src/il2cpp/Il2cppBinaryFile.js";
 import {
+  drain,
   linkIl2cppBinary,
-  linkIl2cppBinarySteps,
-} from "../../../src/il2cpp/Il2cppBinaryFile.js";
-import { readIl2cppMetadataForLinking } from "../../../src/il2cpp/Il2cppMetadataFile.js";
+  readIl2cppMetadataForLinking,
+} from "../../fixtures/il2cpp/readers.js";
 import {
   GENERIC_TABLE_LIMIT,
   linkGenericMethodsSteps,
@@ -232,7 +233,7 @@ it.each(["thin", "universal"] as const)(
     expect(linked.return_types).toEqual(
       link(createIl2cppBinaryFixture()).return_types,
     );
-    expect(bytes).toEqual(original);
+    expect(Buffer.compare(bytes, original)).toBe(0);
   },
 );
 
@@ -387,7 +388,7 @@ it("reads a PE pointer array across file bytes and the declared zero-fill tail",
   const bytes = createSplitPointerPeFixture();
   const original = Buffer.from(bytes);
   expect(link(bytes).method_addresses).toEqual(expectedAddresses);
-  expect(bytes).toEqual(original);
+  expect(Buffer.compare(bytes, original)).toBe(0);
   expect(failure(createSplitPointerPeFixture(false)).reason).toBe(
     "code-gen-modules-not-found",
   );
@@ -1673,13 +1674,6 @@ it("returns no instances for an empty genericMethodTable without picking a layou
   });
 });
 
-const drain = <T>(steps: Generator<void, T>, onYield = () => {}): T => {
-  for (;;) {
-    const step = steps.next();
-    if (step.done === true) return step.value;
-    onYield();
-  }
-};
 // Link a low-base image of generic tables only, recording yields and rows.
 const linkLowBase = (
   options: GenericRegistrationImageOptions = {},
@@ -1844,5 +1838,22 @@ it.each([0n, FIXTURE_BINARY_BASE + 0x980n, FIXTURE_BINARY_BASE + 0x9b0n])(
       );
     expect(linked.method_addresses).toEqual(control.method_addresses);
     expect(bytes.readBigUInt64LE(0x900)).toBe(raw);
+  },
+);
+
+it.each([183, 62])(
+  "ignores R_NONE target and addend before relocation application (machine %s)",
+  (machine) => {
+    const image = createIl2cppBinaryFixture();
+    const bytes = createElfFixture(image, {
+      machine,
+      unresolvedRelocations: [{ offset: 0x7fffffff, kind: 0 }],
+    });
+    const dynamic = Number(bytes.readBigUInt64LE(128));
+    const relocationBytes = Number(bytes.readBigUInt64LE(dynamic + 24));
+    const last = 0x1000 + relocationBytes - 24;
+    bytes.writeBigUInt64LE(0xffffffffffffffffn, last);
+    bytes.writeBigInt64LE(-0x8000000000000000n, last + 16);
+    expect(link(bytes)).toEqual(link(createElfFixture(image, { machine })));
   },
 );
