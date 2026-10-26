@@ -52,11 +52,7 @@ export const createNodeDiscoveryTempDirectory = async (
   prefix: string,
 ): Promise<string> => {
   if (process.platform === "win32") return createTestTempDirectory(prefix);
-  if (!TEMPORARY_PREFIX.test(prefix) || prefix.length > 80) {
-    throw new TypeError(
-      "Test temporary directory prefixes must be safe basenames ending in '-'",
-    );
-  }
+  const ownedPrefix = normalizeTestTemporaryPrefix(prefix);
   // Resolve /tmp only when the primary directory is ineligible, so a host
   // without /tmp still uses a clean tmpdir().
   const primary = await realpath(tmpdir());
@@ -68,7 +64,9 @@ export const createNodeDiscoveryTempDirectory = async (
     throw new Error(
       `No temporary directory free of '_', '"' and '\\' for Node discovery fixtures: ${primary}, ${base}`,
     );
-  const canonicalDirectory = await realpath(await mkdtemp(join(base, prefix)));
+  const canonicalDirectory = await realpath(
+    await mkdtemp(join(base, ownedPrefix)),
+  );
   onTestFinished(async () => {
     await removeTestWorkspace(canonicalDirectory);
   });
