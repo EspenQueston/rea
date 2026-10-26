@@ -13,6 +13,13 @@ Select columns, batch IDs and page individual facts; aliases remain unresolved.
 Unpaired observations do not prove additions/removals. Existing matched dossier
 pairs include inputs for `compare_functions`; otherwise analyze just chosen pairs.
 
+For a matching representation refusal, inspect `details.limit` and raise
+`native.matching_representation_bytes` with `update_analysis_settings` before
+retrying the unchanged MCP request. CLI launch seed:
+`REA_NATIVE_MATCHING_REPRESENTATION_BYTES`. The default is 96 MiB; the policy
+range is 1 byte to 1 GiB and does not bound process RSS. Keep the complete
+inventories: splitting them changes global name/body uniqueness.
+
 ## Apple app resources
 
 Use `open_bundle_resources` with the selected app path, then `inspect_plist`,
@@ -340,6 +347,19 @@ operation's full ordered list. Candidate capabilities, returned with complete
 detail, describe possible providers. Top-level session capabilities describe the current route, and
 `analysis_provider_binding` identifies the selected provider.
 
+## Reuse caller-selected Ghidra analysis
+
+When the caller supplies an expanded project, configure `REA_GHIDRA_PROJECT_PATH`
+(the `.gpr` marker) and optionally `REA_GHIDRA_PROGRAM_NAME` (one root program),
+then restart/reconnect before `open_binary`. CLI uses the same configuration.
+REA opens only a fingerprint-bound owned copy with `-process -noanalysis -readOnly`;
+original project files are not opened by the engine or saved. Database edits,
+import overrides and repair scripts are unavailable in this mode. Treat original
+analysis completeness/settings as unknown and prior edits as caller-project state.
+The program's recorded import digest must match the target; changed project content
+requires reopening for a fresh profile. See the
+[setup and preparation guide](https://github.com/morluto/rea/blob/main/docs/installation.md#reuse-an-existing-ghidra-project).
+
 ## Ghidra startup deadline recovery
 
 `provider_timeout` during the first Ghidra query can cover import, auto-analysis,
@@ -583,6 +603,7 @@ discovery are unsupported. Windows Ghidra P0 admits raw images only for `6502`. 
 
 ### Function annotations in Ghidra
 
+Fresh-import sessions admit annotations; existing-project reuse is read-only.
 Use `annotate_native_function` for one function name and/or entry comments, with at least one explicit change. Review its annotation readback and refreshed dossier inline. Changes are atomic and session-scoped; empty comments clear them, omitted fields preserve them. Later MCP calls observe edits until close. CLI `annotate-native-function` returns the updated analysis before discarding the session. Original executable bytes are unchanged; edits invalidate immutable snapshots. Windows P0 does not admit database mutations. For naming only, `set_address_name` / `set_addresses_names` also work with Ghidra: they name function entries or data addresses (primary labels) and return compact per-address success booleans instead of a dossier.
 
 ## Offline PE resource inventory

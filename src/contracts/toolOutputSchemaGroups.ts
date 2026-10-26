@@ -31,6 +31,7 @@ import {
 } from "../domain/hopperValues.js";
 import { nativeInventoryRowsSchemas } from "../domain/native/nativeInventory.js";
 import { z } from "zod";
+import { jsonRecordSchema } from "../domain/jsonRecord.js";
 import { byteSearchResultSchema } from "../domain/native/bytePattern.js";
 import { evidenceBundleSummarySchema } from "../domain/evidenceRecordSummary.js";
 import {
@@ -243,7 +244,7 @@ export const officialOutputSchemas: Readonly<Record<string, z.ZodObject>> = {
     }),
   ),
   set_address_name: evidenceResultOf(z.boolean()),
-  set_addresses_names: evidenceResultOf(z.record(z.string(), z.boolean())),
+  set_addresses_names: evidenceResultOf(jsonRecordSchema(z.boolean())),
   set_bookmark: evidenceResultOf(z.boolean()),
   set_comment: evidenceResultOf(z.boolean()),
   set_inline_comment: evidenceResultOf(z.boolean()),

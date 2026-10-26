@@ -1,3 +1,4 @@
+import { safeParseUtf8Json } from "../domain/safeJson.js";
 import { createHash, randomUUID } from "node:crypto";
 import { access, readFile, stat, writeFile } from "node:fs/promises";
 import { constants } from "node:fs";
@@ -569,7 +570,9 @@ export class EvmoleInterfaceProvider implements EvmInterfacePort {
           undefined,
           this.#resources,
         );
-        reply = replySchema.parse(JSON.parse(file.bytes.toString("utf8")));
+        const decoded = safeParseUtf8Json(file.bytes);
+        if (!decoded.ok) throw decoded.cause;
+        reply = replySchema.parse(decoded.value);
       } catch (cause: unknown) {
         const cleanup =
           cause instanceof ArtifactReaderFailure ? cause.cleanup : undefined;
