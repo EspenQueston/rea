@@ -1056,30 +1056,40 @@ describe("Ghidra installation version admission", () => {
     ).toMatchObject({ status: "available", javaVersion: "17.0.20.1" });
   });
 
-  it("accepts a newer compatible Ghidra release with the version recorded", async () => {
-    const result = await inspectGhidraInstallation(
-      {
-        resourceOwner: inspectionResources.owner,
-        environment: {},
-        installDir: INSTALL,
-        platform: "linux",
-        architecture: "x64",
-      },
-      host({
-        readText: () => "application.version=12.2.0\napplication.java.min=21\n",
-        probeJava: () => javaProbeOk<GhidraJavaObservation>(JAVA),
-      }),
-    );
-    expect(result).toMatchObject({
-      status: "available",
-      providerVersion: "12.2.0",
-    });
-    expect(
-      result.status === "available"
-        ? result.checks.find(({ name }) => name === "version")
-        : undefined,
-    ).toMatchObject({ status: "passed" });
-  });
+  it.each([21, 25])(
+    "admits Ghidra 12.2 independently of its declared Java 25 minimum (JDK %s)",
+    async (major) => {
+      const result = await inspectGhidraInstallation(
+        {
+          resourceOwner: inspectionResources.owner,
+          environment: {},
+          installDir: INSTALL,
+          platform: "linux",
+          architecture: "x64",
+        },
+        host({
+          readText: () => "application.version=12.2\napplication.java.min=25\n",
+          probeJava: () =>
+            javaProbeOk<GhidraJavaObservation>({
+              ...JAVA,
+              major,
+              version: `${String(major)}.0.5`,
+              home: `/usr/lib/jvm/jdk-${String(major)}`,
+            }),
+        }),
+      );
+      expect(result.providerVersion).toBe("12.2");
+      expect(
+        result.checks.find(({ name }) => name === "version"),
+      ).toMatchObject({
+        status: "passed",
+      });
+      expect(result.checks.find(({ name }) => name === "java")).toMatchObject({
+        status: major === 25 ? "passed" : "failed",
+      });
+      expect(result.status).toBe(major === 25 ? "available" : "unavailable");
+    },
+  );
 });
 
 describe("Ghidra configuration paths", () => {
