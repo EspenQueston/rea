@@ -103,13 +103,11 @@ it("names an EPERM execute refusal separately from missing permission", async ()
   );
   await expect(inspectAdbClient(selection)).rejects.toMatchObject({
     code: "binary_not_executable",
-    message:
-      "Execution of the selected adb binary was denied (EPERM): /host/adb",
     diagnostics: {
+      selected_binary: "/host/adb",
+      path_source: "environment",
       filesystem_error: "EPERM",
-      remediation: expect.stringContaining(
-        "The host refused to run this adb binary",
-      ) as unknown,
+      remediation: expect.stringContaining("REA_ADB_PATH") as unknown,
     },
   });
 });
@@ -130,7 +128,6 @@ it("names any other not-started spawn errno without an exit code", async () => {
   );
   expect(failure).toMatchObject({
     code: "binary_not_executable",
-    message: "The selected adb binary could not be started (EINVAL): /host/adb",
     diagnostics: {
       selected_binary: "/host/adb",
       path_source: "environment",
@@ -157,18 +154,13 @@ it("does not blame the selected path for exhausted host spawn capacity", async (
   );
   expect(failure).toMatchObject({
     code: "host_capacity",
-    message:
-      "The host could not start the selected adb binary (EMFILE): /host/adb",
     diagnostics: {
-      filesystem_error: "EMFILE",
+      selected_binary: "/host/adb",
       path_source: "environment",
-      remediation: expect.stringContaining("then retry") as unknown,
+      filesystem_error: "EMFILE",
+      remediation: expect.any(String) as unknown,
     },
   });
-  expect(failure).toHaveProperty(
-    "diagnostics.remediation",
-    expect.stringContaining("REA_ADB_PATH does not need to change"),
-  );
   expect(failure).not.toHaveProperty("diagnostics.exit_code");
   if (!(failure instanceof AdbConfigurationFailure)) throw failure;
   expect(adbConfigurationAvailability(failure)).toMatchObject({

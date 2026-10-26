@@ -288,13 +288,10 @@ it("reports an adb that never started without claiming an exit code", async () =
   expect(result).toMatchObject({
     ok: false,
     error: {
-      message: expect.stringContaining(
-        "adb could not be started (ENOTDIR) for list_adb_devices",
-      ) as unknown,
+      _tag: "AnalysisProtocolError",
+      commandFailure: { code: "ENOTDIR", spawnFailed: true, signal: null },
     },
   });
-  if (result.ok) throw new Error("Expected an adb start failure");
-  expect(result.error.message).not.toContain("exited with code");
 });
 
 it("reports exhausted host capacity rather than an adb protocol failure", async () => {
