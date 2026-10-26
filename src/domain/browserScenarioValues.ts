@@ -141,7 +141,7 @@ const browserScenarioPageValueSchemas = [
 const requestHeaderSchema = z.strictObject({
   name: z
     .string()
-    .regex(/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/u)
+    .regex(/^[!#$%&'*+.^_`\x7C~0-9A-Za-z\x2D]+$/u)
     .refine(settableRequestHeader, {
       message: "A page's fetch cannot set this header",
     }),
@@ -319,7 +319,7 @@ export const browserScenarioActionSchema = z.discriminatedUnion("action", [
     method: z.enum(BROWSER_SCENARIO_REQUEST_METHODS),
     path: z
       .string()
-      .regex(/^\/(?![/\\])/u)
+      .regex(/^\x2F(?:[^\x2F\x5C]|$)/u)
       .describe(
         "Path, and optional literal query, on the start URL's origin, such as /api/folders; it must resolve to that origin.",
       ),
