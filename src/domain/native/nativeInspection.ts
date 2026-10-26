@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { bundleResourceRootSchema } from "../apple/bundleResourceRoot.js";
+import { jsonRecordSchema } from "../jsonRecord.js";
 import { jsonValueSchema } from "../jsonValue.js";
 import { machoSliceEncryptionSchema } from "../apple/machoEncryption.js";
 
@@ -112,7 +113,7 @@ const dependencySchema = z.object({
 const loadCommandSchema = z.object({
   index: z.int().min(0),
   kind: z.string(),
-  fields: z.record(z.string(), z.union([z.string(), z.number(), z.null()])),
+  fields: jsonRecordSchema(z.union([z.string(), z.number(), z.null()])),
 });
 const buildMetadataSchema = z.object({
   platform: z.string().nullable(),

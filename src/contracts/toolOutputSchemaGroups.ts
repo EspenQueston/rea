@@ -1,11 +1,10 @@
 import {
   nativeAddressListSchema,
   nativeObservationSourceSchemas,
+  containingProcedureResolutionSchema,
 } from "../domain/native/nativeObservation.js";
-import { nativeObservationSummaryViewResultSchemas } from "../domain/analysisView/analysisView.js";
-import { literalFeatureMatchSchema } from "../domain/native/literalFeatureMatch.js";
-import { byteEntropySchema } from "../domain/native/byteEntropy.js";
 import {
+  nativeObservationSummaryViewResultSchemas,
   byteEntropySummaryViewResultSchema,
   nativeFunctionMatchingSummaryViewResultSchema,
   nativeFunctionSummaryViewResultSchema,
@@ -17,20 +16,24 @@ import {
   managedArtifactSummaryViewResultSchema,
   managedMemberSummaryViewResultSchema,
 } from "../domain/analysisView/analysisView.js";
+import { literalFeatureMatchSchema } from "../domain/native/literalFeatureMatch.js";
+import { byteEntropySchema } from "../domain/native/byteEntropy.js";
 import { nativeFunctionMatchingSchema } from "../domain/native/functionMatching.js";
 import { nativeByteReadSchema } from "../domain/native/nativeByteRead.js";
 import { analysisDetailOutputSchemaOf } from "./analysisDetail.js";
 import {
   functionDossierSchema,
-  analysisBookmarkSchema,
   functionInstructionWindowSchema,
+} from "../domain/native/functionDossier.js";
+import { analysisBookmarkSchema } from "../domain/native/nativeInventory.js";
+import {
   referenceEdgeSchema,
   unresolvedCallSchema,
-  procedureIdentitySchema,
-  containingProcedureResolutionSchema,
-} from "../domain/hopperValues.js";
+} from "../domain/native/nativeReference.js";
+import { procedureIdentitySchema } from "../domain/native/procedureInfo.js";
 import { nativeInventoryRowsSchemas } from "../domain/native/nativeInventory.js";
 import { z } from "zod";
+import { jsonRecordSchema } from "../domain/jsonRecord.js";
 import { byteSearchResultSchema } from "../domain/native/bytePattern.js";
 import { evidenceBundleSummarySchema } from "../domain/evidenceRecordSummary.js";
 import {
@@ -243,7 +246,7 @@ export const officialOutputSchemas: Readonly<Record<string, z.ZodObject>> = {
     }),
   ),
   set_address_name: evidenceResultOf(z.boolean()),
-  set_addresses_names: evidenceResultOf(z.record(z.string(), z.boolean())),
+  set_addresses_names: evidenceResultOf(jsonRecordSchema(z.boolean())),
   set_bookmark: evidenceResultOf(z.boolean()),
   set_comment: evidenceResultOf(z.boolean()),
   set_inline_comment: evidenceResultOf(z.boolean()),

@@ -27,6 +27,8 @@ cliTest(
     const selected = {
       HOPPER_LAUNCHER_PATH: join(home, "missing-hopper"),
       GHIDRA_INSTALL_DIR: join(home, "offline-ghidra"),
+      GHIDRA_HEADLESS_MAXMEM: "512M",
+      GHIDRA_MAXMEM: "3G",
       JAVA_HOME: join(home, "offline-jdk"),
       REA_IDA_MCP_CONFIG: join(home, "offline-ida.json"),
       REA_JADX_MCP_JAR: join(home, "offline-jadx.jar"),
@@ -71,6 +73,7 @@ cliTest(
       REA_MCP_INPUT_SCHEMA_PROFILE: "compact",
       REA_MCP_OUTPUT_SCHEMA_PROFILE: "off",
       REA_MCP_MAX_RESPONSE_BYTES: "20971520",
+      REA_MCP_TOOL_FAMILIES: "session",
     };
     const environment = {
       HOME: home,
@@ -104,8 +107,15 @@ cliTest(
     });
     expect(configured).not.toContain("do not copy");
     // A later setup must update a selection rather than retaining the first value.
+    selected.REA_MCP_TOOL_FAMILIES = "session,application";
+    environment.REA_MCP_TOOL_FAMILIES = selected.REA_MCP_TOOL_FAMILIES;
     selected.REA_OBJDUMP_COMMAND = join(home, "replacement-objdump");
     environment.REA_OBJDUMP_COMMAND = selected.REA_OBJDUMP_COMMAND;
+    // Empty headless heap explicitly selects the lower-priority caller value.
+    selected.GHIDRA_HEADLESS_MAXMEM = "";
+    selected.GHIDRA_MAXMEM = "768M";
+    environment.GHIDRA_HEADLESS_MAXMEM = selected.GHIDRA_HEADLESS_MAXMEM;
+    environment.GHIDRA_MAXMEM = selected.GHIDRA_MAXMEM;
     const updated = await run();
     expect(updated.exitCode, updated.stdout).toBe(0);
     const updatedConfiguration = await readFile(config, "utf8");
@@ -120,6 +130,74 @@ cliTest(
       appliedActions: [],
     });
     expect(await readFile(config, "utf8")).toBe(updatedConfiguration);
+  },
+);
+
+cliTest(
+  "persists, updates and validates tool-family scopes without losing client configuration",
+  async ({ cli }) => {
+    const home = await createTestTempDirectory("rea-family-registration-");
+    const config = join(home, ".qwen/settings.json");
+    const foreign = { command: "foreign-tool", args: ["keep"] };
+    const original = JSON.stringify({ mcpServers: { foreign } });
+    await mkdir(dirname(config), { recursive: true });
+    await writeFile(config, original);
+    const environment = {
+      HOME: home,
+      USERPROFILE: home,
+      QWEN_HOME: join(home, ".qwen"),
+      ...missingHopperAndGhidraEnvironment(home),
+      REA_MCP_INPUT_SCHEMA_PROFILE: "compact",
+      REA_MCP_OUTPUT_SCHEMA_PROFILE: "compact",
+    };
+    const run = (families: string) =>
+      cli.run({
+        arguments: [
+          "setup",
+          "--client",
+          "qwen_code",
+          "--tool-families",
+          families,
+          "--skill=false",
+          "--yes",
+          "--json",
+        ],
+        cwd: home,
+        environment,
+      });
+    const first = await run("session");
+    expect(first.exitCode, first.stdout).toBe(0);
+    expect(await readFile(`${config}.rea.backup`, "utf8")).toBe(original);
+    const scope = "native,application,session";
+    const updated = await run(scope);
+    expect(updated.exitCode, updated.stdout).toBe(0);
+    const selected = await readFile(config, "utf8");
+    expect(JSON.parse(selected)).toMatchObject({
+      mcpServers: {
+        foreign,
+        rea: {
+          env: {
+            REA_MCP_TOOL_FAMILIES: scope,
+            REA_MCP_INPUT_SCHEMA_PROFILE: "compact",
+            REA_MCP_OUTPUT_SCHEMA_PROFILE: "compact",
+          },
+        },
+      },
+    });
+    const backup = await readFile(`${config}.rea.backup`, "utf8");
+    const repeated = await run(scope);
+    expect(repeated.exitCode, repeated.stdout).toBe(0);
+    expect(repeated.json).toMatchObject({
+      plannedActions: [],
+      appliedActions: [],
+    });
+    const rejected = await run("session,typo");
+    expect(rejected.exitCode).not.toBe(0);
+    expect(rejected.stdout + rejected.stderr).toContain(
+      "REA_MCP_TOOL_FAMILIES",
+    );
+    expect(await readFile(config, "utf8")).toBe(selected);
+    expect(await readFile(`${config}.rea.backup`, "utf8")).toBe(backup);
   },
 );
 
@@ -870,3 +948,66 @@ for (const invalidSetting of [
     },
     120_000,
   );
+
+cliTest(
+  "public VS Code setup registers in VSCODE_APPDATA without changing the default configuration",
+  async ({ cli }) => {
+    const home = await createTestTempDirectory("rea-vscode-appdata-cli-");
+    const selectedData = join(home, "selected data");
+    const config = join(selectedData, "Code", "User", "mcp.json");
+    const defaultData =
+      process.platform === "win32"
+        ? join(home, "AppData", "Roaming")
+        : process.platform === "darwin"
+          ? join(home, "Library", "Application Support")
+          : join(home, ".config");
+    const defaultConfig = join(defaultData, "Code", "User", "mcp.json");
+    const original = JSON.stringify({
+      servers: { foreign: { command: "keep" } },
+    });
+    const defaultOriginal = JSON.stringify({
+      servers: { defaultServer: { command: "untouched" } },
+    });
+    await mkdir(dirname(config), { recursive: true });
+    await mkdir(dirname(defaultConfig), { recursive: true });
+    await writeFile(config, original);
+    await writeFile(defaultConfig, defaultOriginal);
+    const setup = await cli.run({
+      arguments: [
+        "setup",
+        "--client",
+        "vscode",
+        "--skill=false",
+        "--yes",
+        "--json",
+      ],
+      cwd: home,
+      environment: {
+        HOME: home,
+        USERPROFILE: home,
+        APPDATA: join(home, "AppData", "Roaming"),
+        XDG_CONFIG_HOME: join(home, ".config"),
+        VSCODE_APPDATA: selectedData,
+        VSCODE_PORTABLE: "",
+        ...missingHopperAndGhidraEnvironment(home),
+      },
+    });
+    expect(setup.exitCode, setup.stdout + setup.stderr).toBe(0);
+    expect(setup.json).toMatchObject({ status: "ready" });
+    expect(JSON.parse(await readFile(config, "utf8"))).toMatchObject({
+      servers: {
+        foreign: { command: "keep" },
+        rea: {
+          command: process.execPath,
+          args: [resolve("scripts/rea.mjs"), "mcp"],
+        },
+      },
+    });
+    expect(await readFile(`${config}.rea.backup`, "utf8")).toBe(original);
+    expect(await readFile(defaultConfig, "utf8")).toBe(defaultOriginal);
+    await expect(access(`${defaultConfig}.rea.backup`)).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  },
+  120_000,
+);

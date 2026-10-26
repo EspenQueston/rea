@@ -58,8 +58,6 @@ import {
 } from "./toolResultEncoding.js";
 import { RequestTrackingMcpServer } from "./RequestTrackingMcpServer.js";
 
-export type { CompactInputSchemaPresentation } from "../contracts/compactInputSchema.js";
-
 const currentRequestSignal = new AsyncLocalStorage<AbortSignal>();
 
 /** Signal for the completion request currently being dispatched by the SDK. */
@@ -243,6 +241,9 @@ export class EvidenceMcpServerCore extends RequestTrackingMcpServer {
     compactPresentation: CompactInputSchemaPresentation | undefined = undefined,
     private readonly outputSchemaProfile: McpOutputSchemaProfile = "full",
     identity?: ReturnType<typeof createCatalogIdentity>,
+    readonly advertisedToolFamilies:
+      | ReadonlySet<string>
+      | undefined = undefined,
   ) {
     super(info, options);
     this.compactPresentation =
@@ -295,7 +296,26 @@ export class EvidenceMcpServerCore extends RequestTrackingMcpServer {
       this.analysisSettings === undefined
         ? callback(input, context)
         : this.analysisSettings.run(() => callback(input, context));
-    return this.bindTool(name, registeredConfig as never, scoped as never);
+    const registered = this.bindTool(
+      name,
+      registeredConfig as never,
+      scoped as never,
+    );
+    if (!this.advertisesTool(name)) registered.disable();
+    return registered;
+  }
+
+  /** Whether this process advertises one named operation. */
+  advertisesTool(_name: string): boolean {
+    return true;
+  }
+
+  /** Provider probes consult the registration scope before doing work. */
+  advertisesFamily(family: string): boolean {
+    return (
+      this.advertisedToolFamilies === undefined ||
+      this.advertisedToolFamilies.has(family)
+    );
   }
 
   protected bindTool(

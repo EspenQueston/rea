@@ -25,7 +25,7 @@ import {
 import {
   functionDossierSchema,
   functionInstructionWindowSchema,
-} from "../domain/hopperValues.js";
+} from "../domain/native/functionDossier.js";
 import type { JsonValue } from "../domain/jsonValue.js";
 import type { RelationshipCoverage } from "../domain/relationshipCoverage.js";
 import { combineFunctionRelationshipCoverage } from "../domain/functionCallCoverage.js";
@@ -328,7 +328,7 @@ export class IdaOperationRunner {
     this.limitations.push(...graph.limitations);
     for (const callee of graph.callees)
       if (!result.has(callee.address))
-        result.set(callee.address, identity({ ...callee, size: "unknown" }));
+        result.set(callee.address, identity(callee));
     return graph.coverage;
   }
 
@@ -524,7 +524,7 @@ export class IdaOperationRunner {
           : legacyCalleesSchema.parse(value);
       for (const item of items) {
         if ("type" in item && item.type === "external")
-          result.set(item.address, identity({ ...item, size: "unknown" }));
+          result.set(item.address, identity(item));
         else queries.push(item.name);
       }
     } else if (direction === "callers") {
@@ -577,7 +577,7 @@ export class IdaOperationRunner {
         if ("type" in item && item.type === "external")
           result.set(
             item.addr,
-            identity({ address: item.addr, name: item.name, size: "unknown" }),
+            identity({ address: item.addr, name: item.name }),
           );
         else queries.push(item.addr);
       }

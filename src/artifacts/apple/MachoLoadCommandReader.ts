@@ -1,7 +1,13 @@
+import {
+  machoDependencyCommand,
+  readMachoDylibCommandFacts,
+} from "../../domain/apple/machoDylibCommand.js";
 import { readMachoSegmentHeader } from "../../domain/apple/machoSegmentHeader.js";
 import {
   MachoLoadCommandCursor,
   readMachoHeaderDeclarations,
+  readMachoCommandStringBytes,
+  type MachoCommandStringFailure,
 } from "../../domain/apple/machoLoadCommands.js";
 import {
   MAX_JVM_CLASS_IDENTITY_BYTES,
@@ -22,9 +28,11 @@ import {
 } from "../../domain/apple/machoPlatform.js";
 import {
   classifyFatContainerIdentity,
-  isMachoHeaderMagic,
+  hasMachoMagic,
   readFatContainerHeader,
+  readFatHeaderPrefix,
   readFatSliceDeclarations,
+  readMachoHeaderPrefixFacts,
   validateFatSlice,
   validateFatSliceIdentity,
   type FatContainerHeader,
@@ -49,24 +57,11 @@ export const MAX_LAZY_INFO_DEPENDENCIES = 1024;
  * offset, so stop before that map and those decodes grow.
  */
 export const MAX_LAZY_INFO_SYMBOL_REFERENCES = 64 * 1024;
-const MH_MAGIC = 0xfeedface;
-const MH_MAGIC_64 = 0xfeedfacf;
-const MH_CIGAM = 0xcefaedfe;
-const MH_CIGAM_64 = 0xcffaedfe;
-const FAT_MAGIC = 0xcafebabe;
-const FAT_MAGIC_64 = 0xcafebabf;
-const FAT_CIGAM = 0xbebafeca;
-const FAT_CIGAM_64 = 0xbfbafeca;
 
 const LC_SEGMENT = 0x1;
 const LC_SEGMENT_64 = 0x19;
 const LC_ID_DYLIB = 0xd;
-const LC_LOAD_DYLIB = 0xc;
-const LC_LOAD_WEAK_DYLIB = 0x80000018;
-const LC_REEXPORT_DYLIB = 0x8000001f;
-const LC_LAZY_LOAD_DYLIB = 0x20;
 const LC_LAZY_LOAD_DYLIB_INFO = 0x3a;
-const LC_LOAD_UPWARD_DYLIB = 0x80000023;
 const LC_RPATH = 0x8000001c;
 const LC_DYLD_ENVIRONMENT = 0x27;
 const LC_CODE_SIGNATURE = 0x1d;
@@ -83,8 +78,6 @@ const VERSION_MIN_PLATFORMS: ReadonlyMap<number, MachoVersionMinPlatform> =
     [0x30, 4], // LC_VERSION_MIN_WATCHOS
   ]);
 
-/** `mach-o/loader.h` `dylib_use_command`: `nameoff == 28` and this marker. */
-const DYLIB_USE_MARKER = 0x1a741800;
 const LAZY_INFO_HEADER_BYTES = 24;
 /** ld64 may-be-missing bit: the lazy image is allowed to be absent. */
 const LAZY_INFO_MAY_BE_MISSING = 0x1;
@@ -98,15 +91,6 @@ const DYLIB_USE_REEXPORT = 0x2;
 const DYLIB_USE_UPWARD = 0x4;
 const DYLIB_USE_DELAYED_INIT = 0x8;
 
-const DEPENDENCY_COMMANDS: ReadonlyMap<number, MachoDependency["command"]> =
-  new Map([
-    [LC_LOAD_DYLIB, "LC_LOAD_DYLIB"],
-    [LC_LOAD_WEAK_DYLIB, "LC_LOAD_WEAK_DYLIB"],
-    [LC_REEXPORT_DYLIB, "LC_REEXPORT_DYLIB"],
-    [LC_LAZY_LOAD_DYLIB, "LC_LAZY_LOAD_DYLIB"],
-    [LC_LOAD_UPWARD_DYLIB, "LC_LOAD_UPWARD_DYLIB"],
-  ]);
-
 /** Malformed or unsupported structure found while decoding one image. */
 class MachoFormatIssue extends Error {
   constructor(
@@ -116,26 +100,6 @@ class MachoFormatIssue extends Error {
     super(message);
   }
 }
-
-/** Report whether the first bytes carry a Mach-O or FAT magic number. */
-export const hasMachoMagic = (head: Uint8Array): boolean => {
-  if (head.byteLength < 4) return false;
-  const magic = new DataView(
-    head.buffer,
-    head.byteOffset,
-    head.byteLength,
-  ).getUint32(0, false);
-  return [
-    MH_MAGIC,
-    MH_MAGIC_64,
-    MH_CIGAM,
-    MH_CIGAM_64,
-    FAT_MAGIC,
-    FAT_MAGIC_64,
-    FAT_CIGAM,
-    FAT_CIGAM_64,
-  ].includes(magic);
-};
 
 /** A structural defect, and whether it is malformed or merely unsupported. */
 export interface MachoReadIssue {
@@ -189,9 +153,11 @@ export const readMachoContainer = async (
           reason: "Mach-O header is truncated",
         }
       : { kind: "not-mach-o" };
-  const magic = viewOf(head).getUint32(0, false);
+  const fatPrefix = readFatHeaderPrefix(head);
+  const mayBeJvmClass =
+    fatPrefix.state === "parsed" && !fatPrefix.wide && !fatPrefix.littleEndian;
   let header: FatContainerHeader;
-  if (magic === FAT_MAGIC && size <= MAX_JVM_CLASS_IDENTITY_BYTES) {
+  if (mayBeJvmClass && size <= MAX_JVM_CLASS_IDENTITY_BYTES) {
     const complete = await readAt(0, size);
     header =
       complete.byteLength === size
@@ -235,7 +201,7 @@ export const readMachoContainer = async (
     // and its siblings' range faults then stay their own.
     if (
       identity.state === "malformed" &&
-      magic === FAT_MAGIC &&
+      mayBeJvmClass &&
       size > MAX_JVM_CLASS_IDENTITY_BYTES &&
       !(await observesMachoSlice(readAt, header))
     )
@@ -252,9 +218,9 @@ export const readMachoContainer = async (
       hidden: await readAppleHiddenArm64Row(readAt, size, header),
     };
   }
-  if (magic === MH_CIGAM || magic === MH_CIGAM_64)
-    return { kind: "thin", size };
-  if (magic === MH_MAGIC || magic === MH_MAGIC_64)
+  const thin = readMachoHeaderPrefixFacts(head).format;
+  if (thin?.littleEndian === true) return { kind: "thin", size };
+  if (thin !== null)
     return {
       kind: "issue",
       status: "unsupported",
@@ -279,7 +245,7 @@ const observesMachoSlice = async (
   for (const [index, slice] of header.slices.entries())
     if (
       header.rangeIssues[index] === null &&
-      isMachoHeaderMagic(await readSliceMagic(readAt, slice.offset))
+      readMachoHeaderPrefixFacts(await readAt(slice.offset, 4)).format !== null
     )
       return true;
   return false;
@@ -805,8 +771,8 @@ const decodeCommand = (
   }
   if (command === LC_LAZY_LOAD_DYLIB_INFO)
     return decodeLazyLoadDylibInfoCommand(body, index);
-  const name = DEPENDENCY_COMMANDS.get(command);
-  if (name !== undefined)
+  const name = machoDependencyCommand(command);
+  if (name !== null)
     return { kind: "parsed", value: decodeDependency(name, body, index) };
   return undefined;
 };
@@ -1074,22 +1040,21 @@ const decodeDependency = (
   body: Uint8Array,
   index: number,
 ): MachoDependency => {
-  if (body.byteLength < 24)
-    throw new MachoFormatIssue(
-      "malformed",
-      `load command ${index} is too short for a dylib command`,
-    );
-  const view = viewOf(body);
-  const nameOffset = view.getUint32(8, true);
-  const usesFlags =
-    nameOffset === 28 &&
-    body.byteLength >= 28 &&
-    view.getUint32(12, true) === DYLIB_USE_MARKER;
-  const flags = usesFlags ? view.getUint32(24, true) : 0;
+  const parsed = readMachoDylibCommandFacts(body, true);
+  if (!parsed.ok) {
+    if (parsed.error._tag === "InvalidMachoDylibCommand")
+      throw new MachoFormatIssue(
+        "malformed",
+        `load command ${index} is too short for a dylib command`,
+      );
+    return throwCommandStringIssue(parsed.error, index);
+  }
+  const facts = parsed.value;
+  const flags = facts.flags ?? 0;
   return {
     command,
-    encoding: usesFlags ? "dylib_use_command" : "dylib_command",
-    install_name: commandString(body, usesFlags ? 28 : 24, index),
+    encoding: facts.encoding,
+    install_name: decodeCommandString(facts.nameBytes, index),
     weak:
       command === "LC_LOAD_WEAK_DYLIB" || (flags & DYLIB_USE_WEAK_LINK) !== 0,
     upward:
@@ -1097,8 +1062,8 @@ const decodeDependency = (
     reexport:
       command === "LC_REEXPORT_DYLIB" || (flags & DYLIB_USE_REEXPORT) !== 0,
     delayed_init: (flags & DYLIB_USE_DELAYED_INIT) !== 0,
-    current_version: version(view.getUint32(16, true)),
-    compatibility_version: version(view.getUint32(20, true)),
+    current_version: version(facts.currentVersion),
+    compatibility_version: version(facts.compatibilityVersion),
   };
 };
 
@@ -1108,27 +1073,29 @@ const commandString = (
   minimumOffset: number,
   index: number,
 ): string => {
-  if (body.byteLength < 12)
-    throw new MachoFormatIssue(
-      "malformed",
-      `load command ${index} is too short to hold a string offset`,
-    );
-  const offset = viewOf(body).getUint32(8, true);
-  if (offset < minimumOffset || offset >= body.byteLength)
-    throw new MachoFormatIssue(
-      "malformed",
-      `load command ${index} has string offset ${offset} outside the command`,
-    );
-  const end = body.indexOf(0, offset);
-  if (end < 0)
-    throw new MachoFormatIssue(
-      "malformed",
-      `load command ${index} has an unterminated string`,
-    );
+  const parsed = readMachoCommandStringBytes(body, minimumOffset, true);
+  if (!parsed.ok) return throwCommandStringIssue(parsed.error, index);
+  return decodeCommandString(parsed.value.bytes, index);
+};
+
+const throwCommandStringIssue = (
+  failure: MachoCommandStringFailure,
+  index: number,
+): never => {
+  const reason =
+    failure.reason === "truncated-offset"
+      ? `load command ${index} is too short to hold a string offset`
+      : failure.reason === "invalid-offset"
+        ? `load command ${index} has string offset ${failure.offset} outside the command`
+        : `load command ${index} has an unterminated string`;
+  throw new MachoFormatIssue("malformed", reason);
+};
+
+const decodeCommandString = (bytes: Uint8Array, index: number): string => {
   try {
     // lc_str contains name/path data, so a leading U+FEFF is part of its identity.
     return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(
-      body.subarray(offset, end),
+      bytes,
     );
   } catch {
     throw new MachoFormatIssue(

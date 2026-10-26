@@ -128,6 +128,8 @@ export interface UniversalMachOSlice {
 interface BinaryTargetIdentity {
   readonly path: string;
   readonly sourcePath?: string;
+  /** Selected artifact spelling determines name-based format hints and external companions. */
+  readonly artifactSelectedPath?: string;
   /** Info.plist of the app bundle the target was resolved from. */
   readonly bundleInfoPlist?: string;
   readonly sha256: string;
@@ -277,3 +279,9 @@ export const isMachOFormat = (
   format: unknown,
 ): format is "mach-o" | "mach-o-universal" =>
   format === "mach-o" || format === "mach-o-universal";
+
+/** Result-affecting artifact selection; canonical packed identity remains target.path. */
+export const artifactTargetSelectedPath = (target: BinaryTarget): string =>
+  target.kind === "archive" || target.kind === "artifact"
+    ? (target.artifactSelectedPath ?? target.sourcePath ?? target.path)
+    : (target.sourcePath ?? target.path);

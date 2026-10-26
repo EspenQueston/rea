@@ -93,10 +93,7 @@ import {
 } from "../domain/apple/plistValue.js";
 import { createPlistNumberProjection } from "../domain/apple/plistNumbers.js";
 import type { NativeUiObservationResult } from "../domain/native/nativeUiObservation.js";
-import {
-  omittedPrototypeKeysLimitation,
-  parseXmlPropertyList,
-} from "../domain/propertyListKeys.js";
+import { parseXmlPropertyList } from "../domain/propertyListKeys.js";
 import {
   demangleSwiftSchema,
   inspectMachoSchema,
@@ -661,6 +658,9 @@ class NativeMacOSClient implements AnalysisClient {
     );
     if (!parsed.ok) return parsed;
     const { architectures } = parsed.value;
+    const limitations = architectures.flatMap(
+      (architecture) => architecture.limitations,
+    );
     const result = listArchitecturesSchema.parse({
       architectures: {
         items: architectures,
@@ -669,11 +669,11 @@ class NativeMacOSClient implements AnalysisClient {
         limitations: [],
       },
       provenance,
-      limitations: [],
+      limitations,
     });
     return ok({
       result: jsonValueSchema.parse(result),
-      limitations: [],
+      limitations,
       locations: architectureLocations(result.architectures.items),
     });
   }
@@ -825,11 +825,6 @@ class NativeMacOSClient implements AnalysisClient {
       ...parsed.limitations,
       ...entitlementValue.limitations.map((note) => `Entitlements: ${note}`),
       "Inspected a digest-verified Mach-O byte snapshot; filesystem-bound signing context and trust validation are not examined.",
-      ...(entitlementValue.omittedPrototypeKeys === 0
-        ? []
-        : [
-            `Entitlements: ${omittedPrototypeKeysLimitation(entitlementValue.omittedPrototypeKeys)}`,
-          ]),
     ];
     const architectures = codeSignArchitectures(parsed.format, this.target);
     if (architectures.length > 1)
@@ -1574,13 +1569,11 @@ const parseEntitlements = (
   output: string,
 ): {
   readonly value: JsonValue;
-  readonly omittedPrototypeKeys: number;
   readonly limitations: readonly string[];
 } => {
   const start = output.indexOf("<?xml");
   const end = output.lastIndexOf("</plist>");
-  if (start < 0 || end < start)
-    return { value: null, omittedPrototypeKeys: 0, limitations: [] };
+  if (start < 0 || end < start) return { value: null, limitations: [] };
   const decoded = parseXmlPropertyList(
     output.slice(start, end + "</plist>".length),
   );
@@ -1589,7 +1582,6 @@ const parseEntitlements = (
   const value = numbers.project(projected.value);
   return {
     value,
-    omittedPrototypeKeys: decoded.omittedPrototypeKeys,
     limitations: [
       ...numbers.limitations(),
       ...(projected.nonFiniteRealCount === 0
