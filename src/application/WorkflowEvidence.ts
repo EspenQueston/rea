@@ -93,6 +93,9 @@ export const executeComposedWorkflow = async (
       const execution = await analysis.execute(operation, parameters, options);
       if (execution.ok && execution.value.evidenceId !== undefined)
         evidenceLinks.add(execution.value.evidenceId);
+      if (execution.ok)
+        for (const source of execution.value.sourceEvidence ?? [])
+          evidenceLinks.add(source.evidence_id);
       if (execution.ok && execution.value.cachePolicy === "live")
         cachePolicy = "live";
       if (execution.ok)

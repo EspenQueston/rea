@@ -5,7 +5,7 @@ import type {
 } from "./AnalysisProvider.js";
 import { nativeProcedureInputSchema } from "../domain/native/nativeProcedureInput.js";
 import type { BinaryTarget } from "../domain/binaryTargetTypes.js";
-import { createEvidence } from "../domain/evidence.js";
+import { createAnalysisExecutionEvidence } from "../domain/analysisObservation.js";
 import { parseFunctionDossier } from "../domain/hopperValues.js";
 import type { JsonValue } from "../domain/jsonValue.js";
 import { completeProviderEvidence } from "./ProviderOperationExecution.js";
@@ -39,25 +39,17 @@ export const executeFunctionAnalysisEvidence = async (
   if (!dossier.ok) return dossier;
   const observation = execution.value;
   return completeProviderEvidence(
-    createEvidence(
-      observation.subject === undefined
-        ? target
-        : (observation.subject ?? undefined),
-      observation.provider,
+    createAnalysisExecutionEvidence(
+      "analyze_function",
+      arguments_,
       {
-        operation: "analyze_function",
-        parameters: arguments_,
+        ...observation,
         result: dossier.value,
-        rawResult: observation.rawResult,
-        limitations: observation.limitations,
-        locations: observation.locations,
-        ...(observation.relationshipCoverage === undefined
-          ? {}
-          : { relationshipCoverage: observation.relationshipCoverage }),
-        ...(observation.analysisProfile === undefined
-          ? {}
-          : { analysisProfile: observation.analysisProfile }),
+        ...(observation.subject === undefined && target !== undefined
+          ? { subject: target }
+          : {}),
       },
+      "observed",
     ),
     options?.signal,
   );
