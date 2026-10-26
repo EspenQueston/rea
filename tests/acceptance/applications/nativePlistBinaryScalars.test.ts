@@ -173,13 +173,15 @@ describe.skipIf(process.platform !== "darwin")(
           },
           provenance: [
             { tool: "file" },
-            { command: expect.arrayContaining(["json"]), exit: { code: 1 } },
-            { command: expect.arrayContaining(["xml1"]), exit: { code: 0 } },
+            {
+              tool: "plutil",
+              command: ["/usr/bin/plutil", "-lint", "--", "$PLIST"],
+            },
           ],
-          limitations: [expect.stringContaining("XML conversion")],
+          limitations: [],
         });
-        expect(await readFile(binaryPath)).toEqual(binaryBytes);
-        expect(await readFile(xmlPath)).toEqual(xmlBytes);
+        expect(Buffer.compare(await readFile(binaryPath), binaryBytes)).toBe(0);
+        expect(Buffer.compare(await readFile(xmlPath), xmlBytes)).toBe(0);
       },
       60_000,
     );

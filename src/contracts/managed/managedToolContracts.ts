@@ -1,9 +1,9 @@
+import { requireOutputSchema } from "../toolOutputSchemaPrimitives.js";
 import { z } from "zod";
 
 import type { ToolContract } from "../toolContractTypes.js";
 import { managedOutputSchemas } from "../toolOutputSchemaGroups.js";
 import { toolContractMetadata } from "../toolEffects.js";
-import { requireOutputSchema } from "../toolOutputSchemaPrimitives.js";
 import { absoluteLocalPathStringSchema } from "../../domain/localPath.js";
 import { analysisDetailSchema } from "../analysisDetail.js";
 
@@ -18,7 +18,7 @@ export const managedTargetInputSchema = z.strictObject({
 
 /** Delivery selection belongs to artifact and member inspection, not native queries. */
 export const managedArtifactInputSchema = managedTargetInputSchema.extend({
-  detail: analysisDetailSchema.unwrap().optional(),
+  detail: analysisDetailSchema,
 });
 
 /** Member inspection may select declaring types before members are decoded. */

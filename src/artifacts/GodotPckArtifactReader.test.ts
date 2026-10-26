@@ -6,9 +6,10 @@ import {
   pckU64,
   type GodotPckMember,
 } from "../../tests/fixtures/godotPck.js";
-import { rename, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { mkdir, rename, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { text } from "node:stream/consumers";
+import { once } from "node:events";
 
 import { describe, expect, it } from "vitest";
 
@@ -72,6 +73,9 @@ describe("GodotPckArtifactReader", () => {
           "project.binary",
           "data/é.json",
         ]);
+        expect(entries.map(({ sourcePath }) => sourcePath)).toEqual(
+          members.map(({ path }) => path),
+        );
         expect(reader.formatMetadata()).toMatchObject({
           embedded,
           engine_major: 4,
@@ -203,6 +207,27 @@ describe("GodotPckArtifactReader", () => {
 });
 
 describe("GodotPckArtifactReader member streams", () => {
+  it.each([8, 128 * 1024])(
+    "retires an unread %i-byte member when its reader closes",
+    async (size) => {
+      await withReader(
+        buildGodotPck(4, [{ path: "member.bin", data: Buffer.alloc(size) }]),
+        async (reader) => {
+          const entries = await list(reader);
+          const stream = await reader.open(entries[0]!);
+          const produced = size === 8 ? once(stream, "finish") : undefined;
+          await once(stream, "readable");
+          if (produced !== undefined) await produced;
+          expect(stream.destroyed).toBe(false);
+          await reader.close();
+          expect(stream.destroyed).toBe(true);
+          expect(stream.closed).toBe(true);
+          await reader.close();
+        },
+      );
+    },
+  );
+
   it("types cancellation during a member read instead of crashing", async () => {
     const data = "x".repeat(4 * 1024 * 1024);
     await withReader(
@@ -238,19 +263,20 @@ describe("GodotPckArtifactReader member streams", () => {
   });
 
   it("reads members from the admitted descriptor after the path is replaced", async () => {
-    const path = await writePck(buildGodotPck(3, members));
-    const handle = await openRegularFile(path, { symlinks: "reject" });
+    const root = await createTestTempDirectory("rea-godot-borrowed-source-");
+    const selected = join(root, "selected");
+    await mkdir(selected);
+    const path = join(selected, "game");
+    await writeFile(path, buildGodotPck(3, members));
+    const descriptor = await openRegularFile(path, { symlinks: "reject" });
+    const { handle } = descriptor;
     try {
-      const replacement = join(dirname(path), "replacement");
-      await writeFile(
-        replacement,
-        buildGodotPck(3, [{ path: "other.gd", data: "" }]),
-      );
-      await rename(replacement, path);
-      const reader = new GodotPckArtifactReader(path, {
-        handle,
-        initial: await handle.stat(),
-      });
+      // Replace the selected directory without changing the admitted inode's
+      // metadata. Moving the file itself would change its validated ctime.
+      await rename(selected, join(root, "original"));
+      await mkdir(selected);
+      await writeFile(path, buildGodotPck(3, [{ path: "other.gd", data: "" }]));
+      const reader = new GodotPckArtifactReader(path, descriptor);
       const entries = await list(reader);
       expect(entries.map(({ path: member }) => member)).toEqual([
         "scenes/main.gd",
