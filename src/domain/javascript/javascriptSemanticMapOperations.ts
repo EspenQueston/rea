@@ -4,7 +4,10 @@ import {
   semanticStaticPropertyName,
   unwrapJavaScriptExpression,
 } from "./javascriptAstValues.js";
-import { isUnmodifiedGlobalReference } from "./javascriptSemanticAmbientWrites.js";
+import {
+  isIntrinsicMapConstruction,
+  intrinsicMapPrototypeMemberMayHaveChanged,
+} from "./javascriptSemanticNativeConstructions.js";
 import { semanticOpaqueGlobalMayHaveChanged } from "./javascriptSemanticOpaqueEffects.js";
 import { semanticBindingAtRead } from "./javascriptSemanticMutationInitializers.js";
 import {
@@ -25,15 +28,7 @@ export const isIntrinsicMapLookup = (
     return false;
   const method = semanticStaticPropertyName(callee.property, callee.computed);
   if (method !== "get" && method !== "delete") return false;
-  const prototypeMemberMayHaveChanged = (member: string): boolean =>
-    ["Map", "Object"].some((owner) => {
-      const path = ["global", owner, "prototype", member];
-      return (
-        bindings.ambientWrites.covers(path) ||
-        bindings.ambientEscapes.covers(path)
-      );
-    });
-  if (prototypeMemberMayHaveChanged(method)) return false;
+  if (intrinsicMapPrototypeMemberMayHaveChanged(bindings, method)) return false;
   let receiver = unwrapJavaScriptExpression(callee.object).node;
   const seen = new Set<string>();
   while (t.isIdentifier(receiver)) {
@@ -60,15 +55,7 @@ export const isIntrinsicMapLookup = (
       return false;
     receiver = unwrapJavaScriptExpression(initializer.node).node;
   }
-  if (
-    !t.isNewExpression(receiver) ||
-    !isUnmodifiedGlobalReference(receiver.callee, bindings, "Map")
-  )
-    return false;
-  // Iterable construction reads and invokes the instance's set hook. A changed
-  // adder can install its own get/delete before the constructed value is read.
-  if (receiver.arguments.length > 0 && prototypeMemberMayHaveChanged("set"))
-    return false;
+  if (!isIntrinsicMapConstruction(receiver, bindings)) return false;
   if (semanticOpaqueGlobalMayHaveChanged(callee, bindings)) return false;
   return index === undefined && seen.size > 0 ? undefined : true;
 };

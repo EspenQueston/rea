@@ -148,13 +148,36 @@ export class SemanticPropertyPathCoverage {
     path: JavaScriptSemanticPropertyPath,
     contexts?: readonly (string | undefined)[],
   ): boolean {
+    return this.#matches(path, false, contexts);
+  }
+
+  /** Overlap with an exact path includes both retained ancestors and descendants. */
+  overlaps(
+    path: readonly (string | number)[],
+    contexts?: readonly (string | undefined)[],
+  ): boolean {
+    return this.#matches(path, true, contexts);
+  }
+
+  #matches(
+    path: JavaScriptSemanticPropertyPath,
+    includeDescendants: boolean,
+    contexts?: readonly (string | undefined)[],
+  ): boolean {
     const pending = [{ node: this.#root, offset: 0 }];
     while (pending.length > 0) {
       const current = pending.pop();
       if (current === undefined) break;
       if (current.node.terminal) return true;
       const key = path[current.offset];
-      if (key === undefined) continue;
+      if (key === undefined) {
+        if (
+          includeDescendants &&
+          (current.node.exact.size > 0 || current.node.selectors.size > 0)
+        )
+          return true;
+        continue;
+      }
       const context = contexts?.[current.offset];
       if (key !== null && typeof key !== "object") {
         const exact = current.node.exact.get(

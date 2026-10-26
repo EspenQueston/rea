@@ -1,3 +1,4 @@
+import { configuredUpdateNoticeFactory } from "./UpdateNotices.js";
 import { AnalysisSettings } from "../application/AnalysisSettings.js";
 import { registerAnalysisSettingsTools } from "./registerAnalysisSettingsTools.js";
 import type { DevicetreeService } from "../application/binaryDiagnostics/DevicetreeService.js";
@@ -519,6 +520,8 @@ export const createServer = (
       selectCompactInputSchemaPresentation(environment),
       omitOutputSchemas,
     );
+  if (options.mcpServer === undefined)
+    server.updateNoticeFactory = configuredUpdateNoticeFactory(environment);
   server.analysisSettings = analysisSettings;
   registerAnalysisSettingsTools(server, analysisSettings);
   if (options.mcpServer !== undefined) {

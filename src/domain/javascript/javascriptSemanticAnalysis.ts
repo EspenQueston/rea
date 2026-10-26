@@ -1092,6 +1092,7 @@ const createState = (
     escapingReferenceStores: new WeakSet(),
     retainedGlobalCallReceivers: new WeakSet(),
     ambientEscapes: new SemanticPropertyPathCoverage(),
+    intrinsicReceiverCalls: new WeakMap(),
     ambientEscapeEffects: [],
     ambientWriteEffects: [],
   };

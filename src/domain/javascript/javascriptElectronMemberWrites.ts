@@ -53,6 +53,11 @@ export interface JavaScriptIntrinsicInvocation {
     | undefined;
 }
 
+/** Parsed write operation; a descriptor expression is retained without evaluating it. */
+export type JavaScriptPropertyWrite =
+  | { readonly kind: "store" }
+  | { readonly kind: "define"; readonly descriptor?: t.Node };
+
 /**
  * Index writes through possible lexical object identities. Resolve the complete
  * object before appending the written key: self-reference properties can denote
@@ -71,7 +76,12 @@ export function* collectJavaScriptIdentityWritesSteps(
   ) => JavaScriptIntrinsicInvocation | undefined,
   staticString: (node: t.Node | undefined) => string | undefined,
   freshObject: (node: t.Node) => boolean,
-  retain: (node: t.Node, path: readonly (string | null)[]) => void,
+  retain: (
+    node: t.Node,
+    path: readonly (string | null)[],
+    storeTarget?: t.MemberExpression | t.OptionalMemberExpression,
+    propertyWrite?: JavaScriptPropertyWrite,
+  ) => void,
   observeInvocation?: (
     node:
       | t.CallExpression
@@ -152,7 +162,25 @@ export function* collectJavaScriptIdentityWritesSteps(
                     // Retain an unknown child key, rather than its own identity.
                     [null];
                 for (const identity of identities)
-                  retain(node, [...identity, ...key]);
+                  retain(
+                    node,
+                    [...identity, ...key],
+                    undefined,
+                    method === "defineProperty" || method === "defineProperties"
+                      ? {
+                          kind: "define",
+                          ...(method === "defineProperty" &&
+                          t.isNode(arguments_?.[2]) &&
+                          !t.isSpreadElement(arguments_?.[2])
+                            ? { descriptor: arguments_![2]! }
+                            : {}),
+                        }
+                      : method === "assign" ||
+                          method === "set" ||
+                          method === "deleteProperty"
+                        ? { kind: "store" }
+                        : undefined,
+                  );
               } else if (!freshObject(target)) {
                 for (const scope of origin(node, "opaque-call", node))
                   retain(node, scope);
@@ -177,7 +205,7 @@ export function* collectJavaScriptIdentityWritesSteps(
           continue;
         const key = semanticStaticPropertyKey(member.property, member.computed);
         for (const identity of origin(member.object, "member", node))
-          retain(node, [...identity, key]);
+          retain(node, [...identity, key], member, { kind: "store" });
       }
     },
   });

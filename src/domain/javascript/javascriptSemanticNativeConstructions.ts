@@ -71,3 +71,30 @@ export const isTypedArrayNumericIndex = (
     );
   return hasNumberResult(expression);
 };
+
+/** Actual ancestor paths for the already recognized native Map allocation. */
+export const INTRINSIC_MAP_PROTOTYPE_CHAIN = [
+  ["global", "Map", "prototype"],
+  ["global", "Object", "prototype"],
+] as const;
+
+export const intrinsicMapPrototypeMemberMayHaveChanged = (
+  state: JavaScriptSemanticAnalysisState,
+  member: string,
+): boolean =>
+  INTRINSIC_MAP_PROTOTYPE_CHAIN.some(
+    (prototype) =>
+      state.ambientWrites.covers([...prototype, member]) ||
+      state.ambientEscapes.covers([...prototype, member]),
+  );
+
+/** Identity proof is shared by native lookup and actual-prototype consumers. */
+export const isIntrinsicMapConstruction = (
+  node: t.Node,
+  state: JavaScriptSemanticAnalysisState,
+): node is t.NewExpression =>
+  t.isNewExpression(node) &&
+  isUnmodifiedGlobalReference(node.callee, state, "Map") &&
+  !semanticOpaqueGlobalMayHaveChanged(node, state) &&
+  (node.arguments.length === 0 ||
+    !intrinsicMapPrototypeMemberMayHaveChanged(state, "set"));
