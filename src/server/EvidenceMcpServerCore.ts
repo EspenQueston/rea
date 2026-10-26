@@ -50,6 +50,7 @@ import {
   type ToolResultDelivery,
 } from "./ToolResultDelivery.js";
 import { toolReturnsTargetContent } from "../contracts/toolEffects.js";
+import { acceptStringifiedStructuredArguments } from "./toolRegistrationOptions.js";
 import {
   carriesTargetContentMarker,
   encodeToolResult,
@@ -280,12 +281,19 @@ export class EvidenceMcpServerCore extends RequestTrackingMcpServer {
     callback: ToolCallback<InputArgs>,
   ): RegisteredTool {
     const budget = this.compactPresentation?.budgetBytes;
+    const recovered =
+      config.inputSchema === undefined
+        ? undefined
+        : acceptStringifiedStructuredArguments(config.inputSchema);
+    const normalized =
+      recovered === undefined || recovered === config.inputSchema
+        ? config
+        : { ...config, inputSchema: recovered as InputArgs };
     const inputSchema =
       budget !== undefined &&
-      config !== undefined &&
-      hasAdvertisedInputJsonSchema(config.inputSchema)
+      hasAdvertisedInputJsonSchema(normalized.inputSchema)
         ? transformAdvertisedInputJsonSchema(
-            config.inputSchema as Parameters<
+            normalized.inputSchema as Parameters<
               typeof transformAdvertisedInputJsonSchema
             >[0],
             (projected) =>
@@ -293,7 +301,7 @@ export class EvidenceMcpServerCore extends RequestTrackingMcpServer {
           )
         : undefined;
     const registeredConfig =
-      inputSchema === undefined ? config : { ...config, inputSchema };
+      inputSchema === undefined ? normalized : { ...normalized, inputSchema };
     const scoped = (input: never, context: never) =>
       this.analysisSettings === undefined
         ? callback(input, context)
