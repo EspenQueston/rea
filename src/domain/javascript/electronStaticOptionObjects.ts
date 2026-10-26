@@ -13,13 +13,13 @@ const optionObjectCandidate = (
 ):
   | {
       readonly object: t.ObjectExpression;
-      readonly references: readonly t.Identifier[];
+      readonly references: readonly OptionObjectReference[];
     }
   | undefined => {
   if (input === undefined) return undefined;
   let node = unwrapJavaScriptExpression(input).node;
   const seen = new Set<t.Node>();
-  const references: t.Identifier[] = [];
+  const references: OptionObjectReference[] = [];
   while (t.isIdentifier(node)) {
     if (seen.has(node)) return undefined;
     seen.add(node);
@@ -31,15 +31,88 @@ const optionObjectCandidate = (
       binding.declarationKinds.size !== 1 ||
       !binding.declarationKinds.has("const") ||
       initializer === undefined ||
-      initializer.projection.length !== 0 ||
-      !semanticBindingAtRead(binding, node, index.bindings.parentsByNode)
-        .hasDefiniteInitializer
+      initializer.projection.length !== 0
     )
       return undefined;
-    references.push(node);
+    const sameActivation = semanticBindingAtRead(
+      binding,
+      node,
+      index.bindings.parentsByNode,
+    ).hasDefiniteInitializer;
+    if (
+      !sameActivation &&
+      (!initializedBeforeEnclosingFunction(
+        node,
+        initializer.node,
+        index.bindings.parentsByNode,
+      ) ||
+        exportedModuleBinding(
+          binding.name,
+          initializer.node,
+          index.bindings.program,
+          index.bindings.parentsByNode,
+        ))
+    )
+      return undefined;
+    references.push({ node, sameActivation });
     node = unwrapJavaScriptExpression(initializer.node).node;
   }
   return t.isObjectExpression(node) ? { object: node, references } : undefined;
+};
+
+type OptionObjectReference = {
+  readonly node: t.Identifier;
+  /** False when a nested function reads a const declared before it. */
+  readonly sameActivation: boolean;
+};
+
+/**
+ * A nested function can only read an outer const after its declaration ran,
+ * so a completed read observes that initializer. Only accept declarations that
+ * end before the function starts; hoisted or interleaved orders stay unknown.
+ */
+const initializedBeforeEnclosingFunction = (
+  read: t.Node,
+  initializer: t.Node,
+  parents: WeakMap<t.Node, t.Node>,
+): boolean => {
+  let owner = parents.get(read);
+  while (owner !== undefined && !t.isFunction(owner))
+    owner = parents.get(owner);
+  return (
+    owner !== undefined &&
+    typeof initializer.end === "number" &&
+    typeof owner.start === "number" &&
+    initializer.end <= owner.start
+  );
+};
+
+/** Importers can change an exported object before a later activation reads it. */
+const exportedModuleBinding = (
+  name: string,
+  initializer: t.Node,
+  program: t.Program,
+  parents: WeakMap<t.Node, t.Node>,
+): boolean => {
+  let declaration = parents.get(initializer);
+  while (declaration !== undefined && !t.isVariableDeclaration(declaration))
+    declaration = parents.get(declaration);
+  const owner =
+    declaration === undefined ? undefined : parents.get(declaration);
+  if (t.isExportNamedDeclaration(owner)) return true;
+  if (owner !== program) return false;
+  return program.body.some(
+    (statement) =>
+      (t.isExportNamedDeclaration(statement) &&
+        statement.source == null &&
+        statement.specifiers.some(
+          (specifier) =>
+            t.isExportSpecifier(specifier) && specifier.local.name === name,
+        )) ||
+      (t.isExportDefaultDeclaration(statement) &&
+        t.isIdentifier(statement.declaration) &&
+        statement.declaration.name === name),
+  );
 };
 
 /** Avoid building mutation facts for parameters, missing or unresolved objects. */
@@ -57,8 +130,27 @@ export const resolveElectronOptionObject = (
 ): t.ObjectExpression | undefined => {
   const candidate = optionObjectCandidate(input, index);
   if (candidate === undefined) return undefined;
-  for (const reference of candidate.references) {
-    if (index.referenceMayHaveChangedAt(site, reference, propertyPath))
+  for (const { node, sameActivation } of candidate.references) {
+    if (sameActivation) {
+      if (index.referenceMayHaveChangedAt(site, node, propertyPath))
+        return undefined;
+      continue;
+    }
+    // Other activations can run in any order, including repeated calls of
+    // this function, so any relevant write or escape keeps the object unknown.
+    // The constructor argument itself is the one escape that follows the read.
+    const { resolution, effects } = index.effectsForReferenceAt(
+      site,
+      node,
+      propertyPath,
+    );
+    if (
+      resolution !== "resolved" ||
+      effects.length > 1 ||
+      effects.some(
+        ({ kind, timing }) => kind !== "escape" || timing !== "after",
+      )
+    )
       return undefined;
   }
   return candidate.object;

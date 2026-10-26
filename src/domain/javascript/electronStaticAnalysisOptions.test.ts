@@ -200,6 +200,109 @@ describe("Electron option captures and initialization", () => {
   });
 });
 
+describe("Electron constant options read from nested functions", () => {
+  it.each([
+    "function create() { new BrowserWindow({ webPreferences: preferences }); }",
+    "app.whenReady().then(() => { new BrowserWindow({ webPreferences: preferences }); });",
+    "class Windows { open() { new BrowserWindow({ webPreferences: preferences }); } }",
+    "const options = { webPreferences: preferences }; function create() { new BrowserWindow(options); }",
+    "const options = { webPreferences: preferences }; function icon() { options.icon = 'icon.png'; } function create() { new BrowserWindow(options); }",
+  ])("resolves an earlier module constant: %s", (source) => {
+    const analysis = analyzeJavaScriptStaticSource(`
+      const { app, BrowserWindow } = require("electron");
+      const preferences = { nodeIntegration: true, contextIsolation: false };
+      ${source}
+    `);
+    expect(analysis.electron.browser_windows).toMatchObject([
+      {
+        web_preferences_status: "object-literal",
+        web_preferences: [
+          {
+            name: "contextIsolation",
+            value: { status: "literal", value: false },
+          },
+          {
+            name: "nodeIntegration",
+            value: { status: "literal", value: true },
+          },
+        ],
+        resolution_sources: expect.any(Array),
+      },
+    ]);
+  });
+
+  it.each([
+    "function tweak() { preferences.nodeIntegration = false; }",
+    "preferences.nodeIntegration = false;",
+    "function tweak() { Object.assign(preferences, input); }",
+    "mutate(preferences);",
+    "module.exports.preferences = preferences;",
+  ])(
+    "keeps the constant unknown when another activation may change it: %s",
+    (change) => {
+      const analysis = analyzeJavaScriptStaticSource(`
+      const { BrowserWindow } = require("electron");
+      const preferences = { nodeIntegration: true };
+      function create() { new BrowserWindow({ webPreferences: preferences }); }
+      ${change}
+    `);
+      expect(analysis.electron.browser_windows).toMatchObject([
+        { web_preferences_status: "dynamic", web_preferences: [] },
+      ]);
+    },
+  );
+
+  it.each([
+    // A repeated call observes writes and escapes made by an earlier call.
+    "function create() { new BrowserWindow({ webPreferences: preferences }); preferences.nodeIntegration = false; }",
+    "function create() { new BrowserWindow({ webPreferences: preferences }); mutate(preferences); }",
+    // Another constructor already received the object.
+    "function a() { new BrowserWindow({ webPreferences: preferences }); } function b() { new BrowserWindow({ webPreferences: preferences }); }",
+  ])("keeps repeated or shared activations unknown: %s", (source) => {
+    const analysis = analyzeJavaScriptStaticSource(`
+      const { BrowserWindow } = require("electron");
+      const preferences = { nodeIntegration: true };
+      ${source}
+    `);
+    expect(
+      analysis.electron.browser_windows.map(
+        ({ web_preferences_status }) => web_preferences_status,
+      ),
+    ).not.toContain("object-literal");
+  });
+
+  it.each([
+    "function create() { new BrowserWindow({ webPreferences: preferences }); } const preferences = { nodeIntegration: true };",
+    "let preferences = { nodeIntegration: true }; function create() { new BrowserWindow({ webPreferences: preferences }); }",
+    "const preferences = { nodeIntegration: true }; function create(preferences) { new BrowserWindow({ webPreferences: preferences }); }",
+  ])("does not invent a nested-function initializer: %s", (source) => {
+    const analysis = analyzeJavaScriptStaticSource(`
+      const { BrowserWindow } = require("electron"); ${source}
+    `);
+    expect(analysis.electron.browser_windows).toMatchObject([
+      { web_preferences_status: "dynamic", web_preferences: [] },
+    ]);
+  });
+
+  it.each([
+    "export const preferences = { nodeIntegration: true };",
+    "const preferences = { nodeIntegration: true }; export { preferences };",
+    "const preferences = { nodeIntegration: true }; export default preferences;",
+  ])(
+    "keeps exported constants unknown because importers may change them: %s",
+    (declaration) => {
+      const analysis = analyzeJavaScriptStaticSource(`
+      import { BrowserWindow } from "electron";
+      ${declaration}
+      function create() { new BrowserWindow({ webPreferences: preferences }); }
+    `);
+      expect(analysis.electron.browser_windows).toMatchObject([
+        { web_preferences_status: "dynamic", web_preferences: [] },
+      ]);
+    },
+  );
+});
+
 describe("Electron option evidence", () => {
   it.each([
     '({ webPreferences: { preload: "./preload.js", sandbox: true } } as const)',
