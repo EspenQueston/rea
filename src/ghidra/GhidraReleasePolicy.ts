@@ -2,6 +2,21 @@
 export const SUPPORTED_GHIDRA_VERSION = "12.1.4";
 /** Verified JDK major; admission uses the installation's declared bounds. */
 export const SUPPORTED_GHIDRA_JAVA_MAJOR = 21;
+/**
+ * Release lines accepted beside the verified build's line. Builds on these
+ * lines run as `compatible`: the bridge is exercised on them but not verified,
+ * so sessions record the unverified-build limitation. Later lines stay
+ * unsupported until they are added here.
+ */
+const ADDITIONAL_COMPATIBLE_GHIDRA_LINES: readonly GhidraReleaseLine[] = [
+  { major: 12, minor: 2 },
+];
+
+/** A `major.minor` Ghidra release line. */
+interface GhidraReleaseLine {
+  readonly major: number;
+  readonly minor: number;
+}
 
 /** Numeric Ghidra release read from `application.version`. */
 interface GhidraReleaseVersion {
@@ -42,8 +57,9 @@ export const ghidraReleaseCompatibility = (
   if (version === undefined) return { status: "unresolved", raw };
   if (raw === SUPPORTED_GHIDRA_VERSION)
     return { status: "verified", version, raw };
-  const verified = verifiedGhidraRelease();
-  return version.major === verified.major && version.minor === verified.minor
+  return acceptedGhidraLines().some(
+    (line) => version.major === line.major && version.minor === line.minor,
+  )
     ? { status: "compatible", version, raw }
     : { status: "unsupported", version, raw };
 };
@@ -60,10 +76,21 @@ export const unverifiedGhidraBuildLimitation = (
   return `This session uses Ghidra ${providerVersion}. The bridge is verified against ${SUPPORTED_GHIDRA_VERSION}; other ${ghidraReleaseLine()} builds are accepted and the observed version is reported.`;
 };
 
-/** Release line accepted by this bridge, such as `12.1.x`. */
-export const ghidraReleaseLine = (): string => {
+/**
+ * Release lines accepted by this bridge, verified line first, such as
+ * `12.1.x or 12.2.x`.
+ */
+export const ghidraReleaseLine = (): string =>
+  acceptedGhidraLines()
+    .map(({ major, minor }) => `${String(major)}.${String(minor)}.x`)
+    .join(" or ");
+
+const acceptedGhidraLines = (): readonly GhidraReleaseLine[] => {
   const verified = verifiedGhidraRelease();
-  return `${String(verified.major)}.${String(verified.minor)}.x`;
+  return [
+    { major: verified.major, minor: verified.minor },
+    ...ADDITIONAL_COMPATIBLE_GHIDRA_LINES,
+  ];
 };
 
 /** Detail for the installation version check, including the accepted line. */
