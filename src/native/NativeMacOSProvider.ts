@@ -1240,25 +1240,21 @@ class NativeMacOSClient implements AnalysisClient {
           path,
           this.#machoResources,
           signal,
-          async (file) => {
+          async ({ handle, initial }) => {
             admitted = true;
-            const before = await file.stat({ bigint: true });
             const result = await inspect(() =>
-              readMachoEncryption(
-                fileReadAt(file, signal),
-                Number(before.size),
-              ),
+              readMachoEncryption(fileReadAt(handle, signal), initial.size),
             );
             // Failures are thrown so a descriptor close failure keeps them
             // as its primary error instead of reporting a completed read.
             if (!result.ok) throw result.error;
             const [after, current] = await Promise.all([
-              file.stat({ bigint: true }),
-              lstat(path, { bigint: true }),
+              handle.stat(),
+              lstat(path),
             ]);
             if (
-              !sameRegularFileState(before, after) ||
-              !sameRegularFileState(before, current)
+              !sameRegularFileState(initial, after) ||
+              !sameRegularFileState(initial, current)
             )
               throw new AnalysisArtifactChangedError(
                 "inspect_macho",

@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 
 import { MANAGED_NATIVE_VERIFICATION_EXAMPLE } from "../../contracts/managed/managedWorkflowExamples.js";
 import { createEvidence } from "../evidence.js";
-import { jsonValueSchema } from "../jsonValue.js";
 import { inspectMachoSchema } from "../native/nativeInspection.js";
 import { readManagedNativeVerificationSource } from "./managedNativeVerificationSource.js";
 
@@ -19,7 +18,7 @@ describe("managed/native verification source", () => {
     const evidence = createEvidence(undefined, original.provider, {
       operation: "inspect_macho",
       parameters: original.parameters,
-      result: jsonValueSchema.parse(legacy),
+      result: legacy,
       rawResult: null,
       limitations: [],
     });
