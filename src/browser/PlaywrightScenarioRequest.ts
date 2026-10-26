@@ -314,19 +314,38 @@ export const performScenarioRequest = async (input: {
   );
   const step = { page, url, stepId: action.step_id, secrets };
   const headers: [string, string][] = [];
-  for (const header of action.headers) {
-    const value = `${header.prefix ?? ""}${await headerValue(step, header)}`;
-    if (!HEADER_FIELD_VALUE.test(value))
-      throw new ScenarioRequestError(
-        `Request step ${action.step_id}: the ${header.name} value holds characters a header cannot carry, such as a line break.`,
-      );
-    headers.push([header.name, value]);
-  }
+  const envelopeLimit = requestSerializationAllowance();
+  let headerBytes = 2;
+  const headerValues = new Map<string, number>();
+  const appendHeader = (name: string, value: string): void => {
+    const knownSize = headerValues.get(value);
+    const size =
+      knownSize ?? jsonStringByteLength(value, envelopeLimit - headerBytes);
+    headerBytes +=
+      (headers.length === 0 ? 0 : 1) +
+      jsonValueByteLength([name, null], envelopeLimit - headerBytes) -
+      4 +
+      size;
+    if (headerBytes > envelopeLimit) throw requestEnvelopeError();
+    if (knownSize === undefined) {
+      if (!HEADER_FIELD_VALUE.test(value))
+        throw new ScenarioRequestError(
+          `Request step ${action.step_id}: the ${name} value holds characters a header cannot carry, such as a line break.`,
+        );
+      headerValues.set(value, size);
+    }
+    headers.push([name, value]);
+  };
+  for (const header of action.headers)
+    appendHeader(
+      header.name,
+      `${header.prefix ?? ""}${await headerValue(step, header)}`,
+    );
   const hasContentType = headers.some(
     ([name]) => name.toLowerCase() === "content-type",
   );
   if (action.json !== undefined && !hasContentType)
-    headers.push(["content-type", "application/json"]);
+    appendHeader("content-type", "application/json");
   // A step the boundary abandoned, or whose time ran out while values were read, sends nothing.
   const remaining = deadline === undefined ? undefined : deadline - Date.now();
   if (signal?.aborted === true || (remaining !== undefined && remaining <= 0))
@@ -346,24 +365,24 @@ export const performScenarioRequest = async (input: {
     readLimit:
       action.save.length > 0 ? MAX_SAVED_RESPONSE_CHARACTERS : undefined,
   };
-  const envelopeLimit = requestSerializationAllowance();
   if (
     jsonValueByteLength(
       {
         url: target,
         origin: startOrigin,
         method: action.method,
-        headers,
+        headers: [],
         body: request.body ?? null,
         deadline: deadline ?? null,
         readLimit: request.readLimit ?? null,
       },
       envelopeLimit,
-    ) > envelopeLimit
+    ) +
+      headerBytes -
+      2 >
+    envelopeLimit
   )
-    throw new ScenarioRequestError(
-      "Expanded request envelope exceeds the current heap/string serialization allowance; reduce repeated values or raise the parent Node heap and restart.",
-    );
+    throw requestEnvelopeError();
   // The browser can queue evaluate behind a busy page. Keep a host-side gate
   // until that evaluation settles, including after the step boundary stops
   // waiting. A queued fetch then observes live cancellation at dispatch.
@@ -638,6 +657,11 @@ export const awaitSavedResponse = (
   };
   return { saved, stop: () => page.off("request", watch) };
 };
+
+const requestEnvelopeError = (): ScenarioRequestError =>
+  new ScenarioRequestError(
+    "Expanded request envelope exceeds the current heap/string serialization allowance; reduce repeated values or raise the parent Node heap and restart.",
+  );
 
 /** Allow for the expanded tree, stringify, Playwright transport and browser-side copies. */
 const REQUEST_JSON_ALLOCATION_FACTOR = 16;
