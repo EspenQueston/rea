@@ -330,7 +330,7 @@ it("matches v1 signer serials as DER integers, including redundant sign octets",
   for (const [canonical, padded] of [
     [Uint8Array.of(0x12, 0x34), Uint8Array.of(0x00, 0x00, 0x12, 0x34)],
     [Uint8Array.of(0xff), Uint8Array.of(0xff, 0xff, 0xff)],
-  ]) {
+  ] as const) {
     const canonicalCertificate = withSerial(
       LEAF_CERTIFICATE,
       tlv(0x02, canonical),
