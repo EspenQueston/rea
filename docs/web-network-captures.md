@@ -795,7 +795,9 @@ slug neither spelling gives, has no `slug` rule; such a held slug also keeps a
 later create from widening the spelling. An update learns the spelling the same way: a later update whose slug spells
 `&` as the word refines a rule an earlier update learned from a name without
 `&`, unless an accepted call or a held entity dropped it, and every earlier
-update must still replay. A create composes a string only when at least one other entity of the
+update must still replay. An update whose slug spells no `&` takes the spelling the
+entity's earlier value and the type's other entities show, as a create does,
+and learns no slug rule when they spell it both ways. A create composes a string only when at least one other entity of the
 type spells it with the same parts and none spells it otherwise. Where one text
 could come from two sources serving could tell apart, such as an id that equals
 the title's slug, the entities the type holds must leave exactly one reading. A

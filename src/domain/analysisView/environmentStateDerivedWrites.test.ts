@@ -801,6 +801,50 @@ describe("slug spellings across updates", () => {
   );
 });
 
+describe("slug spellings held entities show updates", () => {
+  it.each(["PATCH", "PUT"] as const)(
+    "spells & as the held entities do when a %s renames to a name without one",
+    (method) => {
+      const rows = renameRows(
+        method,
+        [
+          category(1, "Harbour Notes", "harbour-notes"),
+          category(3, "Salt & Pepper", "salt-and-pepper"),
+        ],
+        [category(1, "Quay Notes", "quay-notes")],
+      );
+      expect(
+        planOf(rows, `${method.toLowerCase()}_categories_by_id`),
+      ).toMatchObject({
+        served: true,
+        rules: expect.arrayContaining([
+          { field: "slug", rule: "slug", from: "name", ampersand: "and" },
+        ]),
+      });
+    },
+  );
+
+  it.each(["PATCH", "PUT"] as const)(
+    "learns no slug rule for a %s when held entities spell & both ways",
+    (method) => {
+      const rows = renameRows(
+        method,
+        [
+          category(1, "Harbour Notes", "harbour-notes"),
+          category(3, "Salt & Pepper", "salt-and-pepper"),
+          category(4, "Fish & Chips", "fish-chips"),
+        ],
+        [category(1, "Quay Notes", "quay-notes")],
+      );
+      const plan = planOf(rows, `${method.toLowerCase()}_categories_by_id`);
+      expect(plan.served).toBe(false);
+      expect(plan.rules).not.toContainEqual(
+        expect.objectContaining({ field: "slug", rule: "slug" }),
+      );
+    },
+  );
+});
+
 describe("slug spellings the held entities show", () => {
   it("spells & as the held entities do when the creates slug none", () => {
     const rows = folderCreates(

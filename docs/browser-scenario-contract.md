@@ -516,9 +516,10 @@ id the application assigns:
   `%7Bsaved:name%7D` anywhere but a `goto` URL, whose parsed form spells the
   braces that way.
 - Validation refuses a saved value that no earlier step saves. A later save of
-  the same name replaces the value. An integer past 2^53, which JSON parsing
-  would round to another number, and a number that is not finite, such as
-  `1e400`, fail the step that saves it.
+  the same name replaces the value. A number JSON parsing would turn into
+  another, such as an integer past 2^53, `1e-400` (which parses to 0) or
+  `1.0000000000000001`, and a number that is not finite, such as `1e400`, fail
+  the step that saves it.
 - A scenario keeps at most 4,000,000 characters of saved values at once,
   counting the redaction spellings of values saved as secret, and a save past
   that fails its step before the value is kept.

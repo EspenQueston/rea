@@ -519,6 +519,8 @@ export const explainUpdate = (
     (member) =>
       member !== evidence.idField && heldClock(evidence, member, body[member]!),
   );
+  // The entity as it was and the type's other entities show how the application spells `&` in a slug.
+  const spellers = [evidence.before, ...evidence.others];
   for (const [member, sent] of Object.entries(body)) {
     // The identity is the entity's key: the path's id repeated is the identity member; another value is one the application ignored, or used to re-key the entity, which no rule models.
     if (member === evidence.idField) {
@@ -533,7 +535,15 @@ export const explainUpdate = (
       continue;
     }
     if (!Object.hasOwn(evidence.after, member)) continue;
-    const rule = sentRule(evidence, member, held);
+    const rule = heldSlugRule(
+      sentRule(evidence, member, held),
+      evidence.after,
+      spellers,
+    );
+    if (rule === undefined) {
+      unexplained.push(member);
+      continue;
+    }
     rules.push(rule);
     if (rule.rule === "echo") echoed.add(member);
     else if (rule.rule !== "constant") generated.add(member);
@@ -561,7 +571,11 @@ export const explainUpdate = (
       if (kept !== undefined) rules.push(kept);
       continue;
     }
-    const rule = changeRule(evidence, field, slugs);
+    const rule = heldSlugRule(
+      changeRule(evidence, field, slugs),
+      evidence.after,
+      spellers,
+    );
     if (rule === undefined) unexplained.push(field);
     else rules.push(rule);
   }

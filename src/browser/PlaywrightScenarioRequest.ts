@@ -654,6 +654,31 @@ const withSavedJson = (
 };
 
 /** Save the values a step names from a JSON response, for later steps. */
+/** The decimal a JSON number spelling names, as sign, significant digits and exponent; zero has no sign. */
+const decimalOf = (spelled: string): string | undefined => {
+  const match = /^(-?)(\d+)(?:\.(\d+))?(?:[eE]([+-]?\d+))?$/u.exec(spelled);
+  if (match === null) return undefined;
+  const [, sign = "", whole = "", fraction = "", exponent = "0"] = match;
+  const digits = `${whole}${fraction}`.replace(/^0+/u, "");
+  if (digits === "") return "0";
+  const significant = digits.replace(/0+$/u, "");
+  const scale =
+    BigInt(exponent) -
+    BigInt(fraction.length) +
+    BigInt(digits.length - significant.length);
+  return `${sign}${significant}e${scale.toString()}`;
+};
+
+/** A JSON text's tree with each number replaced by its source spelling. */
+const numberSpellings = (text: string): unknown =>
+  JSON.parse(
+    text,
+    (_key, value: unknown, context?: { readonly source?: string }) =>
+      typeof value === "number" && typeof context?.source === "string"
+        ? context.source
+        : value,
+  );
+
 const saveValues = (
   stepId: string,
   body: string | undefined,
@@ -672,6 +697,7 @@ const saveValues = (
       `Step ${stepId}: the response is not JSON, so no value can be saved from it.`,
     );
   }
+  let spellings: { readonly tree: unknown } | undefined;
   for (const { name, json_pointer, secret } of entries) {
     const value = pointerValue(parsed, json_pointer);
     if (value === undefined)
@@ -688,6 +714,18 @@ const saveValues = (
       throw new ScenarioRequestError(
         `Step ${stepId}: the number at ${json_pointer} is too large to keep exactly, so ${name} cannot be saved from it.`,
       );
+    // Parsing rounds other spellings too, such as 1e-400 to 0, so the kept value must name the response's decimal.
+    if (typeof value === "number") {
+      spellings ??= { tree: numberSpellings(body) };
+      const spelled = pointerValue(spellings.tree, json_pointer);
+      if (
+        typeof spelled === "string" &&
+        decimalOf(spelled) !== decimalOf(String(value))
+      )
+        throw new ScenarioRequestError(
+          `Step ${stepId}: the number at ${json_pointer} parses to another value than the response spells, so ${name} cannot be saved from it.`,
+        );
+    }
     try {
       secrets.save(`${stepId}.${name}`, name, value, secret);
     } catch (cause) {

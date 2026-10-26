@@ -976,6 +976,42 @@ describe("saved numbers JSON cannot spell back", () => {
       expect(() => secrets.savedValue("folder")).toThrow();
     },
   );
+
+  it.each(["1e-400", "-1e-400", "1.0000000000000001"])(
+    "saves no number JSON parsing turns into another (%s)",
+    async (number) => {
+      stubFetch(201, [`{"id":${number}}`]);
+      const parsed = scenario([
+        requestStep({ save: [{ name: "folder", json_pointer: "/id" }] }),
+      ]);
+      const secrets = resolved(parsed);
+      await expect(
+        perform(fakePage({}), parsed.actions[0]!, secrets),
+      ).rejects.toThrow("parses to another value than the response spells");
+      expect(() => secrets.savedValue("folder")).toThrow();
+    },
+  );
+
+  it.each([
+    ["0", 0],
+    ["0.0", 0],
+    ["-0", -0],
+    ["1.5", 1.5],
+    ["12.50", 12.5],
+    ["1E2", 100],
+    ["0.1", 0.1],
+  ])(
+    "saves a number JSON parsing keeps as written (%s)",
+    async (number, kept) => {
+      stubFetch(201, [`{"id":${number},"name":"x"}`]);
+      const parsed = scenario([
+        requestStep({ save: [{ name: "folder", json_pointer: "/id" }] }),
+      ]);
+      const secrets = resolved(parsed);
+      await perform(fakePage({}), parsed.actions[0]!, secrets);
+      expect(secrets.savedValue("folder")).toBe(kept);
+    },
+  );
 });
 
 describe("values a URL path or Basic header cannot carry", () => {

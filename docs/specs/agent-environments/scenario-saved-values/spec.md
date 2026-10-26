@@ -26,7 +26,8 @@ values.
   nothing, unless such a response arrives and is read before its timeout or
   cancellation.
 - A pointer that names no string or number, a number that is not finite (such as
-  `1e400`), a response that is not JSON or is larger than 4,000,000 characters
+  `1e400`) or that parses to another value than its spelling names (such as
+  `1e-400`), a response that is not JSON or is larger than 4,000,000 characters
   (a UI step reads none whose decoded size is unknown or may exceed 12,000,000
   bytes, three per character: the bytes received or declared, times 1,032 for
   gzip or deflate, and any other content coding refused), and a non-2xx
