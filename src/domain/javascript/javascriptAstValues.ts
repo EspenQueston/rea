@@ -167,20 +167,36 @@ type StaticObjectProperty =
 
 type StaticObjectMember =
   | { readonly kind: "unknown" }
-  | { readonly kind: "prototype-setter" }
-  | { readonly kind: "string-indices"; readonly length: number }
+  | {
+      readonly kind: "prototype-setter";
+      readonly prototype: "null" | "ignored" | "unknown";
+    }
+  | { readonly kind: "string-indices"; readonly length: number | null }
+  | {
+      readonly kind: "array-indices";
+      readonly elements: t.ArrayExpression["elements"];
+      readonly firstSpread: number;
+    }
   | {
       readonly kind: "property";
       readonly property: t.ObjectProperty | t.ObjectMethod;
+      readonly key: string | null;
     };
 
 const UNKNOWN_STATIC_OBJECT_MEMBER: StaticObjectMember = { kind: "unknown" };
 
 /** Object-literal prototype setters are never ordinary own-property writes. */
-export const isObjectPrototypeSetter = (property: t.ObjectProperty): boolean =>
+export const isObjectPrototypeSetter = (
+  property: t.ObjectProperty | t.ObjectMethod,
+  key: string | null = semanticStaticPropertyKey(
+    property.key,
+    property.computed,
+  ),
+): boolean =>
+  t.isObjectProperty(property) &&
   !property.computed &&
   !property.shorthand &&
-  semanticStaticPropertyKey(property.key, false) === "__proto__";
+  key === "__proto__";
 
 /** Expand only bounded literal spreads, preserving unknown writes in order. */
 const appendStaticObjectMembers = (
@@ -191,13 +207,32 @@ const appendStaticObjectMembers = (
 ): void => {
   for (const property of object.properties) {
     if (!t.isSpreadElement(property)) {
-      if (t.isObjectProperty(property) && isObjectPrototypeSetter(property)) {
+      const key = semanticStaticPropertyKey(property.key, property.computed);
+      if (
+        t.isObjectProperty(property) &&
+        isObjectPrototypeSetter(property, key)
+      ) {
         // A top-level setter changes lookup inheritance but is never an own
         // key; one copied through object spread has no effect on the target.
-        if (depth === 0) members.push({ kind: "prototype-setter" });
+        if (depth === 0) {
+          const prototype = unwrapJavaScriptExpression(property.value).node;
+          const primitive = readExactJavaScriptLiteral(prototype);
+          members.push({
+            kind: "prototype-setter",
+            prototype: t.isNullLiteral(prototype)
+              ? "null"
+              : primitive.found ||
+                  t.isNumericLiteral(prototype) ||
+                  t.isBigIntLiteral(prototype) ||
+                  t.isTemplateLiteral(prototype) ||
+                  isNullish?.(property.value) === true
+                ? "ignored"
+                : "unknown",
+          });
+        }
         continue;
       }
-      members.push({ kind: "property", property });
+      members.push({ kind: "property", property, key });
       continue;
     }
     const { node: spread, depth: wrappers } = unwrapJavaScriptExpression(
@@ -218,6 +253,28 @@ const appendStaticObjectMembers = (
       appendStaticObjectMembers(members, spread, nextDepth, isNullish);
       continue;
     }
+    if (t.isArrayExpression(spread)) {
+      let firstSpread = -1;
+      let hasElements = false;
+      for (let index = 0; index < spread.elements.length; index++) {
+        const element = spread.elements[index];
+        if (element == null) continue;
+        hasElements = true;
+        if (t.isSpreadElement(element)) {
+          firstSpread = index;
+          break;
+        }
+      }
+      // Literal arrays own only present indices. A spread can shift later
+      // indices, but never adds named keys to the array under construction.
+      if (hasElements)
+        members.push({
+          kind: "array-indices",
+          elements: spread.elements,
+          firstSpread,
+        });
+      continue;
+    }
     const literal = readExactJavaScriptLiteral(spread);
     if (literal.found && typeof literal.value === "string") {
       // Keep UTF-16 index writes symbolically, without expanding a string into
@@ -226,8 +283,16 @@ const appendStaticObjectMembers = (
         members.push({ kind: "string-indices", length: literal.value.length });
       continue;
     }
-    // These primitive boxes have no own keys.
+    if (t.isTemplateLiteral(spread)) {
+      // Every completed interpolation yields a string, even when its length is unknown.
+      members.push({ kind: "string-indices", length: null });
+      continue;
+    }
+    // Primitive boxes, fresh functions and regex literals have no enumerable own keys.
     if (
+      t.isFunctionExpression(spread) ||
+      t.isArrowFunctionExpression(spread) ||
+      t.isRegExpLiteral(spread) ||
       t.isBooleanLiteral(spread) ||
       t.isNumericLiteral(spread) ||
       t.isBigIntLiteral(spread) ||
@@ -272,17 +337,27 @@ const readStaticObjectProperty = (
   for (let index = source.length - 1; index >= 0; index--) {
     const member = source[index]!;
     if (member.kind === "prototype-setter") {
-      prototypeMaySupply = true;
+      prototypeMaySupply ||= member.prototype === "unknown";
       continue;
     }
     if (member.kind === "unknown") return { status: "dynamic" };
     if (member.kind === "string-indices") {
       const index = semanticArrayIndex(name);
-      if (index !== null && index < member.length) return { status: "dynamic" };
+      if (index !== null && (member.length === null || index < member.length))
+        return { status: "dynamic" };
       continue;
     }
-    const { property } = member;
-    const key = semanticStaticPropertyKey(property.key, property.computed);
+    if (member.kind === "array-indices") {
+      const index = semanticArrayIndex(name);
+      if (
+        index !== null &&
+        ((member.firstSpread >= 0 && index >= member.firstSpread) ||
+          (index < member.elements.length && member.elements[index] != null))
+      )
+        return { status: "dynamic" };
+      continue;
+    }
+    const { property, key } = member;
     if (key === null) return { status: "dynamic" };
     if (key !== name) continue;
     return t.isObjectProperty(property)
@@ -325,16 +400,17 @@ export const staticObjectPropertyNames = (
   let complete = true;
   for (const member of staticObjectMembers(object, 0, isNullish)) {
     if (member.kind === "prototype-setter") continue;
-    if (member.kind === "unknown" || member.kind === "string-indices") {
-      // Indexed string keys remain unenumerated; never claim a complete name
+    if (
+      member.kind === "unknown" ||
+      member.kind === "string-indices" ||
+      member.kind === "array-indices"
+    ) {
+      // Indexed spread keys remain unenumerated; never claim a complete name
       // inventory or expand the input into a potentially much larger key set.
       complete = false;
       continue;
     }
-    const key = semanticStaticPropertyKey(
-      member.property.key,
-      member.property.computed,
-    );
+    const { key } = member;
     if (key === null) {
       complete = false;
       continue;

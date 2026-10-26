@@ -53,6 +53,38 @@ it("keeps numeric overwrite order and constant template string spread keys", () 
   ).toEqual({ status: "explicit", property });
 });
 
+it("keeps literal array indices, holes and unknown iterable suffixes separate from names", () => {
+  const value = t.objectProperty(t.identifier("value"), t.identifier("sender"));
+  for (const elements of [
+    [],
+    [null, null],
+    [t.numericLiteral(1)],
+    [null, t.numericLiteral(1)],
+    [null, t.spreadElement(t.identifier("input"))],
+  ]) {
+    const object = t.objectExpression([
+      value,
+      t.spreadElement(t.arrayExpression(elements)),
+    ]);
+    const read = staticObjectPropertyReader(object);
+    expect(read("value")).toEqual({ status: "explicit", property: value });
+    expect(read("get")).toEqual({ status: "missing" });
+    expect(read("set")).toEqual({ status: "missing" });
+    expect(read("0").status).toBe(elements[0] == null ? "missing" : "dynamic");
+    expect(read("1").status).toBe(elements[1] == null ? "missing" : "dynamic");
+    expect(read("100").status).toBe(
+      elements.some((entry) => t.isSpreadElement(entry))
+        ? "dynamic"
+        : "missing",
+    );
+    expect(read("length")).toEqual({ status: "missing" });
+    expect(staticObjectPropertyNames(object)).toEqual({
+      status: elements.some((entry) => entry != null) ? "partial" : "complete",
+      names: ["value"],
+    });
+  }
+});
+
 it("copies ordinary members without proving requested methods or getter effects", () => {
   const method = (name: string, computed = false) =>
     t.objectMethod(

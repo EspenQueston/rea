@@ -1,6 +1,7 @@
 import * as t from "@babel/types";
 import {
   staticObjectPropertyReader,
+  isObjectPrototypeSetter,
   semanticStaticPropertyKey,
   semanticWriteSiteTarget,
   semanticWriteTargets,
@@ -8,6 +9,7 @@ import {
   unwrapJavaScriptExpression,
 } from "./javascriptAstValues.js";
 import { createSemanticExpressionShapeResolver } from "./javascriptSemanticExpressionShapes.js";
+import { isUnmodifiedGlobalReference } from "./javascriptSemanticAmbientWrites.js";
 import { javascriptBootstrapAt } from "./javascriptBootstrap.js";
 import { ELECTRON_MODULE } from "./javascriptElectronMemberWrites.js";
 import {
@@ -62,14 +64,6 @@ interface SymbolicReadBoundary {
 type SymbolicNamespace = Extract<SymbolicValue, { kind: "namespace" }>;
 
 const emptyEnvironment: SymbolicEnvironment = { values: new Map() };
-const isObjectPrototypeSetter = (
-  property: t.ObjectMethod | t.ObjectProperty,
-  name: string,
-): boolean =>
-  t.isObjectProperty(property) &&
-  !property.computed &&
-  !property.shorthand &&
-  name === "__proto__";
 
 const containsOwnedReturn = (root: t.Node): boolean => {
   let found = false;
@@ -147,12 +141,10 @@ export class JavaScriptSymbolicBindings {
         if (
           t.isCallExpression(node) &&
           t.isMemberExpression(node.callee) &&
-          t.isIdentifier(node.callee.object, { name: "Object" }) &&
-          !resolveSemanticBindingState(state, node.callee.object, "Object") &&
-          semanticStaticPropertyKey(
-            node.callee.property,
-            node.callee.computed,
-          ) === "defineProperty"
+          isUnmodifiedGlobalReference(node.callee, state, [
+            "Object",
+            "defineProperty",
+          ])
         ) {
           const [target, key, descriptor] = node.arguments;
           if (
@@ -397,7 +389,7 @@ export class JavaScriptSymbolicBindings {
               (candidate): candidate is t.ObjectMethod | t.ObjectProperty =>
                 !t.isSpreadElement(candidate),
             )
-            .find((candidate) => isObjectPrototypeSetter(candidate, key));
+            .find((candidate) => isObjectPrototypeSetter(candidate));
           if (prototypeSetter !== undefined)
             return this.#objectPropertyValue(
               prototypeSetter,

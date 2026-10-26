@@ -11,6 +11,10 @@ import { cliTest, type TestCli } from "../../support/cli/cliFixture.js";
 import { javascriptApplicationAnalysisResultSchema } from "../../../src/domain/javascript/javascriptApplicationAnalysis.js";
 import { applicationFeatureTraceResultSchema } from "../../../src/domain/javascript/javascriptFeatureTraceSchemas.js";
 import { analyzeJavaScriptDirectory } from "../../support/cli/javascriptApplication.js";
+import {
+  analysisViewResultSchema,
+  javascriptApplicationSummaryViewResultSchema,
+} from "../../../src/domain/analysisView/analysisView.js";
 
 const sourcePositionSchema = z.object({ line: z.number(), column: z.number() });
 const callPathConditionSchema = z.object({
@@ -885,6 +889,13 @@ const descriptorCases: readonly (readonly [
   ["mixed-getter", `{get:()=>0,...{value:${descriptorSender}}}`, false, true],
   ["mixed-setter", `{value:${descriptorSender},...{set:()=>{}}}`, false, true],
   ["string-spread", `{value:${descriptorSender},..."x"}`, true],
+  ["null-prototype", `{__proto__:null,value:${descriptorSender}}`, true],
+  ["function-spread", `{value:${descriptorSender},...function(){}}`, true],
+  ["regexp-spread", `{value:${descriptorSender},.../x/}`, true],
+  ["template-spread", "{value:" + descriptorSender + ",...`x${1}`}", true],
+  ["empty-array", `{value:${descriptorSender},...[]}`, true],
+  ["array", `{value:${descriptorSender},...[1]}`, true],
+  ["patched-intrinsic", `{get:function(){return ${descriptorNoop}}}`, true],
   ["typescript-assertion", `({value:${descriptorSender}} as const)`, true],
   [
     "duplicate-noop",
@@ -917,6 +928,79 @@ const descriptorCases: readonly (readonly [
   ["nested-null-spread", `{value:${descriptorSender},...{...null}}`, true],
 ] as const;
 
+const analyzeDescriptorFacts = async ({
+  cli,
+  root,
+  connection,
+}: {
+  cli: TestCli;
+  root: string;
+  connection: Awaited<ReturnType<typeof connectLocalToolsMcp>> | undefined;
+}) => {
+  type ApplicationResult = z.infer<
+    typeof javascriptApplicationAnalysisResultSchema
+  >;
+  type Observation = Pick<
+    ApplicationResult["graph"]["nodes"][number]["observations"][number],
+    "properties" | "evidence"
+  >;
+  let statistics: ApplicationResult["statistics"];
+  const observations: Observation[] = [];
+  if (connection === undefined) {
+    const application = await analyzeJavaScriptDirectory("CLI", cli, root);
+    statistics = application.statistics;
+    for (const node of application.graph.nodes)
+      observations.push(...node.observations);
+  } else {
+    const response = await connection.call("analyze_javascript_application", {
+      input_path: root,
+      format: "directory",
+      detail: "summary",
+    });
+    expect(response.isError).not.toBe(true);
+    const summary = z
+      .object({
+        normalized_result: javascriptApplicationSummaryViewResultSchema,
+      })
+      .parse(response.structuredContent).normalized_result;
+    statistics =
+      javascriptApplicationAnalysisResultSchema.shape.statistics.parse(
+        summary.summary.statistics,
+      );
+    let offset: number | null = 0;
+    while (offset !== null) {
+      const response = await connection.call("inspect_analysis_view", {
+        source: {
+          kind: "retained-evidence",
+          evidence_id: summary.parent_evidence_id,
+        },
+        view: {
+          kind: "javascript-facts",
+          where: { kinds: ["javascript-expression"] },
+          property_keys: ["step_kind", "terminal", "channel", "resolution"],
+          offset,
+          limit: 64,
+        },
+      });
+      expect(response.isError).not.toBe(true);
+      const page = z
+        .object({ normalized_result: analysisViewResultSchema })
+        .parse(response.structuredContent).normalized_result;
+      if (page.kind !== "javascript-facts")
+        throw new Error("Expected retained JavaScript facts");
+      expect(page.parent_evidence_id).toBe(summary.parent_evidence_id);
+      observations.push(...page.rows);
+      offset = page.coverage.next_offset;
+      if (offset === null) {
+        expect(page.coverage.exhausted).toBe(true);
+        expect(observations).toHaveLength(page.coverage.total);
+      }
+    }
+    await connection.client.ping();
+  }
+  return { statistics, observations };
+};
+
 cliTest.for(["CLI", "stdio MCP"] as const)(
   "uses effective defineProperty descriptor values for bundled IPC paths through %s",
   async (surface, { cli }) => {
@@ -929,7 +1013,8 @@ cliTest.for(["CLI", "stdio MCP"] as const)(
           2(module) { module.exports = require("electron"); },
           5(module, exports, load) {
             const electron = load(2);
-            exports.sender = ${name === "accessor-noop" ? descriptorSender : descriptorNoop};
+            ${name === "patched-intrinsic" ? "Object.defineProperty=()=>{};" : ""}
+            exports.sender = ${name === "accessor-noop" || name === "patched-intrinsic" ? descriptorSender : descriptorNoop};
             Object.defineProperty(exports, "sender", ${descriptor});
             function send(channel, ...args) { electron.ipcRenderer.send(channel, ...args); }
           },
@@ -982,23 +1067,22 @@ cliTest.for(["CLI", "stdio MCP"] as const)(
       expect(failure.isError).toBe(true);
       await connection.client.ping();
     }
-    const application = await analyzeJavaScriptDirectory(surface, cli, root, {
-      mcpCall: connection?.call,
+    const { statistics, observations } = await analyzeDescriptorFacts({
+      cli,
+      root,
+      connection,
     });
-    await connection?.client.ping();
     for (const [name, source] of Object.entries(files))
       expect(await readFile(join(root, name), "utf8")).toBe(source);
-    expect(application.statistics).toMatchObject({
+    expect(statistics).toMatchObject({
       parsed_javascript_files: descriptorCases.length,
       parse_failures: 0,
     });
-    const terminals = application.graph.nodes
-      .flatMap((node) => node.observations)
-      .filter(
-        ({ properties }) =>
-          properties.step_kind === "terminal" &&
-          properties.terminal === "electron.ipcRenderer.send",
-      );
+    const terminals = observations.filter(
+      ({ properties }) =>
+        properties.step_kind === "terminal" &&
+        properties.terminal === "electron.ipcRenderer.send",
+    );
     expect(
       terminals.map(({ properties }) => properties.channel).sort(),
     ).toEqual(

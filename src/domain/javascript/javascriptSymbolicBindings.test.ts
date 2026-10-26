@@ -761,6 +761,37 @@ it.each([
 it.each([
   ["unknown spread", `{value:require("electron"),...input}`, "unknown"],
   ["unknown descriptor", `input`, "unknown"],
+  ["null prototype", `{__proto__:null,value:require("electron")}`, "external"],
+  [
+    "ignored primitive prototype",
+    `{__proto__:0,value:require("electron")}`,
+    "external",
+  ],
+  [
+    "function spread",
+    `{value:require("electron"),...function(){}}`,
+    "external",
+  ],
+  ["regexp spread", `{value:require("electron"),.../x/}`, "external"],
+  [
+    "interpolated string spread",
+    '{value:require("electron"),...`x${input}`}',
+    "external",
+  ],
+  ["empty array spread", `{value:require("electron"),...[]}`, "external"],
+  ["array spread", `{value:require("electron"),...[1]}`, "external"],
+  ["sparse array spread", `{value:require("electron"),...[,1]}`, "external"],
+  [
+    "unknown iterable array spread",
+    `{value:require("electron"),...[...input]}`,
+    "external",
+  ],
+  [
+    "patched defineProperty",
+    `{get:()=>replacement}`,
+    "external",
+    "Object.defineProperty=()=>{};",
+  ],
   [
     "mixed getter and spread value",
     `{get:()=>0,...{value:require("electron")}}`,
@@ -826,3 +857,14 @@ it.each([
       expect(value).toEqual({ kind: "external", path: ["electron"] });
   },
 );
+
+it("reads a literal prototype only from its actual prototype setter", () => {
+  expect(
+    inspectOne('inspect(({ordinary:require("electron")}).__proto__);').kind,
+  ).toBe("unknown");
+  expect(
+    inspectOne(
+      'inspect(({__proto__:require("electron"),ordinary:1}).__proto__);',
+    ),
+  ).toEqual({ kind: "external", path: ["electron"] });
+});

@@ -792,6 +792,7 @@ it("preserves named fields across primitive and string spreads while retaining u
   const source = `
       httpLink({url:"/primitives",...false,...42,...1n,[void effect()]:0});
       httpLink({url:"/string",..."ab"});
+      httpLink({url:"/array",...[1]});
       httpLink({url:"/unknown",...options});
     `;
   const observed: string[] = [];
@@ -804,9 +805,15 @@ it("preserves named fields across primitive and string spreads while retaining u
     },
     { timeout: 1_000 },
   );
-  expect(observed).toEqual(["/primitives", "/string", "/overwritten"]);
+  expect(observed).toEqual([
+    "/primitives",
+    "/string",
+    "/array",
+    "/overwritten",
+  ]);
   expect(rpcEndpoints(source)).toEqual([
     { kind: "network", value: "/primitives", mechanism: "trpc:link:httpLink" },
     { kind: "network", value: "/string", mechanism: "trpc:link:httpLink" },
+    { kind: "network", value: "/array", mechanism: "trpc:link:httpLink" },
   ]);
 });
