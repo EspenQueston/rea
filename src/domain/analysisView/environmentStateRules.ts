@@ -192,10 +192,17 @@ export type StateListView = EntityViewPlan &
 /** Members an application sets `true` on an entity it has soft-deleted but still answers for by id. */
 const DELETED_FLAGS = ["deleted", "isDeleted", "is_deleted"];
 
+/** The member an item read's object sets `true` to mark the entity soft-deleted, if it does. */
+export const deletedFlag = (
+  object: JsonValue | undefined,
+): string | undefined =>
+  isObject(object)
+    ? DELETED_FLAGS.find((name) => ownMember(object, name) === true)
+    : undefined;
+
 /** Whether an item read's object is one the application has soft-deleted, which says the entity is gone. */
 export const markedDeleted = (object: JsonValue | undefined): boolean =>
-  isObject(object) &&
-  DELETED_FLAGS.some((name) => ownMember(object, name) === true);
+  deletedFlag(object) !== undefined;
 
 /** An envelope member listing an identity field of each listed entity, as Paperless's `all` lists ids. */
 export interface ListedIds {

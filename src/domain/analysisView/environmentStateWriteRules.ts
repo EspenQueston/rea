@@ -32,7 +32,17 @@ export type WriteReason =
   | "contradicted"
   | "side-effect"
   | "unconfirmed"
-  | "incomplete-entities";
+  | "incomplete-entities"
+  | "unknown-clock";
+
+/** Whether serving a plan generates a value from the environment's global clock. */
+export const usesWriteClock = (plan: Pick<StateWritePlan, "rules">): boolean =>
+  plan.rules.some(
+    (rule) =>
+      rule.rule === "clock" ||
+      rule.rule === "held-clock" ||
+      rule.rule === "nested-clock",
+  );
 
 /** Rules that generate a value when served; the gate takes the recorded value instead. */
 export type GeneratedRule =
@@ -299,6 +309,8 @@ export interface StateWritePlan {
       readonly ordinal: number;
       readonly pointer: string;
       readonly shape: "item" | "list";
+      /** Pointers into the entity to values the response had not loaded, which answers keep as it showed them. */
+      readonly unloaded?: string[];
     };
   } | null;
   readonly response: WriteResponse | null;

@@ -23,6 +23,7 @@ import { callSegments } from "./environmentStateCallLines.js";
 import {
   namedEntity,
   refused,
+  softDeleteFlag,
   type StateAnswer,
   type StateServing,
 } from "./environmentStateAnswer.js";
@@ -212,7 +213,11 @@ export const answerBulk = (
       ),
     );
     if (!updated.ok) return updated;
-  } else serving.store.removeAll(written.value);
+  } else
+    serving.store.removeAll(
+      written.value,
+      softDeleteFlag(serving, first!.entity.type) !== undefined,
+    );
   serving.store.commitWrite(values.taken);
   return answer;
 };

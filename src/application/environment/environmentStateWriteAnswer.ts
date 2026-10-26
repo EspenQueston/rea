@@ -69,6 +69,7 @@ import {
   namedEntity,
   recordedJson,
   refused,
+  softDeleteFlag,
   stateAnswer,
   type StateAnswer,
   type StateProvenance,
@@ -405,6 +406,7 @@ export const writeAnswer = (
                     rule.rule === "clock" ? [rule.field] : [],
                   )
                 : [],
+            unloaded: plan.observation?.read?.unloaded ?? [],
           },
           optionalFields(plan),
           laterItemFields(
@@ -693,7 +695,11 @@ const answerDelete = (
     },
   );
   if (answer.ok) {
-    serving.store.remove(entity);
+    // An application that soft-deletes still answers the entity by id, so its last fields are kept for that read.
+    serving.store.remove(
+      entity,
+      softDeleteFlag(serving, entity.type) !== undefined,
+    );
     serving.store.commitWrite(new Map());
   }
   return answer;

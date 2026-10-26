@@ -30,6 +30,28 @@ describe("served writes modelled on later reads", () => {
     ]);
   });
 
+  it("reads a served-deleted contact back marked deleted, as the application answers", () => {
+    const contacts = servedFrom(SOFT_DELETED_ROWS);
+    contacts.answer("delete_contacts_by_id", { id: "1" });
+    expect(contacts.answer("get_contacts_by_id", { id: "1" }).body).toEqual({
+      id: 1,
+      name: "Ada Finch",
+      deleted: true,
+    });
+    // The read finds only what a served delete kept: a reset starts again without it.
+    contacts.store.reset();
+    expect(contacts.answer("get_contacts_by_id", { id: "1" }).body).toEqual({
+      id: 1,
+      name: "Ada Finch",
+      deleted: false,
+    });
+    // A removal that keeps nothing, as a delete of a type that hard-deletes is, leaves no read.
+    contacts.store.removeAll(contacts.store.startedWith("/api/contacts"));
+    expect(contacts.refusal("get_contacts_by_id", { id: "1" })).toMatchObject({
+      code: expect.any(String),
+    });
+  });
+
   it("answers an update of an initial entity without the field only created entities show", () => {
     const tasks = servedFrom(LATER_FIELD_ROWS);
     const body = tasks.answer("patch_tasks_by_id", {

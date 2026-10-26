@@ -864,12 +864,25 @@ export class EnvironmentStateWriteSimulation {
     });
   }
 
-  /** A whole-collection read that placed a create leaves it only the sorted inserts whose order the read follows. */
+  /** A whole-collection read in collection order that placed a create leaves it only the sorted inserts whose order the read follows; one its query sorts shows the query's order instead. */
   #narrowInserts(
     view: Extract<StateView, { shape: "list" }>,
     record: StateRecordFacts,
     name: string,
   ): void {
+    const sent = new Set(
+      [...new URLSearchParams(record.query ?? "").keys()].map((key) =>
+        key.toLowerCase(),
+      ),
+    );
+    if (
+      Object.entries(view.query?.parameters ?? {}).some(
+        ([parameter, { role }]) =>
+          (role === "sort" || role === "direction") &&
+          sent.has(parameter.toLowerCase()),
+      )
+    )
+      return;
     const draft = this.#drafts.get(name)!;
     const kept = this.#wholeListing(view, record, (items) =>
       draft.candidates.filter(

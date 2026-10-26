@@ -183,6 +183,7 @@ what to record next; hints never change what is served:
 | `side-effect`         | The write changed something besides its own entity, which the environment does not model.                                                                                                                                                        |
 | `unconfirmed`         | No later read showed the effect. Read the entity and its list after the write.                                                                                                                                                                   |
 | `incomplete-entities` | The write is confirmed, but the views that show its entity cannot render it in full. Read the written entity through every view that lists it.                                                                                                   |
+| `unknown-clock`       | The learned rules generate timestamps, but the capture establishes no global served clock start. Record usable start times and completed durations for every request.                                                                            |
 
 The bundle ships `evidence.json`, the whole capture Evidence, response bodies
 included. Inspection excludes the values of the standard authentication headers
@@ -766,11 +767,18 @@ sending a `derived` rule's member to an entity that does not hold the value the
 recorded call found, a nested clock on an entity holding no such object, and a
 rendered answer missing a field the recorded response carried, and an update or delete of an entity the state does not hold answers
 the recorded 400, 404 or 410 of the tool or of an item view of the type, if
-any. A refused call leaves the state unchanged. Values a write generates are
+any. A served delete of a type whose recorded item reads answer a deleted record
+marked deleted (`deleted`, `isDeleted` or `is_deleted` `true`, as EspoCRM does)
+keeps the entity until `data/reset` or `data/add`, within the size `data/add`
+loads, so a read of it by id answers its last fields with that flag `true`. A
+refused call leaves the state unchanged. Values a write generates are
 deterministic: the clock starts at `write_clock` and advances one second per
 served write, sequences take one past both the largest held value and the
 largest they generated, and UUIDs and tokens derive from the state Evidence
-id, tool, field and write count, skipping held values. `data/reset` and
+id, tool, field and write count, skipping held values. If `write_clock` is null,
+plans needing `clock`, `held-clock`, or `nested-clock` retain their learned rules
+but are withheld with `unknown-clock`; other confirmed plans can still be served.
+`data/reset` and
 `data/add` restart the clock, counter and sequences, so the same calls after a
 reset give the same state. Answers carry `state: {"source": "state", "view":
 "create" | "update" | "delete", …}` or `"document-write"`; a bulk answer adds
