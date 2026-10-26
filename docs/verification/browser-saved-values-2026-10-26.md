@@ -1,7 +1,7 @@
 # Browser saved values: integration verification
 
-Executed on Linux x64, Node 24.22.1, Chromium through `/usr/bin/chromium`,
-with PocketBase 0.40.6 on an owned loopback instance. Final measured runtime: `854b7a2c07f43f9145b2016c13e3a20a359a6ff2`. Baseline: `6d5532a204b338a6c770fcbae61e0d55bda70793`. The imported implementation is
+Executed locally on Linux x64, Node 24.22.1, Playwright 1.58.2, Chromium through `/usr/bin/chromium`,
+with PocketBase 0.40.6 on an owned loopback instance. Final measured runtime: `9380527041d29377791f023b911eddb87bf7aeb0`. Baseline: `6d5532a204b338a6c770fcbae61e0d55bda70793`. The imported implementation is
 Edgar Arakelyan's PR #7162, upstream head
 `d39f386d202fe8e98592fb2d9d26e43d8d0fb94f`; the subsequent upstream fixes through `81a275b130e85a40a227f6a61cfa2fe1162a217e`
 were compared during integration. Their numeric and slug semantics are retained
@@ -30,8 +30,8 @@ step must complete, and the selected authentication response must actually occur
 exactly once and contain a redacted token; absence would fail the oracle.
 
 - Public CLI: all eight steps completed, with eight retained JSON bodies; no
-  plaintext saved token or declared password. 5.478 s elapsed, 5.946 s CPU,
-  1,352,437,760 bytes sampled process-family peak RSS.
+  plaintext saved token or declared password. 4.509 s elapsed, 4.995 s CPU,
+  1,373,876,224 bytes sampled process-family peak RSS.
 - Public MCP: both first and subsequent tasks completed before and after. The
   baseline uses a retained event page to read the generated ID, then a second
   capture attached to the same browser. The candidate performs the same writes,
@@ -51,13 +51,13 @@ One run per condition establishes observations, not statistical speed claims.
 | Measurement                                        |                 Baseline |             Saved values |
 | -------------------------------------------------- | -----------------------: | -----------------------: |
 | Task calls, each completed task                    |                        3 |                        1 |
-| First task elapsed                                 |                  6.965 s |                  1.923 s |
-| Warm task elapsed                                  |                  1.100 s |                  0.874 s |
-| Entire verifier elapsed                            |                 15.657 s |                  9.213 s |
-| Entire verifier CPU                                |                 17.222 s |                 10.753 s |
-| Sampled process-family peak RSS                    |          2,053,414,912 B |          1,649,876,992 B |
-| Input catalog + arguments/text replies, both tasks |  34,742 estimated tokens |  25,845 estimated tokens |
-| Full SDK catalog + arguments/results, both tasks   | 368,315 estimated tokens | 351,400 estimated tokens |
+| First task elapsed                                 |                  5.983 s |                  1.720 s |
+| Warm task elapsed                                  |                  1.040 s |                  0.787 s |
+| Entire verifier elapsed                            |                 13.103 s |                  8.146 s |
+| Entire verifier CPU                                |                 15.194 s |                  9.497 s |
+| Sampled process-family peak RSS                    |          2,033,250,304 B |          1,634,750,464 B |
+| Input catalog + arguments/text replies, both tasks |  34,820 estimated tokens |  25,897 estimated tokens |
+| Full SDK catalog + arguments/results, both tasks   | 368,451 estimated tokens | 351,496 estimated tokens |
 
 `o200k_base` BPE estimates serialize compact JSON; they are not model billing.
 The model projection includes all 53 advertised tools' names, descriptions and
@@ -357,3 +357,48 @@ portable output contains 27,517 passes and one failure: the same Java diagnostic
 assertion independently reproduced on its actual main parent `60834e391`.
 Cancelled shards are incomplete; this does not establish whether the earlier
 SAZ failures were fixed or merely unexecuted in that run.
+
+## Screenshot privacy at the capture boundary
+
+Runtime `938052704` withholds requested pixels when a scenario plans a
+marked response save, page-derived/Basic credential headers, or already knows
+nonempty sensitive values. The secret owner computes this policy before browser
+execution, and the artifact producer returns `missing` without invoking
+`screenshot`. This covers initial snapshots, later steps and partial failures;
+no extra publication hook or image-cleanup representation is retained. Screenshot
+and aggregate completeness remain explicitly ineligible for equality. Unmarked
+saved response values preserve normal screenshot capture.
+
+Ten final regression cases fail on `4a57f392f`, while the nonsecret positive
+control passes there. The final revision passes **553 source cases in 12 suites**,
+type/lint and the runtime build. Two initially added header fixtures had invalid
+canonical field shapes; those fixtures were corrected before the final run.
+The shared real-browser verifier now requires withheld sensitive screenshots and
+checks all other requested artifacts plus the expected missing sections.
+
+The real PocketBase fixture visibly renders the returned token. All three
+scenario snapshots are missing with screenshot coverage marked incomplete;
+console/network redaction checks still pass. A separate public MCP positive
+control captures a nonsecret screenshot and checks its actual PNG signature.
+The expanded privacy probe took **10.922 s elapsed**, **10.187 s CPU**,
+**1,635,618,816 B** sampled family peak; it includes one more capture than the earlier
+privacy-only probe and is not an equivalent-workflow speed comparison.
+
+A focused real public CLI run also uses the shared CI browser fixture: three
+withheld screenshots, all other selected artifacts captured, and incomplete
+coverage for screenshots/any unfinished network events. It passed in
+**6.338 s elapsed**, **7.428 s CPU**, **1,509,363,712 B** family peak.
+Its first local harness attempt closed the fixture server before launching the
+CLI; the cleanup ownership order was corrected and that failed attempt remains
+recorded. The fixture server runs in this measured process family.
+
+The latest paired task measurements are in the primary table. The preceding
+`854b7a2c0` pair remains an observation: first task 6.965→1.923 s, warm
+1.100→0.874 s, whole elapsed 15.657→9.213 s, CPU 17.222→10.753 s,
+peak 2,053,414,912→1,649,876,992 B, model estimate 34,742→25,845 tokens.
+
+The first fresh control preparation on CI main parent `c6893d1ac` stopped
+before compilation because its lockfile expects Playwright 1.64.1 while the
+previous shared installation contains 1.58.2. No tests from that invocation
+are claimed as executed. A separate locked dependency installation is used for
+current-main checks; the older shared installation remains intact.
