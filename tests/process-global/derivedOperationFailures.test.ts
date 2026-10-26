@@ -859,3 +859,46 @@ describe("native matching failure ownership through the public SDK", () => {
     },
   );
 });
+
+it.each(["left", "right"] as const)(
+  "classifies a non-inventory inspect_analysis_view summary at %s",
+  async (side) => {
+    await withSdk(async ({ client, session }) => {
+      const nonInventorySummary = createEvidence(
+        undefined,
+        ARTIFACT_COMPARISON_EXAMPLE.left.provider,
+        {
+          operation: "inspect_analysis_view",
+          parameters: { view: "summary" },
+          result: { view: "other" },
+        },
+      );
+      const response = await client.callTool({
+        name: "compare_artifacts",
+        arguments:
+          side === "left"
+            ? {
+                left: nonInventorySummary,
+                right: ARTIFACT_COMPARISON_EXAMPLE.right,
+              }
+            : {
+                left: ARTIFACT_COMPARISON_EXAMPLE.left,
+                right: nonInventorySummary,
+              },
+      });
+
+      expect(parseMcpToolError(response).error).toMatchObject({
+        code: "invalid_request",
+        details: {
+          issues: [
+            expect.objectContaining({
+              path: [side],
+              reason: "invalid_value",
+            }),
+          ],
+        },
+      });
+      expect(session.exportEvidenceBundle().records).toEqual([]);
+    });
+  },
+);
