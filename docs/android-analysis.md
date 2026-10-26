@@ -76,6 +76,16 @@ capacity limitation appears only when an actual collection limit was reached.
 The projection does not merge manifests, expand resource references, or
 observe runtime enabled/export state.
 
+`enabled` and `grant_uri_permissions` report only literal component-level
+`android:enabled` and provider-level `android:grantUriPermissions` declarations.
+They are `null` when absent or not a literal boolean; missing attributes are not
+filled from application defaults. A nonliteral declaration gets a limitation.
+`process` preserves the exact component-level `android:process` spelling (including
+empty or symbolic values), or `null` when absent or omitted under the inventory-wide
+1 MiB copy budget. Neither field resolves resources, merges manifest values or
+establishes the effective runtime process or enabled state. Older Evidence without
+these new fields parses with `null` for each.
+
 The service `foreground_service_type` field preserves the declared attribute,
 including an empty value or surrounding spaces; `null` means the attribute is
 absent or the component is not a service. This field does not validate service
