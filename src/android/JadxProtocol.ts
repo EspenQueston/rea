@@ -92,6 +92,8 @@ export const jadxClassSchema = z.object({
   methods: z.array(
     z.object({
       name: z.string(),
+      /** Raw DEX method name; `name` is the decompiler alias. */
+      dex_name: z.string().min(1),
       signature: z.string(),
       dex_descriptor: dexDescriptorSchema,
       is_constructor: z.boolean(),

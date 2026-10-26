@@ -13,6 +13,21 @@ own APK path and explicit selectors; do not open a native session first.
 Choose an `overload_index` from the class inventory when methods are ambiguous
 instead of guessing.
 
+Two projection operations turn those observations into derived Evidence without
+reading the APK again. `project_android_jni_names` takes `class_name` and the
+`dex_method_name`/`dex_descriptor` pairs that `inspect_android_class` reports,
+and returns expected `Java_pkg_Class_method` and overload long names plus the
+JNA default-mapping name; pass that class Evidence as `source_evidence` so the
+selection is authenticated and the result keeps the APK subject and link.
+`project_android_attack_surface` takes the `components` and `components.status`
+from `inspect_android_package` and returns unguarded, guarded and guard-unknown
+findings, an intent-action index, foreground-service types and provider
+authorities; map an `unavailable` inventory status to `unknown`, and pass the
+package Evidence as `source_evidence` for the same authentication and link.
+Both projections refuse a component, class or method their source Evidence does
+not report, and both stay static: protection levels, reachability and
+exploitability remain unknown.
+
 The provider requires a separately supplied headless JADX MCP JAR 0.7.1 and
 Java 17 or newer. `REA_JADX_MCP_JAR` selects the absolute JAR path; `JAVA_HOME`
 can select Java. Use `rea doctor --provider jadx --json` to check the JADX

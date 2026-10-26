@@ -661,6 +661,8 @@ public class ReaJadxMetadataRegression {
         if (method.get("name").getAsString().equals("setContentView")) {
           signatures.add(method.get("signature").getAsString());
           descriptors.add(method.get("dex_descriptor").getAsString());
+          require(method.get("dex_name").getAsString().equals("setContentView"),
+              "Raw DEX method name was not preserved beside the alias: " + method);
         }
       }
       require(signatures.size() == 3, "Fixture must contain three setContentView overloads");

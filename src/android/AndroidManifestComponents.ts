@@ -56,6 +56,10 @@ export interface AndroidManifestComponent {
   readonly permission: string | null;
   /** Source of the effective permission projection; unknown when its copy is capped. */
   readonly permission_source: "component" | "application" | "none" | "unknown";
+  /** Declared provider android:readPermission/android:writePermission presence; none for other kinds. */
+  readonly permission_overrides: "none" | "read" | "write" | "read-write";
+  /** Declared provider child <path-permission> guards; none for other kinds or when none declares a permission. */
+  readonly path_permissions: "none" | "present";
   readonly intent_filter_count: number;
   readonly actions: readonly string[];
   readonly categories: readonly string[];
@@ -308,6 +312,7 @@ export const parseAndroidManifestComponents = (
   let invalidNames = 0;
   let malformedAuthoritySegments = 0;
   let providerPermissionOverridesUnknown = 0;
+  let providerPathPermissions = 0;
   let invalidExported = 0;
   let unknownFilteredExportDefaults = 0;
   let capacityTruncated = false;
@@ -375,7 +380,8 @@ export const parseAndroidManifestComponents = (
         continue;
       }
       const unresolvedName = containsUnresolvedToken(declared);
-      const filters = childNodes(component).filter(
+      const componentChildren = childNodes(component);
+      const filters = componentChildren.filter(
         (entry): entry is Element =>
           isManifestElement(entry) && entry.nodeName === "intent-filter",
       );
@@ -436,12 +442,37 @@ export const parseAndroidManifestComponents = (
         }
       }
       let authorities: readonly string[] | null = null;
+      let permissionOverrides: "none" | "read" | "write" | "read-write" =
+        "none";
+      let pathPermissions: "none" | "present" = "none";
       if (component.nodeName === "provider") {
-        if (
-          androidAttribute(component, "readPermission") !== null ||
-          androidAttribute(component, "writePermission") !== null
-        )
+        const readOverride =
+          androidAttribute(component, "readPermission") !== null;
+        const writeOverride =
+          androidAttribute(component, "writePermission") !== null;
+        if (readOverride || writeOverride)
           providerPermissionOverridesUnknown += 1;
+        permissionOverrides = readOverride
+          ? writeOverride
+            ? "read-write"
+            : "read"
+          : writeOverride
+            ? "write"
+            : "none";
+        // Child <path-permission> guards restrict selected URI paths; a
+        // provider declares them instead of, or beside, its own attributes.
+        const declaredPathPermissions = componentChildren.some(
+          (entry): boolean =>
+            isManifestElement(entry) &&
+            entry.nodeName === "path-permission" &&
+            (androidAttribute(entry, "permission") !== null ||
+              androidAttribute(entry, "readPermission") !== null ||
+              androidAttribute(entry, "writePermission") !== null),
+        );
+        if (declaredPathPermissions) {
+          pathPermissions = "present";
+          providerPathPermissions += 1;
+        }
         const declaredAuthorities = androidAttribute(component, "authorities");
         if (declaredAuthorities !== null) {
           const split = providerAuthorities(
@@ -585,6 +616,8 @@ export const parseAndroidManifestComponents = (
               : filters.length > 0,
         permission,
         permission_source: effectivePermissionSource,
+        permission_overrides: permissionOverrides,
+        path_permissions: pathPermissions,
         intent_filter_count: filters.length,
         actions: collected.actions,
         categories: collected.categories,
@@ -629,6 +662,12 @@ export const parseAndroidManifestComponents = (
   if (providerPermissionOverridesUnknown > 0) {
     limitations.push(
       `${String(providerPermissionOverridesUnknown)} provider(s) declare android:readPermission or android:writePermission; operation-specific permission overrides are retained in the manifest text but are not projected.`,
+    );
+    truncated = true;
+  }
+  if (providerPathPermissions > 0) {
+    limitations.push(
+      `${String(providerPathPermissions)} provider(s) declare child <path-permission> guards; their paths and permission values are retained in the manifest text but are not projected.`,
     );
     truncated = true;
   }

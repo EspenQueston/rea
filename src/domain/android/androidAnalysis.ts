@@ -97,7 +97,8 @@ const textCoverage = z.strictObject({
   reported_total_bytes: z.int().nonnegative().nullable(),
 });
 
-const manifestComponent = z.strictObject({
+/** One projected manifest component; consumers narrow this exact shape. */
+export const androidManifestComponentSchema = z.strictObject({
   kind: z.enum([
     "activity",
     "activity-alias",
@@ -111,6 +112,20 @@ const manifestComponent = z.strictObject({
   exported_default: z.boolean().nullable(),
   permission: z.string().nullable(),
   permission_source: z.enum(["component", "application", "none", "unknown"]),
+  /**
+   * Provider-level `android:readPermission`/`android:writePermission` overrides.
+   * Older Evidence predates this projection, so an absent value is unknown.
+   */
+  permission_overrides: z
+    .enum(["none", "read", "write", "read-write", "unknown"])
+    .default("unknown"),
+  /**
+   * Provider child `<path-permission>` guards. `present` means at least one
+   * path guard declares a permission; the paths and values stay in the
+   * manifest text. Older Evidence predates this projection, so an absent
+   * value is unknown.
+   */
+  path_permissions: z.enum(["none", "present", "unknown"]).default("unknown"),
   intent_filter_count: z.number().int().nonnegative(),
   actions: z.array(z.string()),
   categories: z.array(z.string()),
@@ -127,7 +142,7 @@ const manifestComponent = z.strictObject({
  */
 const manifestComponents = z.strictObject({
   status: z.enum(["complete", "partial", "unavailable"]),
-  items: z.array(manifestComponent),
+  items: z.array(androidManifestComponentSchema),
   limitations: z.array(z.string()),
 });
 /** A DEX prototype; hex parentheses also keep the advertised class valid in v mode. */
@@ -184,6 +199,8 @@ export const dexStaticValueSchema = z.discriminatedUnion("type", [
 
 const method = z.strictObject({
   name: z.string(),
+  /** Raw DEX method name; the display name can be a decompiler alias. */
+  dex_method_name: z.string().min(1),
   reported_signature: z.string(),
   overload_index: z.int().nonnegative(),
   is_constructor: z.boolean(),
@@ -239,6 +256,8 @@ export const androidResultSchemas = {
   inspect_android_class: z.strictObject({
     ...common,
     class_name: z.string(),
+    /** Raw DEX binary class name (`$` for nested classes). */
+    dex_class_name: z.string().min(1),
     methods: z.array(method),
     fields: z.array(
       z.strictObject({

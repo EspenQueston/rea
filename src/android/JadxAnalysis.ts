@@ -46,6 +46,7 @@ const methodsOf = (summary: ClassSummary) => {
     seen.set(method.name, index + 1);
     return {
       name: method.name,
+      dex_method_name: method.dex_name,
       reported_signature: method.signature,
       overload_index: index,
       is_constructor: method.is_constructor,
@@ -294,6 +295,7 @@ export const analyzeJadxRequest = async (
     return androidResultSchemas.inspect_android_class.parse({
       engine,
       class_name: summary.full_name,
+      dex_class_name: summary.raw_name,
       methods: methodsOf(summary),
       fields: summary.fields.map((field) => ({
         name: field.name,

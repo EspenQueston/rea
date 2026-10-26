@@ -270,7 +270,7 @@ class ReaJadxBridge {
                 .map(Object::toString).collect(Collectors.joining(", "))
                 + "): " + method.getReturnType().toString();
             return new MethodSnapshot(name, rawName, shortId, List.copyOf(bodyAbsenceMarkers), Map.of(
-                "name", name, "signature", signature,
+                "name", name, "dex_name", rawName, "signature", signature,
                 "dex_descriptor", descriptor,
                 "is_constructor", method.isConstructor(), "def_pos", 0));
           }).toList();

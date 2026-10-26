@@ -21,6 +21,7 @@ const summary = {
   methods: [
     {
       name: "choose",
+      dex_name: "choose",
       signature: "choose(String): void",
       dex_descriptor: "(Ljava/lang/String;)V",
       is_constructor: false,
@@ -28,6 +29,7 @@ const summary = {
     },
     {
       name: "choose",
+      dex_name: "choose",
       signature: "choose(int): void",
       dex_descriptor: "(I)V",
       is_constructor: false,
@@ -204,6 +206,10 @@ it.each(nestedClassRequests)(
       engine,
     );
     expect(result).toMatchObject({ class_name: fullName });
+    if (request.operation === "inspect_android_class")
+      expect(result).toMatchObject({
+        dex_class_name: nestedClassInput.class_name,
+      });
     expect(calls.map((call) => call.class_name)).toEqual(
       Array.from({ length: calls.length }, () => nestedClassInput.class_name),
     );
@@ -212,6 +218,36 @@ it.each(nestedClassRequests)(
     );
   },
 );
+
+it("reports raw DEX method names beside decompiler aliases", async () => {
+  const aliased = {
+    ...summary,
+    methods: summary.methods.map((method, index) =>
+      index === 0 ? { ...method, name: "renamed", dex_name: "a" } : method,
+    ),
+  };
+  const result = await analyzeJadxRequest(
+    {
+      listClasses: () =>
+        Promise.reject(new Error("unexpected class inventory call")),
+      text: () => Promise.reject(new Error("unexpected text call")),
+      json: () => Promise.resolve(aliased),
+    },
+    {
+      operation: "inspect_android_class",
+      input: { path: "/fixture.apk", class_name: "fixture.Target" },
+    },
+    {} as never,
+    engine,
+  );
+  expect(result).toMatchObject({
+    dex_class_name: "fixture.Target",
+    methods: [
+      { name: "renamed", dex_method_name: "a" },
+      { name: "choose", dex_method_name: "choose" },
+    ],
+  });
+});
 
 it("rejects a nested class when neither producer identity matches the requested selector", async () => {
   await expect(
