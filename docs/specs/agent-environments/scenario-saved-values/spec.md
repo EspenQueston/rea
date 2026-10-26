@@ -27,11 +27,11 @@ values.
   cancellation.
 - A pointer that names no string or number, a number that is not finite (such as
   `1e400`) or that parses to another value than its spelling names (such as
-  `1e-400`), a response that is not JSON or is larger than 4,000,000 characters
-  (a UI step reads none whose decoded size is unknown or may exceed 12,000,000
-  bytes, three per character: the bytes received or declared, times 1,032 for
-  gzip or deflate, and any other content coding refused), and a non-2xx
-  `save_response` fail the step.
+  `1e-400`), a response that is not valid UTF-8, is not JSON or is larger than
+  4,000,000 characters (a UI step reads none whose decoded size is unknown or
+  may exceed 12,000,000 bytes, three per character: the bytes received or
+  declared, times 1,032 for gzip or deflate, and any other content coding
+  refused), and a non-2xx `save_response` fail the step.
 - `{saved:name}` sends a saved value, percent-encoded, in a request path and its
   query and in a goto URL, and in a request's JSON body: a string that is only
   the placeholder becomes the saved value with its JSON type, and a placeholder

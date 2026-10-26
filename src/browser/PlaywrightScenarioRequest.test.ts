@@ -1132,6 +1132,7 @@ describe("values a URL path or Basic header cannot carry", () => {
 describe("saved value retention", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
+    vi.restoreAllMocks();
   });
 
   it("refuses a new saved name that would keep more than the limit, before keeping it", () => {
@@ -1171,6 +1172,19 @@ describe("saved value retention", () => {
     expect(() =>
       padded.save("b.more", "more", "m".repeat(1_200_000), false),
     ).toThrow("more than 4000000 characters of saved values");
+  });
+
+  it("refuses a secret save its encoded spelling cannot fit, before building that spelling", () => {
+    const secrets = resolved(scenario([requestStep({})]));
+    const encode = vi.spyOn(globalThis, "encodeURIComponent");
+    // Each of these characters takes nine in its percent-encoded spelling.
+    expect(() =>
+      secrets.save("a.note", "note", "語".repeat(500_000), true),
+    ).toThrow("more than 4000000 characters of saved values");
+    expect(encode).not.toHaveBeenCalled();
+    encode.mockRestore();
+    secrets.save("b.note", "note", "語".repeat(100_000), true);
+    expect(secrets.redact("語".repeat(100_000))).toBe("[REDACTED:page:b.note]");
   });
 
   it("fails the step that would save past the limit", async () => {
@@ -1251,6 +1265,8 @@ interface FakeResponse {
   readonly late?: Promise<string>;
   /** Response headers, such as its content coding or declared length. */
   readonly headers?: Readonly<Record<string, string>>;
+  /** The body's bytes, when they are not the body's UTF-8. */
+  readonly bytes?: Buffer;
 }
 
 /**
@@ -1281,9 +1297,20 @@ const uiPage = (responses: readonly FakeResponse[], clickFails = false) => {
         url: () => response.url,
         status: () => response.status,
         allHeaders: async () => response.headers ?? {},
+        body: async () => {
+          reads.count += 1;
+          return (
+            response.bytes ??
+            Buffer.from(await (response.late ?? response.body))
+          );
+        },
+        // As Playwright's does, replacing a malformed byte with U+FFFD.
         text: async () => {
           reads.count += 1;
-          return response.late ?? response.body;
+          return (
+            response.bytes ??
+            Buffer.from(await (response.late ?? response.body))
+          ).toString("utf8");
         },
       },
     };
@@ -1608,5 +1635,60 @@ describe("saved response limits and deadlines", () => {
       perform(page, parsed.actions[0]!, resolved(parsed)),
     ).rejects.toThrow("too large to save values from");
     expect(reads.count).toBe(1);
+  });
+});
+
+describe("saved responses that are not UTF-8", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const bytes = (...parts: readonly (string | number)[]): Buffer =>
+    Buffer.concat(
+      parts.map((part) =>
+        typeof part === "string" ? Buffer.from(part) : Buffer.from([part]),
+      ),
+    );
+  // A byte no UTF-8 character starts with, inside the saved string.
+  const MALFORMED = bytes('{"id":"item-', 0xff, '"}');
+
+  it.each([
+    ["a malformed byte", MALFORMED],
+    ["a character cut off at its end", bytes('{"id":"item-7"}', 0xe4, 0xb8)],
+  ])(
+    "fails a request step whose response holds %s, saving nothing",
+    async (_name, body) => {
+      vi.stubGlobal(
+        "fetch",
+        async () => new Response(new Uint8Array(body), { status: 201 }),
+      );
+      const parsed = scenario([
+        requestStep({ save: [{ name: "item", json_pointer: "/id" }] }),
+      ]);
+      const secrets = resolved(parsed);
+      await expect(
+        perform(fakePage({}), parsed.actions[0]!, secrets),
+      ).rejects.toThrow("the response is not valid UTF-8");
+      expect(() => secrets.savedValue("item")).toThrow("No earlier step");
+    },
+  );
+
+  it("fails a UI step whose response holds a malformed byte, saving nothing", async () => {
+    const parsed = clickSaving("/api/items");
+    const secrets = resolved(parsed);
+    const { page } = uiPage([
+      {
+        method: "POST",
+        url: `${ORIGIN}/api/items`,
+        status: 201,
+        body: "",
+        bytes: MALFORMED,
+        size: MALFORMED.length,
+      },
+    ]);
+    await expect(perform(page, parsed.actions[0]!, secrets)).rejects.toThrow(
+      "the response is not valid UTF-8",
+    );
+    expect(() => secrets.savedValue("item")).toThrow("No earlier step");
   });
 });

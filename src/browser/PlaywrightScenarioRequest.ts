@@ -15,7 +15,11 @@ type RequestAction = Extract<BrowserScenarioAction, { action: "request" }>;
 
 /** What the page's fetch returned; a redirect is not followed, so its status is unknown. */
 type PageResponse =
-  | { readonly status: number; readonly body?: string }
+  | {
+      readonly status: number;
+      readonly body?: string;
+      readonly malformed?: true;
+    }
   | { readonly redirected: true }
   | { readonly left: string }
   | { readonly error: string };
@@ -213,6 +217,9 @@ const MAX_SAVED_RESPONSE_CHARACTERS = 4_000_000;
 /** The most UTF-8 bytes text within that limit can take: three per UTF-16 code unit. */
 const MAX_SAVED_RESPONSE_BYTES = 3 * MAX_SAVED_RESPONSE_CHARACTERS;
 
+const MALFORMED_RESPONSE = (stepId: string): string =>
+  `Step ${stepId}: the response is not valid UTF-8, so no value can be saved from it.`;
+
 /** DEFLATE decodes at most 1032 bytes per byte it reads (zlib's limit), so a gzip or deflate body's received size bounds its decoded size. */
 const DEFLATE_MAX_EXPANSION = 1032;
 
@@ -286,22 +293,38 @@ const sendFromPage = (
         // Keep the text only up to the limit, so a large answer is never held whole.
         const reader = answer.body?.getReader();
         if (reader === undefined) return { status: answer.status, body: "" };
-        const decoder = new TextDecoder();
-        let text = "";
+        // A malformed byte fails the step rather than saving U+FFFD in its place.
+        const decoder = new TextDecoder("utf-8", { fatal: true });
+        const decode = (bytes?: Uint8Array): string | undefined => {
+          try {
+            return bytes === undefined
+              ? decoder.decode()
+              : decoder.decode(bytes, { stream: true });
+          } catch {
+            return undefined;
+          }
+        };
+        let text: string | undefined = "";
         try {
           for (;;) {
             const chunk = await reader.read();
             if (chunk.done) break;
-            text += decoder.decode(chunk.value, { stream: true });
-            if (text.length > request.readLimit) {
+            const part = decode(chunk.value);
+            text = part === undefined ? undefined : text + part;
+            if (text === undefined || text.length > request.readLimit) {
               await reader.cancel();
-              return { status: answer.status };
+              return text === undefined
+                ? { status: answer.status, malformed: true }
+                : { status: answer.status };
             }
           }
         } finally {
           reader.releaseLock();
         }
-        return { status: answer.status, body: text + decoder.decode() };
+        const rest = decode();
+        return rest === undefined
+          ? { status: answer.status, malformed: true }
+          : { status: answer.status, body: text + rest };
       }
       const reader = answer.body?.getReader();
       if (reader !== undefined)
@@ -434,8 +457,11 @@ export const performScenarioRequest = async (input: {
     throw new ScenarioRequestError(
       `Request step ${action.step_id} answered ${String(response.status)}; expected ${action.expected_status.join(" or ")}.`,
     );
-  if (action.save.length > 0)
+  if (action.save.length > 0) {
+    if (response.malformed === true)
+      throw new ScenarioRequestError(MALFORMED_RESPONSE(action.step_id));
     saveValues(action.step_id, response.body, action.save, secrets);
+  }
 };
 
 /** A URL path segment a URL parser drops or folds into its parent: `.`, `..` or a percent-encoded spelling of one. */
@@ -614,12 +640,18 @@ export const awaitSavedResponse = (
       throw new ScenarioRequestError(
         `Step ${stepId}: the response is too large to save values from.`,
       );
-    const body = await beforeStepEnds(
-      response.text(),
+    const bytes = await beforeStepEnds(
+      response.body(),
       stepId,
       deadline,
       signal,
     );
+    let body: string;
+    try {
+      body = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    } catch {
+      throw new ScenarioRequestError(MALFORMED_RESPONSE(stepId));
+    }
     saveValues(stepId, body, spec.save, secrets);
   };
   return { saved, stop: () => page.off("request", watch) };

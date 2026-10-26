@@ -89,6 +89,25 @@ const spellingUnits = (secret: string): number =>
     ),
   ].reduce((units, spelling) => units + spelling.length, 0);
 
+/** Characters encodeURIComponent keeps as they are, and those the form encoder keeps (a space it spells `+`). */
+const URI_KEPT = /[\w.!~*'()-]/u;
+const FORM_KEPT = /[\w .*-]/u;
+
+/** A lower bound on {@link spellingUnits}, counted without building a spelling: the secret, and its longer percent-encoded spelling when that is longer than it. */
+const leastSpellingUnits = (secret: string): number => {
+  let uri = 0;
+  let form = 0;
+  for (const character of secret) {
+    const point = character.codePointAt(0) ?? 0;
+    const escaped =
+      3 * (point < 0x80 ? 1 : point < 0x800 ? 2 : point < 0x10000 ? 3 : 4);
+    uri += URI_KEPT.test(character) ? 1 : escaped;
+    form += FORM_KEPT.test(character) ? 1 : escaped;
+  }
+  const encoded = Math.max(uri, form);
+  return secret.length + (encoded > secret.length ? encoded : 0);
+};
+
 const declaredPatterns = (
   values: ReadonlyMap<string, string>,
   spellings: SecretSpellings,
@@ -365,7 +384,7 @@ export class BrowserScenarioSecrets {
     let kept = savedUnits + this.secretSpellingUnits;
     const spellings =
       secret && kept <= MAX_RETAINED_SAVED_CHARACTERS
-        ? this.admittedSpellingUnits(text)
+        ? this.admittedSpellingUnits(text, MAX_RETAINED_SAVED_CHARACTERS - kept)
         : 0;
     kept += spellings;
     if (kept > MAX_RETAINED_SAVED_CHARACTERS)
@@ -378,12 +397,19 @@ export class BrowserScenarioSecrets {
     if (secret) this.admitCredential(label, text);
   }
 
-  /** The code units of the redaction spellings admitting `value` as a credential adds: it and its trimmed spelling, each unless already held. */
-  private admittedSpellingUnits(value: string): number {
+  /** The code units of the redaction spellings admitting `value` as a credential adds: it and its trimmed spelling, each unless already held. Past `room`, only a lower bound, so no spelling is built that could not be kept. */
+  private admittedSpellingUnits(value: string, room: number): number {
     const held = new Set(this.values.values());
-    return [...new Set([value.replace(/^[\t ]+|[\t ]+$/gu, ""), value])]
-      .filter((candidate) => candidate.length > 0 && !held.has(candidate))
-      .reduce((units, candidate) => units + spellingUnits(candidate), 0);
+    const added = [
+      ...new Set([value.replace(/^[\t ]+|[\t ]+$/gu, ""), value]),
+    ].filter((candidate) => candidate.length > 0 && !held.has(candidate));
+    const least = added.reduce(
+      (units, candidate) => units + leastSpellingUnits(candidate),
+      0,
+    );
+    return least > room
+      ? least
+      : added.reduce((units, candidate) => units + spellingUnits(candidate), 0);
   }
 
   /** A saved value with the JSON type it was saved with. */

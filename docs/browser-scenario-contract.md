@@ -502,7 +502,8 @@ id the application assigns:
   cache, times 1,032 for a gzip or deflate body (DEFLATE's most expansion), must
   be at most 12,000,000 bytes, three per character, and another content coding
   or an unknown size fails the step without reading it. A UI step also fails one
-  whose text is longer.
+  whose text is longer. Either step fails a response that is not valid UTF-8,
+  rather than saving U+FFFD in place of a malformed byte.
 - `{saved:name}` sends a saved value in a request step's `path`, including its
   query, and in a `goto` destination's `url`, percent-encoded; a destination's
   structured `query` values are sent as declared. A saved value that makes a
