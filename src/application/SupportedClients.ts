@@ -781,18 +781,26 @@ export const clientEvidencePaths = (
   client: Pick<
     SetupClient,
     "configPath" | "configPaths" | "markerPath" | "discoveryPaths"
-  >,
-): readonly string[] => [
-  ...new Set(
-    (
-      client.discoveryPaths ?? [
-        client.configPath,
-        ...(client.configPaths ?? []),
-        client.markerPath,
-      ]
-    ).filter((path): path is string => path !== undefined && path.length > 0),
-  ),
-];
+  > &
+    // A pinned evidence path overrides discovery: shared registration
+    // storage must not report a product whose own root is absent.
+    Pick<SetupClient, "evidencePath">,
+): readonly string[] =>
+  client.evidencePath !== undefined && client.evidencePath.length > 0
+    ? [client.evidencePath]
+    : [
+        ...new Set(
+          (
+            client.discoveryPaths ?? [
+              client.configPath,
+              ...(client.configPaths ?? []),
+              client.markerPath,
+            ]
+          ).filter(
+            (path): path is string => path !== undefined && path.length > 0,
+          ),
+        ),
+      ];
 
 /**
  * Paths where a recognizable REA-owned row proves ownership of a registration
