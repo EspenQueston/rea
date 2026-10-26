@@ -1,3 +1,5 @@
+import type { RegexMatchingDeadline } from "../config/regexMatchingDeadline.js";
+import type { RegexWorkerHeapRequest } from "../config/regexWorkerHeapRequest.js";
 import { z } from "zod";
 import {
   nativeDecompileSchema,
@@ -13,7 +15,7 @@ import {
 } from "../domain/analysisSearch.js";
 import {
   matchRegexValues,
-  REGEX_MATCHING_LIMITATION,
+  launchRegexMatchingLimitation,
 } from "../process/RegexMatcher.js";
 import {
   AnalysisInputError,
@@ -71,6 +73,7 @@ const unknownBody = {
 const identity = (fn: IdaFunction) => ({
   address: fn.address,
   name: fn.name,
+  symbol: null,
   classification: null,
   body: unknownBody,
 });
@@ -104,6 +107,8 @@ export class IdaOperationRunner {
     private readonly database?: string,
     private readonly options: {
       readonly signal?: AbortSignal | undefined;
+      readonly regexMatchingDeadline?: RegexMatchingDeadline | undefined;
+      readonly regexWorkerHeapRequest?: RegexWorkerHeapRequest | undefined;
       readonly selectorOrigin?: "provider" | undefined;
       /** False when the loaded processor may not be x86, so `callees` cannot be trusted alone. */
       readonly x86Only?: boolean;
@@ -120,12 +125,20 @@ export class IdaOperationRunner {
     tool: string,
     args: Readonly<Record<string, JsonValue>>,
   ): Promise<JsonValue> {
-    if (this.options.signal?.aborted) throw new AnalysisCancelledError(tool);
+    if (this.options.signal?.aborted)
+      throw new AnalysisCancelledError(tool, {
+        cause: this.options.signal.reason,
+      });
     const scoped =
       this.database === undefined ? args : { ...args, database: this.database };
-    const result = await this.connection.call(tool, scoped);
+    const result = await this.connection.call(tool, scoped, {
+      signal: this.options.signal,
+    });
     this.raw.push({ tool, arguments: scoped, result });
-    if (this.options.signal?.aborted) throw new AnalysisCancelledError(tool);
+    if (this.options.signal?.aborted)
+      throw new AnalysisCancelledError(tool, {
+        cause: this.options.signal.reason,
+      });
     return result;
   }
 
@@ -166,6 +179,19 @@ export class IdaOperationRunner {
    * addresses were reported by IDA itself.
    */
   async resolve(query: string, requestedBy?: string): Promise<IdaFunction> {
+    if (query.startsWith("file-offset:"))
+      throw new AnalysisInputError(
+        requestedBy ?? "procedure_address",
+        undefined,
+        [
+          {
+            path: ["procedure"],
+            reason: "invalid_value",
+            message:
+              "IDA does not support file-offset: procedure selectors. Select Ghidra for source-file coordinates or supply an IDA analysis address or exact procedure name.",
+          },
+        ],
+      );
     if (this.protocol !== "legacy") {
       const item = modernLookupSchema.parse(
         await this.call("lookup_funcs", { queries: [query] }),
@@ -302,7 +328,7 @@ export class IdaOperationRunner {
     this.limitations.push(...graph.limitations);
     for (const callee of graph.callees)
       if (!result.has(callee.address))
-        result.set(callee.address, identity({ ...callee, size: "unknown" }));
+        result.set(callee.address, identity(callee));
     return graph.coverage;
   }
 
@@ -498,7 +524,7 @@ export class IdaOperationRunner {
           : legacyCalleesSchema.parse(value);
       for (const item of items) {
         if ("type" in item && item.type === "external")
-          result.set(item.address, identity({ ...item, size: "unknown" }));
+          result.set(item.address, identity(item));
         else queries.push(item.name);
       }
     } else if (direction === "callers") {
@@ -551,13 +577,13 @@ export class IdaOperationRunner {
         if ("type" in item && item.type === "external")
           result.set(
             item.addr,
-            identity({ address: item.addr, name: item.name, size: "unknown" }),
+            identity({ address: item.addr, name: item.name }),
           );
         else queries.push(item.addr);
       }
     }
     const querySet = new Set(queries);
-    if (this.protocol === "native" && querySet.size > 0) {
+    if (this.protocol !== "legacy" && querySet.size > 0) {
       const rows = modernLookupBatchSchema.parse(
         await this.call("lookup_funcs", { queries: [...querySet] }),
       );
@@ -568,7 +594,7 @@ export class IdaOperationRunner {
         rows.some((row) => !querySet.has(row.query))
       )
         throw new AnalysisProtocolError(
-          "Native IDA returned an inconsistent callee lookup batch.",
+          "IDA returned an inconsistent callee lookup batch.",
         );
       for (const query of querySet) {
         const resolved = identity(
@@ -599,12 +625,19 @@ export class IdaOperationRunner {
       const matches = analysisSearchPredicate(query);
       return items.filter(({ value }) => matches(value));
     }
-    this.limitations.push(REGEX_MATCHING_LIMITATION);
+    this.limitations.push(
+      launchRegexMatchingLimitation(
+        this.options.regexMatchingDeadline,
+        this.options.regexWorkerHeapRequest,
+      ),
+    );
     const matched = await matchRegexValues({
       operation,
       pattern: query.pattern,
       caseSensitive: query.case_sensitive,
       values: items.map(({ value }) => value),
+      deadline: this.options.regexMatchingDeadline,
+      heapRequest: this.options.regexWorkerHeapRequest,
       signal: this.options.signal,
     });
     if (!matched.ok) throw matched.error;

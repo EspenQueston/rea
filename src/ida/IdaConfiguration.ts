@@ -1,9 +1,11 @@
 import { isAbsolute } from "node:path";
 import { z } from "zod";
+import { jsonRecordSchema } from "../domain/jsonRecord.js";
 import { AnalysisCleanupLease } from "../artifacts/AnalysisCleanupLease.js";
 import type { RetainedResourceScope } from "../application/AnalysisProvider.js";
 import { ConfigurationError } from "../domain/configurationErrors.js";
 import { AnalysisCancelledError } from "../domain/analysisErrorCore.js";
+import { projectInputIssues } from "../domain/inputIssueProjection.js";
 import { err, ok, type Result } from "../domain/result.js";
 import {
   withOwnedRegularFile,
@@ -21,6 +23,12 @@ export const DEFAULT_IDA_REQUEST_TIMEOUT_MS = 300_000;
 export const MAX_IDA_REQUEST_TIMEOUT_MS = 2_147_483_647;
 
 const common = {
+  sensitive: z
+    .strictObject({
+      headers: z.array(z.string().min(1)).default([]),
+      env: z.array(z.string().min(1)).default([]),
+    })
+    .optional(),
   mode: z.enum(["attached", "headless"]).default("attached"),
   protocol: z.literal("native").optional(),
   timeoutMs: z
@@ -41,7 +49,7 @@ const registrationSchema = z
         type: z.literal("stdio").optional(),
         command: z.string().min(1),
         args: z.array(z.string()).default([]),
-        env: z.record(z.string(), z.string()).default({}),
+        env: jsonRecordSchema(z.string()).default({}),
       })
       .strict(),
     z
@@ -57,7 +65,7 @@ const registrationSchema = z
             url.password === ""
           );
         }, "IDA MCP must use a local HTTP endpoint without URL credentials"),
-        headers: z.record(z.string(), z.string()).default({}),
+        headers: jsonRecordSchema(z.string()).default({}),
       })
       .strict(),
   ])
@@ -101,8 +109,7 @@ export const readIdaConfiguration = (
             );
           },
         },
-        async (handle) => {
-          const metadata = await handle.stat();
+        async ({ handle, initial: metadata }) => {
           if (metadata.size > MAXIMUM_REGISTRATION_BYTES)
             throw registrationTooLarge();
           const bytes = Buffer.alloc(MAXIMUM_REGISTRATION_BYTES + 1);
@@ -126,17 +133,40 @@ export const readIdaConfiguration = (
       const envelope = z
         .object({ mcpServers: z.object({ "ida-pro-mcp": z.unknown() }) })
         .safeParse(input);
-      const parsed = registrationSchema.safeParse(
-        envelope.success ? envelope.data.mcpServers["ida-pro-mcp"] : input,
+      const registration = envelope.success
+        ? envelope.data.mcpServers["ida-pro-mcp"]
+        : input;
+      const parsed = registrationSchema.safeParse(registration);
+      if (parsed.success) return ok(parsed.data);
+      // Only schema-authored correction text is admitted; Zod's aggregate
+      // message can contain registration values, including credentials.
+      const constraints = projectInputIssues(
+        parsed.error.issues,
+        registration,
+      ).flatMap((issue) =>
+        issue.message === undefined
+          ? []
+          : [`${issue.path.join(".") || "registration"}: ${issue.message}`],
       );
-      return parsed.success
-        ? ok(parsed.data)
-        : err(
-            idaConfigurationError(
-              "REA_IDA_MCP_CONFIG must contain an IDA MCP command/args or local url registration; see docs/ida-provider.md.",
-              parsed.error,
-            ),
-          );
+      if (constraints.length === 0)
+        return err(
+          idaConfigurationError(
+            "REA_IDA_MCP_CONFIG must contain an IDA MCP command/args or local url registration; see docs/ida-provider.md.",
+            parsed.error,
+          ),
+        );
+      return err(
+        new ConfigurationError(
+          `REA_IDA_MCP_CONFIG: ${constraints.join("; ")}. See docs/ida-provider.md.`,
+          {
+            cause: parsed.error,
+            settings: constraints.map((constraint) => ({
+              setting: "REA_IDA_MCP_CONFIG",
+              constraint,
+            })),
+          },
+        ),
+      );
     } catch (cause: unknown) {
       if (cause instanceof ConfigurationError) return err(cause);
       if (cause instanceof NonRegularFileReadError)

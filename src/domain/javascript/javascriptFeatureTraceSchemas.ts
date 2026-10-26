@@ -2,8 +2,7 @@ import { z } from "zod";
 
 import { evidenceSchema, providerSchema } from "../evidence.js";
 import { javascriptApplicationGraphSchema } from "./javascriptApplicationGraph.js";
-import { digestSchema } from "../digests.js";
-import { prefixedDigestSchema } from "../digests.js";
+import { digestSchema, prefixedDigestSchema } from "../digests.js";
 
 const evidenceIdSchema = prefixedDigestSchema("ev");
 const nodeIdSchema = prefixedDigestSchema("jag_node");
@@ -189,9 +188,6 @@ export type TraceApplicationFeatureInput = z.infer<
   typeof traceApplicationFeatureInputSchema
 >;
 export type ApplicationFeatureSeed = z.output<
-  typeof applicationFeatureSeedSchema
->;
-export type ApplicationFeatureSeedInput = z.input<
   typeof applicationFeatureSeedSchema
 >;
 export type ApplicationFeatureTraceResult = z.infer<

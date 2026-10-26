@@ -11,7 +11,7 @@ import {
 } from "./EvmBytecodeCarrier.js";
 import { selectSolcArtifact } from "../domain/evm/solcArtifactSelection.js";
 import { evmWorkerRequestSchema } from "./EvmInterfaceWorkerContract.js";
-import { projectEvmoleInterface } from "./EvmoleInterfaceAdapter.js";
+import { evmoleInterfaceReplySchema } from "./EvmoleInterfaceAdapter.js";
 import { inspectSolidityMetadata } from "./SolidityMetadata.js";
 import { EVM_FILE_SIZE_FAILURE_EXIT } from "./EvmoleRelease.js";
 
@@ -135,7 +135,7 @@ const main = async (): Promise<void> => {
             new URL(import.meta.resolve("evmole/evmole_bg.wasm")),
           ),
         });
-        const inferred = projectEvmoleInterface(
+        const raw = evmoleInterfaceReplySchema.parse(
           engine.contractInfo(Buffer.from(bytes).toString("hex"), {
             selectors: true,
             arguments: true,
@@ -151,7 +151,7 @@ const main = async (): Promise<void> => {
             hex: Buffer.from(bytes).toString("hex"),
             metadata: inspectSolidityMetadata(bytes),
           },
-          raw: inferred.raw,
+          raw,
           ...compilerFacts,
         };
       }

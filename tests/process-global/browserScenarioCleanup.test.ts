@@ -456,7 +456,7 @@ it("preserves cancellation diagnostics while retrying retained cleanup", async (
     const result = await serveScenario();
     expect(result.output).toMatchObject({
       code: "cleanup_incomplete",
-      category: "execution_failure",
+      category: "cancelled",
       details: {
         cleanup: "incomplete",
         diagnostics: {

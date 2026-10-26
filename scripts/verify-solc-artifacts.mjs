@@ -453,7 +453,7 @@ try {
     const failure = await inspect(mode, expandedPath, "solc-json", {
       selection,
       expectedError: true,
-      expectedCategory: "execution_failure",
+      expectedCategory: "resource_constraint",
     });
     const diagnostics = (mode === "mcp" ? failure.error : failure).details
       .diagnostics;
@@ -490,9 +490,13 @@ try {
     selection,
     fileSizeLimit: 4096,
     expectedError: true,
-    expectedCategory: "execution_failure",
+    expectedCategory: "resource_constraint",
   });
   assert.match(limitedFailure.details.reason, /4096 byte reply budget/u);
+  assert.equal(
+    limitedFailure.details.reported_limits.maximum_reply_bytes,
+    4096,
+  );
   assert.equal(
     limitedFailure.details.diagnostics.carrier_sha256,
     sha256(limitedText),

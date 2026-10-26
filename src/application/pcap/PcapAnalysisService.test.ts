@@ -1,3 +1,4 @@
+import { projectAnalysisError } from "../../domain/analysisErrorProjection.js";
 import { expect, it } from "vitest";
 
 import { createAnalysisExecution } from "../AnalysisProvider.js";
@@ -44,9 +45,15 @@ const client = {
   tshark_command: "/selected/tshark",
   tshark_source: "environment",
   tshark_version: "4.6.6",
+  tshark_resolved_path: null,
+  tshark_sha256: null,
+  tshark_identity_status: "unresolved",
   capinfos_command: "/selected/capinfos",
   capinfos_source: "environment",
   capinfos_version: "4.6.6",
+  capinfos_resolved_path: null,
+  capinfos_sha256: null,
+  capinfos_identity_status: "unresolved",
 };
 const capture = {
   client,
@@ -177,3 +184,25 @@ it.each(["inspect_pcap_client", "inspect_pcap_capture"] as const)(
     expect(result.error.diagnostics).toEqual({ provider_detail: "retained" });
   },
 );
+
+it("preserves pcap caller field constraints before provider execution", async () => {
+  let calls = 0;
+  const service = new PcapAnalysisService({
+    inspectAvailability: () => Promise.reject(new Error("unused")),
+    close: () => Promise.resolve(),
+    execute: () => {
+      calls++;
+      return Promise.reject(new Error("provider must not run"));
+    },
+  });
+  const result = await service.execute("inspect_pcap_capture", { path: "" });
+  expect(result.ok).toBe(false);
+  if (result.ok) return;
+  expect(projectAnalysisError(result.error)).toMatchObject({
+    code: "invalid_request",
+    details: {
+      issues: [{ path: ["path"], reason: "out_of_range", minimum: 1 }],
+    },
+  });
+  expect(calls).toBe(0);
+});

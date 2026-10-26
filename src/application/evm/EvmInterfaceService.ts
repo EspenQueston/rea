@@ -2,21 +2,18 @@ import { z } from "zod";
 import type { ExecutionOptions } from "../AnalysisProvider.js";
 import type { EvmInterfacePort } from "./EvmInterfacePort.js";
 import type { AnalysisError } from "../../domain/analysisErrorBase.js";
-import {
-  AnalysisCancelledError,
-  AnalysisOutputError,
-} from "../../domain/analysisErrorCore.js";
+import { AnalysisOutputError } from "../../domain/analysisErrorCore.js";
 import type { Evidence } from "../../domain/evidence.js";
-import { evmInterfaceEvidence } from "./EvmInterfaceEvidence.js";
+import { evmInterfaceEvidence } from "../../domain/evm/evmInterfaceEvidence.js";
 import {
   inspectEvmInterfaceInputSchema,
   evmInterfaceSchema,
   matchesEvmInterfaceInput,
 } from "../../domain/evm/evmInterface.js";
-import { analysisInputErrorFromIssues } from "../../domain/inputIssueProjection.js";
 import { jsonValueSchema } from "../../domain/jsonValue.js";
 import { err, type Result } from "../../domain/result.js";
 import { completeProviderEvidence } from "../ProviderOperationExecution.js";
+import { parseAnalysisInput } from "../AnalysisInput.js";
 
 const OPERATION = "inspect_evm_interface";
 const diagnosticsSchema = z.object({
@@ -36,18 +33,14 @@ export class EvmInterfaceService {
     rawInput: unknown,
     options?: ExecutionOptions,
   ): Promise<Result<Evidence, AnalysisError>> {
-    if (options?.signal?.aborted)
-      return err(
-        new AnalysisCancelledError(OPERATION, { cause: options.signal.reason }),
-      );
-    const input = inspectEvmInterfaceInputSchema.safeParse(rawInput);
-    if (!input.success)
-      return err(
-        analysisInputErrorFromIssues(OPERATION, input.error.issues, rawInput, {
-          cause: input.error,
-        }),
-      );
-    const inspected = await this.provider.inspect(input.data, options);
+    const input = parseAnalysisInput(
+      OPERATION,
+      rawInput,
+      inspectEvmInterfaceInputSchema,
+      options?.signal,
+    );
+    if (!input.ok) return input;
+    const inspected = await this.provider.inspect(input.value, options);
     if (!inspected.ok) return inspected;
     const diagnostics = diagnosticsSchema.safeParse(inspected.value.result);
     const outputOptions = diagnostics.success
@@ -57,9 +50,9 @@ export class EvmInterfaceService {
     const report = evmInterfaceSchema.safeParse(execution.result);
     if (
       !report.success ||
-      !matchesEvmInterfaceInput(report.data, input.data) ||
+      !matchesEvmInterfaceInput(report.data, input.value) ||
       execution.subject?.format !== "file" ||
-      execution.subject?.path !== input.data.path ||
+      execution.subject?.path !== input.value.path ||
       execution.subject.sha256 !== report.data.artifact.sha256
     )
       return err(
@@ -70,7 +63,7 @@ export class EvmInterfaceService {
         ),
       );
     return completeProviderEvidence(
-      evmInterfaceEvidence(input.data, {
+      evmInterfaceEvidence(input.value, {
         ...execution,
         result: jsonValueSchema.parse(report.data),
       }),

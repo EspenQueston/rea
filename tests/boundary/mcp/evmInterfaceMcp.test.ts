@@ -16,10 +16,11 @@ import {
 import { createEvidence, parseEvidence } from "../../../src/domain/evidence.js";
 import { evmInterfaceSummaryViewResultSchema } from "../../../src/domain/analysisView/analysisView.js";
 import { inspectSolidityMetadata } from "../../../src/evm/SolidityMetadata.js";
-import { jsonValueSchema } from "../../../src/domain/jsonValue.js";
 import { err, ok } from "../../../src/domain/result.js";
 import { silentLogger } from "../../../src/logger.js";
 import { createServer } from "../../../src/server/createServer.js";
+import { EvidenceMcpServer } from "../../../src/server/EvidenceMcpServer.js";
+import { createToolResultDelivery } from "../../../src/server/toolResult.js";
 import { registerEvmTools } from "../../../src/server/registerEvmTools.js";
 import { createApplicationMcpHarness } from "../../fixtures/applicationMcpHarness.js";
 import {
@@ -46,6 +47,40 @@ const decodedMetadataFixture = () => {
   return value;
 };
 
+it("preserves shared EVM detail guidance and defaults through full SDK discovery", async () => {
+  const inspect = vi.fn(async () => {
+    throw new Error("Discovery must not invoke the provider");
+  });
+  const server = new EvidenceMcpServer(
+    { name: "evm-detail", version: "1" },
+    {},
+    undefined,
+    createToolResultDelivery(undefined),
+  );
+  registerEvmTools(server, new EvmInterfaceService({ inspect }), silentLogger);
+  const client = new Client({ name: "evm-detail", version: "1" });
+  const [ct, st] = InMemoryTransport.createLinkedPair();
+  onTestFinished(async () => {
+    await client.close();
+    await server.close();
+  });
+  await server.connect(st);
+  await client.connect(ct);
+  const { inputSchema } = await advertisedMcpToolSchemas(
+    client,
+    "inspect_evm_interface",
+  );
+  expect(inputSchema).toHaveProperty(["properties", "detail"], {
+    type: "string",
+    enum: ["complete", "summary"],
+    default: "complete",
+    description: expect.stringContaining(
+      "summary retains that complete Evidence",
+    ),
+  });
+  expect(inspect).not.toHaveBeenCalled();
+});
+
 it("advertises exact valid schemas and records inline EVM interface evidence without a binary target", async () => {
   const value = decodedMetadataFixture();
   const inspect = vi.fn(() =>
@@ -59,7 +94,10 @@ it("advertises exact valid schemas and records inline EVM interface evidence wit
   });
   const server = createServer(
     { kind: "session", session },
-    { evmInterface: service },
+    {
+      evmInterface: service,
+      environment: { ...process.env, REA_MCP_INPUT_SCHEMA_PROFILE: "full" },
+    },
   );
   const client = new Client({ name: "evm-interface-contract", version: "1" });
   onTestFinished(async () => {
@@ -161,6 +199,49 @@ it("advertises exact valid schemas and records inline EVM interface evidence wit
       })
     ).isError,
   ).toBe(true);
+});
+
+it("rejects incomplete compiler selections before provider access with compact advertisement", async () => {
+  const inspect = vi.fn(async () => {
+    throw new Error("Invalid input must not invoke the provider");
+  });
+  const service = new EvmInterfaceService({ inspect });
+  const server = new EvidenceMcpServer(
+    { name: "evm-compact", version: "1" },
+    {},
+    undefined,
+    createToolResultDelivery(undefined),
+    { budgetBytes: 13 * 1024 },
+  );
+  registerEvmTools(server, service, silentLogger);
+  const client = new Client({ name: "evm-compact", version: "1" });
+  const [ct, st] = InMemoryTransport.createLinkedPair();
+  onTestFinished(async () => {
+    await client.close();
+    await server.close();
+  });
+  await server.connect(st);
+  await client.connect(ct);
+  const { inputSchema, ajv } = await advertisedMcpToolSchemas(
+    client,
+    "inspect_evm_interface",
+  );
+  expect(inputSchema.description).toContain("Advertised in reduced form");
+  const arguments_ = {
+    path: "/selected.json",
+    encoding: {
+      kind: "solc-json",
+      contract_name: "C",
+      bytecode_kind: "creation",
+    },
+  };
+  expect(ajv.validate(inputSchema, arguments_)).toBe(true);
+  const response = await client.callTool({
+    name: "inspect_evm_interface",
+    arguments: arguments_,
+  });
+  expect(parseMcpToolError(response).error.code).toBe("invalid_request");
+  expect(inspect).not.toHaveBeenCalled();
 });
 
 it("rejects an EVM provider response with a non-file subject before recording Evidence", async () => {
@@ -492,10 +573,10 @@ it.each(["valid", "wrong-subject", "no-subject"])(
       {
         operation: "inspect_evm_interface",
         parameters: { path: value.artifact.path, encoding: "hex" },
-        result: jsonValueSchema.parse({
+        result: {
           ...value,
           bytecode: historicalBytecode,
-        }),
+        },
         confidence: "inferred",
         rawResult: { original: true },
       },

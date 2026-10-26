@@ -16,6 +16,11 @@ import {
 } from "../artifacts/ArtifactFileOperation.js";
 import { ArtifactReaderFailure } from "../artifacts/ArtifactReader.js";
 import { ArtifactResourceScope } from "../artifacts/ArtifactResourceScope.js";
+import {
+  regularFileState,
+  sameRegularFileState,
+  type RegularFileState,
+} from "../filesystem/RegularFile.js";
 
 import {
   admitAsarHeader,
@@ -92,7 +97,6 @@ export const mapElectronFileAuthorizationFailure = (
   const primary = hasCancellation
     ? new AnalysisCancelledError(operation, {
         cause: cancellationReason,
-        ...(diagnostics === undefined ? {} : { diagnostics }),
       })
     : physicalPrimary instanceof AnalysisError
       ? physicalPrimary
@@ -108,8 +112,14 @@ export const mapElectronFileAuthorizationFailure = (
     { operation, cause },
   );
   bindArtifactFileCleanup(cause, cleanup);
+  if (diagnostics !== undefined)
+    (primary ?? cleanup).retainDiagnostics(diagnostics);
   if (primary === undefined) return cleanup;
-  const composed = analysisErrorWithCleanupFailure(primary, cleanup, operation);
+  const composed = analysisErrorWithCleanupFailure(
+    primary,
+    cleanup,
+    operation,
+  ).bindCleanupDependencies([primary, cleanup]);
   bindArtifactFileCleanup(cause, composed);
   return composed;
 };
@@ -120,7 +130,6 @@ const resolveAuthorizedElectronFile = async (
   asarHeaderAdmission: AsarHeaderAdmission,
 ): Promise<string | undefined> => {
   throwIfAborted(signal);
-  if (/%(?:2f|5c)/iu.test(value)) return undefined;
   let url: URL;
   try {
     url = new URL(value);
@@ -133,7 +142,8 @@ const resolveAuthorizedElectronFile = async (
     url.protocol !== "file:" ||
     url.hostname !== "" ||
     url.username !== "" ||
-    url.password !== ""
+    url.password !== "" ||
+    /%(?:2f|5c)/iu.test(url.pathname)
   )
     return undefined;
   let path: string;
@@ -211,37 +221,32 @@ const authorizedAsarMember = async (
   return undefined;
 };
 
-type ArchiveIdentity = Pick<Stats, "dev" | "ino" | "size" | "mtimeMs">;
-
 // This is a retained-memory budget for JSON headers, shared across all archives.
 const MAX_CACHED_HEADERS = 8;
 const headerCache = new Map<
   string,
   {
-    readonly identity: string;
+    readonly identity: RegularFileState;
     readonly files: unknown;
     readonly bytes: number;
     readonly headerBytes: number;
   }
 >();
-const archiveIdentity = (metadata: ArchiveIdentity): string =>
-  `${String(metadata.dev)}:${String(metadata.ino)}:${String(metadata.size)}:${String(metadata.mtimeMs)}`;
-
 /** Read the two Chromium pickle headers on one handle before allocating JSON. */
 const asarFiles = async (
   archive: string,
-  metadata: ArchiveIdentity,
+  metadata: Stats,
   admission: AsarHeaderAdmission,
   signal?: AbortSignal,
   resources?: ArtifactResourceScope,
 ): Promise<unknown> => {
   throwIfAborted(signal);
-  const identity = archiveIdentity(metadata);
+  const identity = regularFileState(metadata);
   const cached = headerCache.get(archive);
-  if (cached?.identity === identity) {
+  if (cached !== undefined && sameRegularFileState(cached.identity, metadata)) {
     // A header cached under a larger caller's admission stays refused here.
     if (cached.headerBytes > admission.maximumBytes)
-      throw asarHeaderAdmissionFailure(admission);
+      throw asarHeaderAdmissionFailure(admission, cached.headerBytes);
     return cached.files;
   }
   const handle = await open(archive, "r");
@@ -256,7 +261,7 @@ const asarFiles = async (
       throwIfAborted(signal);
       const opened = await file.stat();
       throwIfAborted(signal);
-      if (!opened.isFile() || archiveIdentity(opened) !== identity)
+      if (!sameRegularFileState(identity, opened))
         throw new Error("ASAR identity changed before header read");
       const header = await admitAsarHeader(file, signal, admission);
       throwIfAborted(signal);
@@ -278,7 +283,7 @@ const asarFiles = async (
       }
       const afterRead = await file.stat();
       throwIfAborted(signal);
-      if (archiveIdentity(afterRead) !== identity)
+      if (!sameRegularFileState(identity, afterRead))
         throw new Error("ASAR identity changed during header read");
       const parsed: unknown = JSON.parse(
         new TextDecoder("utf-8", { fatal: true }).decode(json),

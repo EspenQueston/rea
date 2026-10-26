@@ -4,12 +4,21 @@ For release comparisons, export `list_procedures` Evidence from each target befo
 closing it. Close clears session records: import both bundles after collecting the
 two targets, or supply portable inline Evidence. `match_native_functions` pairs unique exact names and, when supplied,
 complete observed body bytes. Reuse optional same-context `list_names`,
-`procedure_info`, `read_bytes` and existing `analyze_function` Evidence; avoid
-decompiling every function merely to match it. Its summary retains a parent for
+`procedure_info`, `read_bytes` and existing `analyze_function` dossiers as
+`left_observations`/`right_observations`; an MCP `analyze_function` summary
+reply contributes its `parent_evidence_id` as a `retained-evidence` reference,
+not the summary itself. Avoid decompiling every function merely to match it. Its summary retains a parent for
 `inspect_analysis_view` `function-matches` collections `matches` and `functions`.
 Select columns, batch IDs and page individual facts; aliases remain unresolved.
 Unpaired observations do not prove additions/removals. Existing matched dossier
 pairs include inputs for `compare_functions`; otherwise analyze just chosen pairs.
+
+For a matching representation refusal, inspect `details.limit` and raise
+`native.matching_representation_bytes` with `update_analysis_settings` before
+retrying the unchanged MCP request. CLI launch seed:
+`REA_NATIVE_MATCHING_REPRESENTATION_BYTES`. The default is 96 MiB; the policy
+range is 1 byte to 1 GiB and does not bound process RSS. Keep the complete
+inventories: splitting them changes global name/body uniqueness.
 
 ## Apple app resources
 
@@ -110,6 +119,32 @@ not proof the image is unsigned in every catalog or overlay sense. Signatures,
 chains, timestamps, and Authenticode digest coverage remain unobserved. See
 [PE Authenticode certificate tables](https://github.com/morluto/rea/blob/main/docs/pe-certificates.md).
 
+## PE import and delay-load tables
+
+Use `inspect_pe_imports` for an explicit local PE32/PE32+ image when the
+question concerns imported DLL and function names, ordinals, delay-load
+descriptors, or the pefile import hash. No `open_binary`, Windows SDK, or
+target execution is required. The CLI equivalent is `inspect-pe-imports PATH`.
+Preserve artifact SHA-256, directory file ranges, original DLL spellings, and
+ILT/IAT RVAs. A missing `IMAGE_DIRECTORY_ENTRY_IMPORT` directory is observed
+absence of that table, not proof the image never imported APIs through another
+table or overlay. Bound snapshots, loaded IAT contents, and export-forward
+resolution remain unobserved. See
+[PE import and delay-load tables](https://github.com/morluto/rea/blob/main/docs/pe-imports.md).
+
+## PE TLS callbacks and load configuration
+
+Use `inspect_pe_load_config` for an explicit local PE32/PE32+ image when the
+question concerns code that runs before the entry point through TLS callbacks,
+or the security cookie, SafeSEH, CFG, EH-continuation and XFG declarations in
+the load configuration. No `open_binary`, Windows SDK, or target execution is
+required. The CLI equivalent is `inspect-pe-load-config PATH`. Preserve artifact
+SHA-256, directory and callback-array file ranges, and callback VAs as
+hexadecimal strings. Fields outside the declared `Size` are `null`. Guard-flag
+mitigations carry `evidence_kind: "inferred"`; enforcement remains unobserved.
+See
+[PE TLS callbacks and load configuration](https://github.com/morluto/rea/blob/main/docs/pe-load-config.md).
+
 ## ELF note tables
 
 Use `inspect_elf_notes` for an explicit local ELF32/ELF64 image when the
@@ -120,6 +155,37 @@ descriptor hashes, and original owner spellings. A missing table is observed
 absence of those declarations, not proof the image never carried notes in
 another container. See
 [ELF note tables](https://github.com/morluto/rea/blob/main/docs/elf-notes.md).
+
+## Apple IPS crash reports
+
+Use `inspect_apple_ips` for an explicit local Apple `.ips` file when the
+question concerns crash metadata, exception and termination facts, threads,
+usedImages, lossless registers, or documented crash classes. No `open_binary`,
+Xcode, atos, or target execution is required. The CLI equivalent is
+`inspect-apple-ips PATH`. Preserve artifact SHA-256, `bug_type` as a string,
+uppercase image UUIDs, and integer literals that exceed IEEE-754 range. Only
+`bug_type` `"309"` yields a crash body; other DiagnosticReports types return
+no crash result. Opened Mach-O and dSYM UUID joins remain unobserved. See
+[Apple IPS crash reports](https://github.com/morluto/rea/blob/main/docs/apple-ips.md).
+
+## Linux kernel modules
+
+Use `inspect_kernel_module` for an explicit local ELF32/ELF64 relocatable
+object when the question concerns `.modinfo` license, vermagic, alias,
+depends, or parm strings, the `__versions` symbol CRCs, or an appended module
+signature trailer. No `open_binary`, Linux host, or `modinfo` program is
+required. The CLI equivalent is `inspect-kernel-module PATH`. Preserve
+artifact SHA-256, key order, duplicate keys, CRC hex, and section file ranges.
+A missing section is observed absence when section names are known, not proof
+the module never carried that metadata. `.gnu.linkonce.this_module` is reported
+as present or absent; `struct module` stays unknown because its layout changes
+with the kernel version. `__ksymtab` records are not decoded. The PKCS#7 range
+and its SHA-256 are observed; certificate, signer, and digest coverage remain
+unvalidated. An absent trailer is not proof the module is unsigned in another
+container. gzip, xz, and zstd whole-file containers are unsupported and name
+`external_decompression` as the next probe: use an external codec utility to
+decompress into a separate file, then call `inspect_kernel_module` on that file. See
+[Linux kernel modules](https://github.com/morluto/rea/blob/main/docs/kernel-modules.md).
 
 ## CPython pyc files
 
@@ -138,7 +204,11 @@ question concerns IFF chunks, atom names, exports, imports, lambdas, or the
 Code header. No `open_binary`, Erlang installation, or bytecode execution is
 required. The CLI equivalent is `inspect-erlang-beam PATH`. Preserve artifact
 SHA-256, chunk file ranges, 1-based atom indices, and original atom spellings.
-Missing optional tables stay null. See
+Missing optional tables stay null. For a few facts, use `detail: "summary"` with
+a `beam` view selecting a collection, exact names/indices and fields; read later
+pages from `parent_evidence_id` or the complete Evidence bundle. Same-name
+exports retain every arity and original atom index. CLI summary delivery requires
+`--evidence_output`. Null table counts remain distinct from decoded empty tables. See
 [Erlang BEAM files](https://github.com/morluto/rea/blob/main/docs/erlang-beam.md).
 
 ## SQLite snapshots
@@ -231,6 +301,9 @@ unknown rather than false.
 For a completed `analyze_function` dossier, use `inspect_analysis_view` with
 `view: {kind: "native", facet: "value_flow_operations", offset: 0, limit: 32}`
 and the exact retained Evidence ID to read selected facts without reanalysis.
+The default MCP reply is already a summary of that dossier: its
+`normalized_result.parent_evidence_id` is the retained ID to page, and its
+null counts mark facets the provider did not record or declared unavailable.
 Native facets also include procedure, pseudocode, assembly, basic blocks,
 comments, callers/callees, references, unresolved calls, referenced strings and
 names, the native API record, and value-flow summaries. Pseudocode offsets and limits count UTF-16
@@ -250,21 +323,42 @@ run, use `observe_native_calls` with explicit breakpoints and a bounded
 `duration_ms`/`max_events`. It launches a new process under LLDB, so the target
 runs and may change files or use the network. Hardened-runtime targets need the
 `get-task-allow` entitlement.
+Function breakpoints use exact LLDB runtime names: pass an `inspect_macho` export
+or import `runtime_name` (`main`), not its symbol-table `name` (`_main`). REA does
+not translate breakpoint names. Set `module` to the image
+file name when selecting that image only; otherwise loaded system images also
+match. Inspect retained locations and module paths before attributing a call.
 
 Use `binary_session` with no arguments to check the open target, selected
-provider, and alignment. Its default `result.tool_availability` carries a
-complete inventory grouped by shared facts. Expand each group's `names` and
-inherit the inventory-level client requirements unless a group overrides them;
-availability, reasons, remediation, modes, and flags remain inline. The
-`effects` and `annotations` arrays name true flags from fixed vocabularies, so an
-omitted known flag is false. `tools/list` remains the canonical source for full
-tool schemas when target or provider state changes.
+provider, and alignment. Its default summary `result.tool_availability` carries
+the complete tool inventory grouped by current status. Expand each group's
+`names` and inherit the inventory-level client requirements unless a group
+overrides them; availability, reasons, remediation, and modes remain inline.
+Provider candidates keep availability and target-support status, code, and
+reason. `omitted_fields` names what the summary leaves out; `{"detail":
+"complete"}` adds provider diagnostics, candidate capability sets, and tool
+surface, `effects`, and `annotations`. Those arrays name true flags from fixed
+vocabularies, so an omitted known flag is false. `tools/list` remains the
+canonical source for full tool schemas when target or provider state changes.
 
 Provider capability groups carry provider identity and ordered limitations.
 Prepend each set's `shared_limitations` to a group's `limitations` to recover the
-operation's full ordered list. Candidate capabilities describe possible
-providers. Top-level session capabilities describe the current route, and
+operation's full ordered list. Candidate capabilities, returned with complete
+detail, describe possible providers. Top-level session capabilities describe the current route, and
 `analysis_provider_binding` identifies the selected provider.
+
+## Reuse caller-selected Ghidra analysis
+
+When the caller supplies an expanded project, configure `REA_GHIDRA_PROJECT_PATH`
+(the `.gpr` marker) and optionally `REA_GHIDRA_PROGRAM_NAME` (one root program),
+then restart/reconnect before `open_binary`. CLI uses the same configuration.
+REA opens only a fingerprint-bound owned copy with `-process -noanalysis -readOnly`;
+original project files are not opened by the engine or saved. Database edits,
+import overrides and repair scripts are unavailable in this mode. Treat original
+analysis completeness/settings as unknown and prior edits as caller-project state.
+The program's recorded import digest must match the target; changed project content
+requires reopening for a fresh profile. See the
+[setup and preparation guide](https://github.com/morluto/rea/blob/main/docs/installation.md#reuse-an-existing-ghidra-project).
 
 ## Ghidra startup deadline recovery
 
@@ -272,14 +366,18 @@ providers. Top-level session capabilities describe the current route, and
 bridge startup, and readiness. The default 330,000 ms is configurable through
 `REA_GHIDRA_STARTUP_TIMEOUT_MS`; a smaller query still needs the same cold import.
 
-Preserve useful Evidence before closing the session or restarting REA. Check
-`close_binary` and resolve reported cleanup failures. Set a larger startup budget
-in the environment that launches REA, then restart REA and reconnect the MCP
-client before reopening the same target. Closing and reopening a binary in the
-existing server keeps its original configuration and starts import again.
-Environment changes in an agent's shell do not update an already running MCP
-server. If its launch configuration cannot be changed, report that constraint
-and the exact retry setting instead of claiming a fixed technical limit.
+When the error names `ghidra.startup_timeout_ms`, call
+`update_analysis_settings` with `action: "set"` and a larger value within the
+reported bounds. Resolve retained cleanup before the next startup attempt.
+No REA restart is needed; an already accepted startup keeps its original
+budget. A new attempt repeats import. Preserve useful Evidence before closing
+and reopening the target when remediation requires that lifecycle step.
+
+For a per-function timeout, update `ghidra.decompile_timeout_seconds` and retry
+the same function on the existing Program. Explicit `null` removes that
+per-function deadline. Inspection is optional when the error supplies the
+setting and bounds. Runtime updates disappear when REA exits; environment
+changes only seed future REA processes.
 
 The client's tool-call deadline must allow startup plus the requested query;
 server settings and progress notifications cannot override it. CLI analysis
@@ -295,6 +393,50 @@ their missing coverage is acceptable and retain the resulting limitations.
 Exported C and embedded resources remain useful independent evidence, but a
 timeout does not establish complete analysis or absence of code. See the
 [deadline and client guide](https://github.com/morluto/rea/blob/main/docs/mcp-contracts.md#ghidra-first-query-deadlines-and-recovery).
+
+## Bridge request ceiling
+
+Hopper and Cutter share `REA_BRIDGE_MAX_REQUEST_BYTES`. Unset, both sides use
+16777216 bytes. The payload budget excludes the terminating LF. A decimal
+integer from 7464 to 536870887 raises or lowers that ceiling. The floor fits
+the largest bounded symbol-name command. A tight Cutter status still returns
+its session id and up to 64 completion receipts. Its path is included when it
+fits, and is unknown when it does not, so an older descriptor path is not
+paired with the new generation. The maximum is the encoded payload, one byte under Node's string ceiling so
+the framing LF still fits. Cutter measures, signs, and writes a fitting
+response in bounded chunks. The bridge searches only the newly read bytes
+for the framing LF. The client unescapes each socket chunk into one response
+string before parsing it, so this ceiling does not keep the paged wire frame
+and another concatenated copy. Invalid values are configuration errors and do not fall back to 16777216. Set the variable in the environment that starts REA, restart REA,
+and start Hopper or Cutter from that same environment. An out-of-band bridge
+without the setting stays at 16777216 bytes. The client reports that mismatch
+during discovery only after the hello proves a live authenticated bridge, and
+does not send a status request or the command. A stale descriptor is ignored.
+Discovery fails if any such live ceiling differs, even when another live
+session matches. A command response discarded for that ceiling stays an
+unknown execution with `output_truncated`. A hello
+that never sends its authenticated frame does not hold the accept loop.
+At most 8 connection threads run; a further accept is closed, and a failure
+to start a thread does not stop the listener. `completed_connection` is the
+longest prefix of connections that have terminated. Dense scalar replies are
+encoded in bounded batches.
+The 25000 ms Cutter request deadline and the 256-candidate discovery budget
+still have no runtime override.
+
+## Selected native facts and call graphs
+
+For a large `get_call_graph`, or repeated `procedure_address`,
+`procedure_callees`, `procedure_callers` and `resolve_containing_procedure`
+queries, select `detail: "summary"` when the first 64 recorded observations
+suffice. Read further `native-observation` pages from the returned parent Evidence
+ID. Graph message IDs index that page's exact-text dictionary; keep level,
+source index, failed nodes, and partial/unknown relationship coverage.
+Read referenced source context through `native-context` facets `overview`,
+`analysis-profile`, `limitations` and `result-limitations`. Reuse inspected
+context/profile values only for the same digest; until caveats are read,
+interpretation beyond the returned facts remains unknown. Complete Evidence
+remains retained and exportable. Small complete replies can cost fewer tokens
+than additional context/page calls; count the completed task and discovery.
 
 ## Static memory and original file bytes
 
@@ -322,6 +464,14 @@ For an admitted DOS MZ target, use `inspect_native_load_image` to check measured
 loaded bytes, file mappings, relocations and the entry against the immutable
 snapshot. Keep `mismatch` and `unsupported` explicit. Verified import covers the
 reported static image, not runtime DOS or PC-98 hardware behavior.
+
+For a large load-image report, select `detail: "summary"` and query its
+`parent_evidence_id` with `inspect_analysis_view` kind `native-load-image`.
+Choose a collection such as `relocations` or `mappings`, select only needed
+fields, and page with offset/limit. Original indices preserve same-address
+alternatives. Null collections remain unrecorded or inapplicable; paging does
+not upgrade unsupported verification. CLI requires `--evidence_output` for
+summary delivery so complete source Evidence remains accessible.
 
 For Ghidra decompilation, `procedure_pseudo_code` also accepts `procedure: "file-offset:0x..."`; CLI `rea decompile <path> --file-offset=0x... --provider ghidra` resolves the source byte offset internally. An unresolved 0x-prefixed numeric procedure selector also falls back to a unique file mapping. Existing symbols and analysis addresses win; multiple mappings fail as ambiguous. Preserve the returned file-offset and address locations and raw selection observations. ELF virtual addresses are distinct from file offsets; never assume an arbitrary offset plus image base is an analysis address.
 
@@ -453,6 +603,7 @@ discovery are unsupported. Windows Ghidra P0 admits raw images only for `6502`. 
 
 ### Function annotations in Ghidra
 
+Fresh-import sessions admit annotations; existing-project reuse is read-only.
 Use `annotate_native_function` for one function name and/or entry comments, with at least one explicit change. Review its annotation readback and refreshed dossier inline. Changes are atomic and session-scoped; empty comments clear them, omitted fields preserve them. Later MCP calls observe edits until close. CLI `annotate-native-function` returns the updated analysis before discarding the session. Original executable bytes are unchanged; edits invalidate immutable snapshots. Windows P0 does not admit database mutations. For naming only, `set_address_name` / `set_addresses_names` also work with Ghidra: they name function entries or data addresses (primary labels) and return compact per-address success booleans instead of a dossier.
 
 ## Offline PE resource inventory

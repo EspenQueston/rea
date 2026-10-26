@@ -11,12 +11,15 @@ import {
   AnalysisCleanupLeaseGroup,
 } from "../artifacts/AnalysisCleanupLease.js";
 import {
-  ArtifactFileCancelled,
+  artifactFileCompletion,
   ArtifactFileCleanupFailure,
   artifactFileCancellationCause,
   withArtifactFileHandle,
 } from "../artifacts/ArtifactFileOperation.js";
-import { readStableArtifact } from "../artifacts/readStableArtifact.js";
+import {
+  completedStableArtifact,
+  readStableArtifact,
+} from "../artifacts/readStableArtifact.js";
 import type { StableArtifactSnapshot } from "../artifacts/readStableArtifact.js";
 import { AnalysisError } from "../domain/analysisErrorBase.js";
 import {
@@ -28,6 +31,7 @@ import {
 import { analysisErrorWithCleanupFailure } from "../domain/analysisErrorCleanup.js";
 import { ProviderCleanupError } from "../domain/providerCleanupError.js";
 import { jsonParts, bufferedJsonParts } from "../domain/jsonSerialization.js";
+import { safeParseUtf8Json } from "../domain/safeJson.js";
 import { javaScriptRuntime } from "../domain/runtimeVersion.js";
 import { err, ok, type Result } from "../domain/result.js";
 import type { IncludedScript } from "../domain/webBundleAnalyzerState.js";
@@ -105,21 +109,6 @@ type WebBundleObservedFailure =
 type WebBundleActiveJob = {
   readonly id: string;
   readonly resultBudgetBytes: number;
-};
-
-const stableSnapshotValue = (
-  value: unknown,
-): StableArtifactSnapshot | undefined => {
-  if (
-    value === null ||
-    typeof value !== "object" ||
-    !("bytes" in value) ||
-    !Buffer.isBuffer(value.bytes) ||
-    !("sha256" in value) ||
-    typeof value.sha256 !== "string"
-  )
-    return undefined;
-  return { bytes: value.bytes, sha256: value.sha256 };
 };
 
 export interface WebBundleScriptAnalysisFailure {
@@ -393,7 +382,8 @@ export class WebBundleAnalysisWorker {
       completed = facts;
       result = ok(facts);
     } catch (cause) {
-      const snapshot = this.#completedSnapshot(cause);
+      const completion = artifactFileCompletion(cause);
+      const snapshot = completedStableArtifact(cause);
       if (snapshot !== undefined && resultDescriptor !== undefined) {
         try {
           completed = this.#validateCompletedResult(
@@ -406,7 +396,7 @@ export class WebBundleAnalysisWorker {
           // The physical read completed, but only validated facts are retained.
         }
       }
-      const cancellationCause = this.#completedReadCancellation(cause);
+      const cancellationCause = completion?.cancellation;
       const interrupted =
         deadline?.interruption === "timeout"
           ? scriptTimeout(timeoutMs, cause)
@@ -428,8 +418,7 @@ export class WebBundleAnalysisWorker {
       if (observedFailure !== undefined && interrupted !== undefined)
         observedFailure.retainSecondaryFailure(interrupted);
       const failure =
-        cause instanceof ArtifactFileCleanupFailure &&
-        cause.fileCleanupFailure.outcome.kind === "completed"
+        cause instanceof ArtifactFileCleanupFailure && completion !== undefined
           ? this.#cleanupFailure(cause, interrupted)
           : interrupted !== undefined && observedFailure !== undefined
             ? observedFailure
@@ -786,30 +775,6 @@ export class WebBundleAnalysisWorker {
     return this.#frameSignal.waitForOutputClose(supervisor, deadline.signal);
   }
 
-  #completedSnapshot(cause: unknown): StableArtifactSnapshot | undefined {
-    if (cause instanceof ArtifactFileCancelled)
-      return stableSnapshotValue(cause.fileCancellation.outcome.value);
-    if (
-      cause instanceof ArtifactFileCleanupFailure &&
-      cause.fileCleanupFailure.outcome.kind === "completed"
-    )
-      return stableSnapshotValue(cause.fileCleanupFailure.outcome.value);
-    return undefined;
-  }
-
-  #completedReadCancellation(
-    cause: unknown,
-  ): { readonly reason: unknown } | undefined {
-    if (cause instanceof ArtifactFileCancelled)
-      return { reason: artifactFileCancellationCause(cause) };
-    if (
-      cause instanceof ArtifactFileCleanupFailure &&
-      cause.fileCleanupFailure.outcome.kind === "completed"
-    )
-      return cause.fileCleanupFailure.completionCancellation;
-    return undefined;
-  }
-
   #validateCompletedResult(
     stored: StableArtifactSnapshot,
     descriptor: WebBundleResultDescriptor,
@@ -823,9 +788,9 @@ export class WebBundleAnalysisWorker {
         OPERATION,
         "Web analyzer result differs from its descriptor",
       );
-    const facts = webBundleScriptAnalysisSchema.parse(
-      JSON.parse(stored.bytes.toString("utf8")),
-    );
+    const parsed = safeParseUtf8Json(stored.bytes);
+    if (!parsed.ok) throw parsed.cause;
+    const facts = webBundleScriptAnalysisSchema.parse(parsed.value);
     if (facts.status !== "analyzed" || facts.script_key !== script.script_key)
       throw new AnalysisOutputError(
         OPERATION,

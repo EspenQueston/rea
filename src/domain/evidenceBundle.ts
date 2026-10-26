@@ -1,3 +1,6 @@
+import { EvidenceIntegrityError } from "./evidenceErrors.js";
+import { err, ok, type Result } from "./result.js";
+import { describeValidationFailure } from "./validationFailure.js";
 import { equalJsonText } from "./jsonSerialization.js";
 import { z } from "zod";
 import canonicalize from "canonicalize";
@@ -235,45 +238,41 @@ const referencedEvidenceIds = (unknown: ResidualUnknown): readonly string[] => [
   ...(unknown.resolution?.evidence_ids ?? []),
 ];
 
-/**
- * Name the bundle constraint that failed and how to recover. A single
- * Evidence record, such as one command result, is not a bundle.
- */
-export type EvidenceBundleFailureDescription =
-  | { readonly kind: "single-record"; readonly message: string }
-  | { readonly kind: "invalid-bundle"; readonly message: string };
+type EvidenceBundleValidationFailure =
+  | z.ZodError
+  | DuplicateEvidenceRecordError
+  | InvalidResidualUnknownGraphError
+  | NonCanonicalEvidenceBundleError;
 
-export const describeEvidenceBundleFailure = (
+/** Expected source rejection, including authenticated standalone Evidence. */
+export type EvidenceBundleFailure = {
+  readonly kind: "single-record" | "invalid-bundle";
+  readonly message: string;
+  readonly cause: EvidenceBundleValidationFailure;
+};
+
+const describeEvidenceBundleFailure = (
   input: unknown,
-  cause: unknown,
-): EvidenceBundleFailureDescription => {
+  cause: EvidenceBundleValidationFailure,
+): EvidenceBundleFailure => {
   try {
     const record = parseEvidence(input);
     return {
       kind: "single-record",
+      cause,
       message: `Expected an Evidence bundle with records and manifest arrays, but this JSON is one Evidence record (${record.evidence_id}). Export a session bundle with the MCP export_evidence_bundle tool and supply that file.`,
     };
-  } catch {
+  } catch (recordFailure: unknown) {
+    if (!(recordFailure instanceof z.ZodError)) throw recordFailure;
     return {
       kind: "invalid-bundle",
+      cause,
       message:
         cause instanceof z.ZodError
-          ? `Evidence bundle does not match the bundle schema ${describeValidationFailure(cause)}. Supply an unmodified bundle written by export_evidence_bundle or rea evidence-export.`
+          ? `Evidence bundle does not match the bundle schema ${describeValidationFailure(cause)}. Supply an unmodified bundle produced by this REA identity format. Recreate observations from earlier formats; re-exporting an old bundle does not update its identities.`
           : `Evidence bundle validation failed: ${describeValidationFailure(cause)}. Recreate or re-export the bundle, then try again.`,
     };
   }
-};
-
-/** Locate the first schema issue, or keep a thrown constraint message. */
-export const describeValidationFailure = (cause: unknown): string => {
-  if (!(cause instanceof z.ZodError))
-    return cause instanceof Error ? cause.message : String(cause);
-  const [first, ...rest] = cause.issues;
-  const location =
-    first === undefined || first.path.length === 0
-      ? "the document root"
-      : first.path.map(String).join(".");
-  return `at ${location}: ${first?.message ?? "invalid value"}${rest.length === 0 ? "" : ` (${String(rest.length)} more issues)`}`;
 };
 
 /** Parse records, verify semantic IDs, and reject inconsistent manifests. */
@@ -281,12 +280,19 @@ export const parseEvidenceBundle = (input: unknown): EvidenceBundle => {
   return parseBundle(input, false);
 };
 
-/** Authenticate and seal file-owned payloads once for downstream zero-copy reuse. */
-export const parseImmutableEvidenceBundle = (
+/** Authenticate and seal snapshot-owned payloads, throwing validation failures. */
+export const parseImmutableEvidenceBundle = (input: unknown): EvidenceBundle =>
+  parseBundle(input, true);
+
+/** Read expected source failures as facts; implementation failures still throw. */
+export const safeParseEvidenceBundle = (
   input: unknown,
-): EvidenceBundle => {
-  return parseBundle(input, true);
-};
+): Result<EvidenceBundle, EvidenceBundleFailure> => readBundle(input, false);
+
+/** Authenticate and seal file-owned payloads once for downstream zero-copy reuse. */
+export const safeParseImmutableEvidenceBundle = (
+  input: unknown,
+): Result<EvidenceBundle, EvidenceBundleFailure> => readBundle(input, true);
 
 const parseBundle = (input: unknown, seal: boolean): EvidenceBundle => {
   if (typeof input === "object" && input !== null) {
@@ -294,6 +300,41 @@ const parseBundle = (input: unknown, seal: boolean): EvidenceBundle => {
     if (owned !== undefined) return owned;
   }
   return authenticateBundle(evidenceBundleSchema.parse(input), seal);
+};
+
+/** Read a source bundle while preserving unexpected implementation failures. */
+export const readEvidenceBundle = (
+  input: unknown,
+): Result<EvidenceBundle, EvidenceIntegrityError> => {
+  const parsed = safeParseEvidenceBundle(input);
+  if (parsed.ok) return parsed;
+  const { cause } = parsed.error;
+  return err(
+    new EvidenceIntegrityError(cause.message, {
+      cause,
+      userMessage: cause.message,
+    }),
+  );
+};
+
+const readBundle = (
+  input: unknown,
+  seal: boolean,
+): Result<EvidenceBundle, EvidenceBundleFailure> => {
+  try {
+    return ok(
+      seal ? parseImmutableEvidenceBundle(input) : parseEvidenceBundle(input),
+    );
+  } catch (cause: unknown) {
+    if (
+      !(cause instanceof z.ZodError) &&
+      !(cause instanceof DuplicateEvidenceRecordError) &&
+      !(cause instanceof InvalidResidualUnknownGraphError) &&
+      !(cause instanceof NonCanonicalEvidenceBundleError)
+    )
+      throw cause;
+    return err(describeEvidenceBundleFailure(input, cause));
+  }
 };
 
 /** Authenticate evidence and bundle invariants after the bundle shape is parsed. */

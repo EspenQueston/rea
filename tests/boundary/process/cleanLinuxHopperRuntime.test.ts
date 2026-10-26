@@ -10,6 +10,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { join } from "node:path";
+import { createInterface } from "node:readline";
 import { promisify } from "node:util";
 
 import { expect, it } from "vitest";
@@ -17,6 +18,10 @@ import { expect, it } from "vitest";
 import { assertCleanLinuxHopperRuntime } from "../../../scripts/lib/clean-linux-hopper-runtime.mjs";
 import { cleanupOwnedProcessGroup } from "../../../src/process/ProcessOwnership.js";
 import { createTestTempDirectory } from "../../fixtures/temporaryDirectory.js";
+import {
+  prepareRenamedNodeLauncher,
+  retainedRuntimeNodeCode,
+} from "../../fixtures/retainedRuntimeNode.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -56,10 +61,14 @@ finally:
       ],
       { timeout: 10_000 },
     );
+    if (parent.child.stdout === null)
+      throw new Error("Fixture parent has no readiness pipe");
+    const lines = createInterface({ input: parent.child.stdout });
     const ready = new Promise<number>((resolve, reject) => {
-      parent.child.stdout?.once("data", (data: Buffer) =>
-        resolve(Number(data.toString().trim())),
-      );
+      lines.once("line", (line) => {
+        lines.close();
+        resolve(Number(line.trim()));
+      });
       parent.catch(reject);
     });
     let zombiePid: number | undefined;
@@ -190,11 +199,15 @@ finally:
       timeout: 40_000,
     },
   );
+  if (reaper.child.stdout === null)
+    throw new Error("Fixture reaper has no readiness pipe");
+  const lines = createInterface({ input: reaper.child.stdout });
   const ready = new Promise<{ pid: number; parentPid: number }>(
     (resolve, reject) => {
-      reaper.child.stdout?.once("data", (data: Buffer) => {
+      lines.once("line", (line) => {
+        lines.close();
         try {
-          resolve(JSON.parse(data.toString()));
+          resolve(JSON.parse(line));
         } catch (error) {
           reject(error);
         }
@@ -270,8 +283,6 @@ it.runIf(process.platform === "linux").each([
   "classifies a reparented %s without signaling it",
   async (mode, pythonOptions, retained) => {
     const runId = randomUUID();
-    const childCode =
-      "process.title = 'Xvfb'; setInterval(() => {}, 1000); process.send('ready');";
     const directory = await createTestTempDirectory("rea-clean-runtime-test-");
     const procRoot = join(directory, "proc");
     await mkdir(procRoot);
@@ -280,13 +291,10 @@ it.runIf(process.platform === "linux").each([
     const helper = join(directory, "hopper-demo-x11.py");
     const alternateMode = mode === "alternate launcher";
     const pythonMode = pythonOptions !== null;
-    if (alternateMode) {
-      // Python's native interpreter keeps its executable identity and argv[0]
-      // when copied and invoked through an alias; utility dispatch need not.
-      await copyFile("/usr/bin/python3", launcher);
-      await chmod(launcher, 0o700);
-      await symlink(launcher, alternate);
-    }
+    const childCode = retainedRuntimeNodeCode(
+      alternateMode ? undefined : "Xvfb",
+    );
+    if (alternateMode) await prepareRenamedNodeLauncher(launcher, alternate);
     if (pythonMode) {
       await writeFile(
         helper,
@@ -305,37 +313,25 @@ it.runIf(process.platform === "linux").each([
       : pythonMode
         ? "/usr/bin/python3"
         : process.execPath;
-    const arguments_ = alternateMode
-      ? ["-I", "-c", "import time; print('ready', flush=True); time.sleep(30)"]
-      : pythonMode
-        ? [...pythonOptions, helper]
-        : ["-e", childCode];
-    const stdio = alternateMode
-      ? ["ignore", "pipe", "pipe"]
-      : pythonMode
-        ? ["ignore", "pipe", "ignore"]
-        : ["ignore", "ignore", "ignore", "ipc"];
+    const arguments_ = pythonMode
+      ? [...pythonOptions, helper]
+      : ["-e", childCode];
+    const stdio = pythonMode
+      ? ["ignore", "pipe", "ignore"]
+      : ["ignore", "ignore", "ignore", "ipc"];
     const parentCode = `
       const { spawn } = require('node:child_process');
       const child = spawn(${JSON.stringify(command)}, ${JSON.stringify(arguments_)}, {
         detached: true, stdio: ${JSON.stringify(stdio)}, cwd: ${JSON.stringify(directory)}
       });
       child.once('error', () => process.exit(1));
-      let published = false;
-      let diagnostics = '';
-      child.stderr?.on('data', (data) => { diagnostics += data.toString(); });
-      child.once('exit', () => {
-        if (!published) { process.stderr.write(diagnostics); process.exit(1); }
-      });
       const ready = () => {
-        published = true;
         process.stdout.write(JSON.stringify({ pid: child.pid, parentPid: process.pid }));
         if (child.connected) child.disconnect();
         child.stdout?.destroy();
-        child.stderr?.destroy();
         child.unref();
       };
-      ${pythonMode || alternateMode ? "child.stdout.once('data', ready);" : "child.once('message', ready);"}
+      ${pythonMode ? "require('node:readline').createInterface({ input: child.stdout }).once('line', ready);" : "child.once('message', ready);"}
     `;
     const { reaper, ready } = launchReapedOrphan(runId, parentCode);
     let orphanPid: number | undefined;

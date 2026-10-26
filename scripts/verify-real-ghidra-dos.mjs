@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
-import { requireMcpOperationResult } from "./lib/mcp-verifier-results.mjs";
+import {
+  requireMcpOperationResult,
+  requireMcpOutput,
+} from "./lib/mcp-verifier-results.mjs";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
@@ -213,7 +216,10 @@ try {
     const resolved = await call("procedure_address", { procedure });
     assert.equal(resolved, procedure, "Flat address round-trip drifted");
     const info = await call("procedure_info", { procedure });
-    const dossierResult = await evidenceCall("analyze_function", { procedure });
+    const dossierResult = await evidenceCall("analyze_function", {
+      procedure,
+      detail: "complete",
+    });
     const dossier = functionDossierSchema.parse(
       dossierResult.normalized_result,
     );
@@ -498,7 +504,7 @@ function hexBytes(bytes) {
 function assertProfile(profile) {
   assert.equal(
     profile.parameters.load_image_evidence,
-    "independent-mz-mapping-relocations-v1",
+    "independent-mz-mapping-relocations-v2",
   );
   assert.equal(
     profile.parameters.function_body_evidence,
@@ -552,7 +558,6 @@ async function call(name, arguments_ = {}) {
     { name, arguments: arguments_ },
     { timeout: 240000 },
   );
-  assert.notEqual(result.isError, true, JSON.stringify(result));
   assert.ok(result.structuredContent, `${name} omitted structured result`);
   return requireMcpOperationResult(result, name);
 }
@@ -561,8 +566,7 @@ async function evidenceCall(name, arguments_) {
     { name, arguments: arguments_ },
     { timeout: 240000 },
   );
-  assert.notEqual(result.isError, true, JSON.stringify(result));
-  const evidence = parseEvidence(result.structuredContent);
+  const evidence = parseEvidence(requireMcpOutput(result, name));
   assert.equal(evidence.subject.digest.sha256, sha256);
   assert.equal(evidence.provider.id, "ghidra");
   assertProfile(evidence.analysis_profile);

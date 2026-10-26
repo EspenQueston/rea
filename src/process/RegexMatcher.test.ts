@@ -1,11 +1,19 @@
 import { expect, it } from "vitest";
 
-import { DEFAULT_REGEX_MATCHING_DEADLINE } from "../config/regexMatchingDeadline.js";
+import {
+  DEFAULT_REGEX_MATCHING_DEADLINE,
+  regexMatchingDeadlineRecovery,
+} from "../config/regexMatchingDeadline.js";
+import {
+  regexWorkerHeapRequestRecovery,
+  DEFAULT_REGEX_WORKER_HEAP_REQUEST,
+} from "../config/regexWorkerHeapRequest.js";
 import { projectAnalysisError } from "../domain/analysisErrorProjection.js";
 import {
   execArgvFromCommandLine,
   readLaunchExecArgv,
   readLaunchNodeOptions,
+  regexMatchingDeadlineError,
   regexMatchingLimitation,
   regexWorkerHeapError,
   resolveLaunchRegexWorkerHeap,
@@ -451,51 +459,65 @@ it("describes the effective heap and the configurable matching deadline", () => 
     { kind: "unknown" } as const,
   ]) {
     const limitation = regexMatchingLimitation(heap);
-    expect(limitation).toContain("5000 ms matching deadline (source default)");
-    expect(limitation).toContain("REA_REGEX_MATCHING_DEADLINE_MS");
-    expect(limitation).toContain("floor 1 ms");
-    expect(limitation).toContain("maximum 2147483647 ms");
-    expect(limitation).toContain("REA_REGEX_WORKER_HEAP_REQUEST_MIB");
-    expect(limitation).toContain(
-      "source default; default 128 MiB, floor 7 MiB, maximum 16384 MiB",
+    for (const fact of [
+      "5000 ms",
+      "128 MiB",
+      "source default",
+      "regex.matching_deadline_ms",
+      "regex.worker_heap_request_mib",
+      "REA_REGEX_MATCHING_DEADLINE_MS",
+      "REA_REGEX_WORKER_HEAP_REQUEST_MIB",
+      "update_analysis_settings",
+    ])
+      expect(limitation).toContain(fact);
+    // Providers repeat this text per search operation; bounds and recovery
+    // stay with the errors below instead of every capability entry.
+    expect(limitation).not.toContain(
+      regexMatchingDeadlineRecovery(DEFAULT_REGEX_MATCHING_DEADLINE),
     );
-    expect(limitation).toContain(
-      "Set REA_REGEX_WORKER_HEAP_REQUEST_MIB in the environment that starts REA",
+    expect(limitation).not.toContain(
+      regexWorkerHeapRequestRecovery(DEFAULT_REGEX_WORKER_HEAP_REQUEST),
     );
-    expect(limitation).not.toContain("no runtime override");
-    expect(limitation).not.toContain("either cap");
-    expect(limitation).not.toContain("no runtime override for the heap");
+    expect(limitation.length).toBeLessThan(700);
+    if (heap.kind === "effective")
+      expect(limitation).toContain(`${String(heap.mib)} MiB`);
+    expect(
+      projectAnalysisError(regexMatchingDeadlineError("search_procedures"))
+        .remediation.action,
+    ).toContain(regexMatchingDeadlineRecovery(DEFAULT_REGEX_MATCHING_DEADLINE));
     const projected = projectAnalysisError(
       regexWorkerHeapError("search_procedures", new Error("heap"), heap),
     );
-    expect(projected.remediation.action).not.toContain("no runtime override");
+    if (heap.kind === "effective" && !heap.overridden)
+      expect(projected.details?.limit).toMatchObject({
+        setting: "regex.worker_heap_request_mib",
+        effective_value: 128,
+        source: "default",
+      });
+    else expect(projected.details?.limit).toBeUndefined();
     expect(projected.remediation.action).toContain("--max-old-space-size");
     expect(projected.remediation.action).toContain(
       "--max-old-space-size-percentage",
     );
+    expect(projected.remediation.action).toContain(
+      regexWorkerHeapRequestRecovery(DEFAULT_REGEX_WORKER_HEAP_REQUEST),
+    );
     if (heap.kind === "unknown") {
-      expect(limitation).toContain("was not established");
-      expect(limitation).toContain("--max-old-space-size-percentage");
-      expect(limitation).toContain("--max-heap-size");
-      expect(limitation).toContain("--experimental-config-file");
+      expect(projected.remediation.action).toContain(
+        "--max-old-space-size-percentage",
+      );
+      expect(projected.remediation.action).toContain(
+        "--experimental-config-file",
+      );
       expect(projected.remediation.action).toContain("--max-heap-size");
       expect(projected.remediation.action).toContain(
         "--experimental-default-config-file",
       );
-      expect(projected.message).toContain("was not established");
-      expect(projected.details).toMatchObject({
-        reported_limits: {
-          requested_worker_heap_mib: 128,
-          requested_worker_heap_source: "default",
-        },
-      });
       expect(projected.details?.reported_limits).toEqual({
         requested_worker_heap_mib: 128,
         requested_worker_heap_source: "default",
       });
     } else {
-      expect(limitation).toContain(`effective ${String(heap.mib)} MiB`);
-      expect(projected.message).toContain(`effective ${String(heap.mib)} MiB`);
       expect(projected.details).toMatchObject({
         reported_limits: {
           worker_heap_mib: heap.mib,
@@ -520,19 +542,21 @@ it("keeps a selected heap request unless a positive Node flag overrides it", () 
     DEFAULT_REGEX_MATCHING_DEADLINE,
     request,
   );
-  expect(selected).toContain("effective 256 MiB");
-  expect(selected).toContain(
-    "The effective REA_REGEX_WORKER_HEAP_REQUEST_MIB value is 256 MiB (source setting; default 128 MiB, floor 7 MiB, maximum 16384 MiB).",
-  );
+  for (const fact of ["256 MiB", "source setting"])
+    expect(selected).toContain(fact);
+  expect(selected).not.toContain("--max-old-space-size");
   const overridden = regexMatchingLimitation(
     effective(64, true),
     DEFAULT_REGEX_MATCHING_DEADLINE,
     request,
   );
-  expect(overridden).toContain("effective 64 MiB");
-  expect(overridden).toContain("source setting");
-  expect(overridden).toContain("floor 7 MiB");
-  expect(overridden).toContain("maximum 16384 MiB");
+  for (const fact of [
+    "64 MiB",
+    "256 MiB",
+    "source setting",
+    "--max-old-space-size",
+  ])
+    expect(overridden).toContain(fact);
   const projected = projectAnalysisError(
     regexWorkerHeapError(
       "search_procedures",
@@ -548,9 +572,8 @@ it("keeps a selected heap request unless a positive Node flag overrides it", () 
       requested_worker_heap_source: "setting",
     },
   });
-  expect(projected.remediation.action).toContain("source setting");
   expect(projected.remediation.action).toContain(
-    "Set REA_REGEX_WORKER_HEAP_REQUEST_MIB in the environment that starts REA",
+    regexWorkerHeapRequestRecovery(request),
   );
-  expect(projected.remediation.action).not.toContain("no runtime override");
+  expect(projected.details?.limit).toBeUndefined();
 });

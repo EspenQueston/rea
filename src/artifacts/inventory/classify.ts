@@ -1,12 +1,17 @@
+import type { NodeSeaAdmission } from "../nodeSea/NodeSeaAdmission.js";
 import type { AsarHeaderAdmission } from "../../config/asarHeaderAdmission.js";
-import { locateGodotPck } from "../GodotPckLocation.js";
+import {
+  ArtifactEmbeddedFormatProbes,
+  type ArtifactEmbeddedFormatProbeFacts,
+} from "../ArtifactEmbeddedFormatProbes.js";
 import { sameRegularFileState } from "../../filesystem/RegularFile.js";
 import type { FileHandle } from "node:fs/promises";
 import type { Stats } from "node:fs";
 import type { StableRegularFileDescriptor } from "../../filesystem/RegularFile.js";
 import type { OwnedFileHandle } from "../../filesystem/OwnedFileHandle.js";
 
-import { containsPyInstallerArchive } from "../pyinstaller/CArchiveLayout.js";
+import { decodeNodeSeaBlob } from "../nodeSea/NodeSeaBlob.js";
+import { readNodeSeaBlob } from "../nodeSea/NodeSeaLocation.js";
 import { classifyArtifactContent } from "./ArtifactGraphConstruction.js";
 import { abortIfNeeded } from "../ArtifactHash.js";
 import { claimsExecutableHeader } from "../../domain/binaryTarget.js";
@@ -19,15 +24,20 @@ import {
   zipRootPackageFormat,
 } from "../../domain/zipPackageFormat.js";
 import { ArtifactReaderFailure } from "../ArtifactReader.js";
-import type { ArtifactResourceOwner } from "../ArtifactResourceScope.js";
 import type { HashResult } from "../ArtifactHash.js";
 import {
   hashStableRootArtifactHandle,
   openRootArtifact,
+  releaseRootArtifact,
 } from "./hashStableRootArtifact.js";
 import type { ArtifactInventoryOptions } from "./types.js";
-import type { FatSliceHeaderEvidence } from "../../domain/apple/machoContainer.js";
 import { readMachoHeaderPrefixFacts } from "../../domain/apple/machoContainer.js";
+import { hasDiskImageSignature } from "../../domain/apple/diskImageFormat.js";
+import {
+  observeMzWindowsHeader,
+  type MzWindowsHeaderSignatureEvidence,
+} from "../../domain/dosMz.js";
+import type { ArtifactClassificationEvidence } from "../ArtifactClassificationProbe.js";
 
 interface RootClassification {
   readonly format: ArtifactOccurrence["artifact_format"];
@@ -36,6 +46,10 @@ interface RootClassification {
 
 type RootInventoryClassification = RootClassification & {
   readonly rootSource: RootInventorySource | undefined;
+  readonly readerAdmission:
+    | StableRegularFileDescriptor
+    | NodeSeaAdmission
+    | undefined;
 };
 
 /** The admitted descriptor and the single owner that can confirm its close. */
@@ -43,38 +57,7 @@ export interface RootInventorySource extends StableRegularFileDescriptor {
   readonly owner: OwnedFileHandle;
 }
 
-/** Classify and hash one file root through the same stable open descriptor. */
-export const classifyAndHashRoot = async (
-  path: string,
-  directory: boolean,
-  expectedMetadata: Stats,
-  options: Pick<ArtifactInventoryOptions, "resourceScope" | "signal">,
-): Promise<RootClassification> => {
-  return options.resourceScope.run(async () => {
-    const result = await classifyAndHashRootForInventory(
-      path,
-      directory,
-      expectedMetadata,
-      options,
-    );
-    const rootSource = result.rootSource;
-    if (rootSource !== undefined) {
-      const owner: ArtifactResourceOwner = {
-        kind: "file-handle",
-        handle: rootSource.owner,
-        resource: `root artifact descriptor for ${path}`,
-      };
-      const cleanupAttempt = await options.resourceScope.release(owner);
-      if (cleanupAttempt.kind === "failed")
-        throw options.resourceScope.cleanupFailure({ kind: "completed" }, [
-          cleanupAttempt,
-        ]);
-    }
-    return { format: result.format, digest: result.digest };
-  });
-};
-
-/** Classify a root and retain its admitted ZIP descriptor for child inventory. */
+/** Classify a root and retain its admitted source and format facts for child inventory. */
 export const classifyAndHashRootForInventory = async (
   path: string,
   directory: boolean,
@@ -83,20 +66,28 @@ export const classifyAndHashRootForInventory = async (
     ArtifactInventoryOptions,
     "resourceScope" | "signal" | "asarHeaderAdmission"
   >,
+  probeFacts?: ArtifactEmbeddedFormatProbeFacts,
 ): Promise<RootInventoryClassification> => {
+  if (directory && probeFacts !== undefined) {
+    abortIfNeeded(options.signal);
+    throw new ArtifactReaderFailure(
+      "integrity",
+      `Root artifact changed before inventory: ${path}`,
+    );
+  }
   if (directory)
-    return { format: "directory", digest: null, rootSource: undefined };
-  const ownedHandle = await openRootArtifact(
+    return {
+      format: "directory",
+      digest: null,
+      rootSource: undefined,
+      readerAdmission: undefined,
+    };
+  const source = await openRootArtifact(
     path,
     options.resourceScope,
     options.signal,
   );
-  const handle = ownedHandle.handle;
-  const owner: ArtifactResourceOwner = {
-    kind: "file-handle",
-    handle: ownedHandle,
-    resource: `root artifact descriptor for ${path}`,
-  };
+  const { handle, initial } = source;
   let outcome:
     | {
         readonly kind: "completed";
@@ -104,18 +95,25 @@ export const classifyAndHashRootForInventory = async (
       }
     | { readonly kind: "failed"; readonly cause: unknown };
   try {
-    const initial = await handle.stat();
     if (!sameRegularFileState(expectedMetadata, initial))
       throw new ArtifactReaderFailure(
         "integrity",
         `Root artifact changed before inventory: ${path}`,
       );
-    const format = await classifyRootFormat(
+    const classified = await classifyRootFormat(
       path,
-      handle,
+      source,
+      new ArtifactEmbeddedFormatProbes(
+        path,
+        source,
+        options.signal,
+        probeFacts,
+      ),
       options.signal,
       options.asarHeaderAdmission,
     );
+    const format =
+      typeof classified === "string" ? classified : classified.kind;
     const digest = await hashStableRootArtifactHandle(
       path,
       handle,
@@ -126,24 +124,35 @@ export const classifyAndHashRootForInventory = async (
       isZipPackageFormat(format) ||
       format === "mach-o-universal" ||
       format === "godot-pck" ||
-      format === "pyinstaller";
+      format === "pyinstaller" ||
+      format === "node-sea";
     outcome = {
       kind: "completed",
       value: {
         format,
         digest,
-        rootSource: retainSource
-          ? { handle, initial, owner: ownedHandle }
-          : undefined,
+        rootSource: retainSource ? source : undefined,
+        readerAdmission:
+          typeof classified !== "string"
+            ? classified
+            : retainSource
+              ? source
+              : undefined,
       },
     };
   } catch (cause: unknown) {
     outcome = { kind: "failed", cause };
   }
   if (outcome.kind === "failed" || outcome.value.rootSource === undefined) {
-    const cleanupAttempt = await options.resourceScope.release(owner);
-    if (cleanupAttempt.kind === "failed")
-      throw options.resourceScope.cleanupFailure(outcome, [cleanupAttempt]);
+    await releaseRootArtifact(
+      path,
+      source.owner,
+      options.resourceScope,
+      outcome.kind === "completed"
+        ? { kind: "completed", digest: outcome.value.digest }
+        : outcome,
+      options.signal,
+    );
   }
   if (outcome.kind === "failed") throw outcome.cause;
   return outcome.value;
@@ -151,10 +160,12 @@ export const classifyAndHashRootForInventory = async (
 
 const classifyRootFormat = async (
   path: string,
-  handle: FileHandle,
+  source: RootInventorySource,
+  embeddedProbes: ArtifactEmbeddedFormatProbes,
   signal?: AbortSignal,
   asarHeaderAdmission?: AsarHeaderAdmission,
-): Promise<ArtifactOccurrence["artifact_format"]> => {
+): Promise<ArtifactOccurrence["artifact_format"] | NodeSeaAdmission> => {
+  const { handle } = source;
   const probe = createArtifactClassificationProbe(asarHeaderAdmission);
   const chunk = Buffer.alloc(64 * 1024);
   while (probe.length < probe.limit) {
@@ -179,24 +190,44 @@ const classifyRootFormat = async (
     evidence.prefix.subarray(0, 4).equals(Buffer.from("xar!"))
   )
     return "pkg";
+  // Fill each range: a short result is end of file, not a partial host read.
+  const read = async (position: number, length: number): Promise<Buffer> => {
+    const bytes = Buffer.alloc(length);
+    let filled = 0;
+    while (filled < length) {
+      abortIfNeeded(signal);
+      const observed = await handle.read(
+        bytes,
+        filled,
+        length - filled,
+        position + filled,
+      );
+      abortIfNeeded(signal);
+      if (observed.bytesRead === 0) break;
+      filled += observed.bytesRead;
+    }
+    return bytes.subarray(0, filled);
+  };
   if (
     lower.endsWith(".dmg") &&
-    (await hasKolyTrailer(handle, archiveBytes, signal))
+    (await hasDiskImageSignature(archiveBytes, read))
   )
     return "dmg";
-  if (await locateGodotPck(handle, archiveBytes, signal, evidence.prefix))
-    return "godot-pck";
-  const fatSliceHeaders = await readRootFatSliceHeaders(
+  if (await embeddedProbes.godotPck(evidence.prefix)) return "godot-pck";
+  const fatEvidence = await readRootFatSliceHeaders(handle, evidence, signal);
+  const mzWindowsHeaderSignature = await readRootMzWindowsHeaderSignature(
     handle,
-    evidence.fatSliceHeaders,
+    fatEvidence,
+    archiveBytes,
     signal,
   );
+  const classificationEvidence =
+    mzWindowsHeaderSignature === undefined
+      ? fatEvidence
+      : { ...fatEvidence, mzWindowsHeaderSignature };
   const format = classifyArtifactContent(
     path,
-    {
-      ...evidence,
-      ...(fatSliceHeaders === undefined ? {} : { fatSliceHeaders }),
-    },
+    classificationEvidence,
     archiveBytes,
   ).format;
   // Only bytes no other format claims may lead a located ZIP, so an
@@ -204,21 +235,20 @@ const classifyRootFormat = async (
   if (
     (format === "file" || format === "unknown") &&
     !claimsExecutableHeader(evidence.prefix, archiveBytes) &&
-    (await locateTrailingZipArchive(archiveBytes, async (position, length) => {
-      abortIfNeeded(signal);
-      const bytes = Buffer.alloc(length);
-      const read = await handle.read(bytes, 0, length, position);
-      abortIfNeeded(signal);
-      return bytes.subarray(0, read.bytesRead);
-    })) !== undefined
+    (await locateTrailingZipArchive(archiveBytes, read)) !== undefined
   )
     return zipRootPackageFormat(lower);
   if (["elf", "pe", "mach-o", "mach-o-universal"].includes(format)) {
-    const packaged = await containsPyInstallerArchive(
-      handle,
-      archiveBytes,
-      signal,
-    );
+    const sea = await embeddedProbes.nodeSea();
+    abortIfNeeded(signal);
+    if (sea !== undefined) {
+      const decoded = await decodeNodeSeaBlob(
+        await readNodeSeaBlob(handle, sea, archiveBytes, signal),
+        signal,
+      );
+      return { kind: "node-sea", source, location: sea, decoded };
+    }
+    const packaged = await embeddedProbes.pyInstaller();
     abortIfNeeded(signal);
     if (packaged) return "pyinstaller";
   }
@@ -228,10 +258,11 @@ const classifyRootFormat = async (
 /** Read exact FAT header windows missed by the bounded prefix probe. */
 const readRootFatSliceHeaders = async (
   handle: FileHandle,
-  existing: FatSliceHeaderEvidence | undefined,
+  evidence: ArtifactClassificationEvidence,
   signal?: AbortSignal,
-): Promise<FatSliceHeaderEvidence | undefined> => {
-  if (existing === undefined) return undefined;
+): Promise<ArtifactClassificationEvidence> => {
+  const existing = evidence.fatSliceHeaders;
+  if (existing === undefined) return evidence;
   const { header } = existing;
   const sliceHeadersByOffset = new Map(existing.sliceHeadersByOffset);
   for (let index = 0; index < header.slices.length; index += 1) {
@@ -265,28 +296,57 @@ const readRootFatSliceHeaders = async (
       readMachoHeaderPrefixFacts(thinHeader.subarray(0, bytesRead)),
     );
   }
-  return { header, sliceHeadersByOffset };
+  return { ...evidence, fatSliceHeaders: { header, sliceHeadersByOffset } };
 };
 
-const hasKolyTrailer = async (
+/** Read only the missing signature bytes requested by the bounded MZ parser. */
+const readRootMzWindowsHeaderSignature = async (
   handle: FileHandle,
-  size: number,
+  evidence: ArtifactClassificationEvidence,
+  fileSize: number,
   signal?: AbortSignal,
-): Promise<boolean> => {
-  if (size < 512) return false;
-  const trailer = Buffer.alloc(4);
-  let bytes = 0;
-  while (bytes < trailer.length) {
+): Promise<MzWindowsHeaderSignatureEvidence | undefined> => {
+  const observation = observeMzWindowsHeader(evidence.prefix, fileSize);
+  if (observation.state !== "signature-needed")
+    return evidence.mzWindowsHeaderSignature;
+  const { offset } = observation;
+  if (!Number.isSafeInteger(offset) || offset < 0 || offset >= fileSize)
+    return evidence.mzWindowsHeaderSignature;
+
+  const window = Buffer.alloc(4);
+  const existing =
+    evidence.mzWindowsHeaderSignature?.offset === offset
+      ? evidence.mzWindowsHeaderSignature.bytes
+      : undefined;
+  const inline =
+    offset < evidence.prefix.length
+      ? evidence.prefix.subarray(
+          offset,
+          Math.min(offset + 4, evidence.prefix.length),
+        )
+      : undefined;
+  const known =
+    existing !== undefined &&
+    (inline === undefined || existing.length > inline.length)
+      ? existing
+      : inline;
+  known?.copy(window);
+  let available = known?.length ?? 0;
+  const requiredLength = (): number =>
+    available >= 2 && window[0] === 0x50 && window[1] === 0x45 ? 4 : 2;
+  while (available < requiredLength() && offset + available < fileSize) {
     abortIfNeeded(signal);
-    const read = await handle.read(
-      trailer,
-      bytes,
-      trailer.length - bytes,
-      size - 512 + bytes,
+    const length = Math.min(
+      requiredLength() - available,
+      fileSize - offset - available,
     );
+    const chunk = Buffer.alloc(length);
+    const read = await handle.read(chunk, 0, length, offset + available);
     abortIfNeeded(signal);
-    if (read.bytesRead === 0) return false;
-    bytes += read.bytesRead;
+    if (read.bytesRead === 0) break;
+    chunk.copy(window, available, 0, read.bytesRead);
+    available += read.bytesRead;
   }
-  return trailer.equals(Buffer.from("koly"));
+  if (available === 0) return undefined;
+  return { offset, bytes: window.subarray(0, available) };
 };

@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { expect, it } from "vitest";
+import { minVersion, subset } from "semver";
 import { parse } from "yaml";
 import { z } from "zod";
 import { executeWorkflowFixture } from "../../support/workflowGit.js";
@@ -96,6 +97,34 @@ it("prepares matching Windows controls before EVM portability setup", async () =
       path: "native/windows/build/",
     },
   });
+});
+
+it("keeps every SQLite runtime selector inside the published package engine range", async () => {
+  const { engines } = z
+    .object({ engines: z.object({ node: z.string() }) })
+    .parse(
+      JSON.parse(
+        await readFile(
+          new URL("../../../package.json", import.meta.url),
+          "utf8",
+        ),
+      ),
+    );
+  const { strategy } = z
+    .object({
+      strategy: z.object({ matrix: z.object({ node: z.array(z.string()) }) }),
+    })
+    .parse((await workflow("sqlite-runtime.yml")).jobs.sqlite);
+  const selectors = strategy.matrix.node;
+  const pinned = (
+    await readFile(new URL("../../../.nvmrc", import.meta.url), "utf8")
+  ).trim();
+  expect(selectors).toContain(pinned);
+  expect(
+    new Set(selectors.map((selector) => minVersion(selector)?.major)),
+  ).toEqual(new Set([22, 24, 26]));
+  for (const selector of selectors)
+    expect(subset(selector, engines.node), selector).toBe(true);
 });
 
 it("binds SQLite compatibility jobs to the build's prepared runtime artifact and root layout", async () => {

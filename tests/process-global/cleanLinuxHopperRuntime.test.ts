@@ -1,13 +1,6 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import {
-  chmod,
-  copyFile,
-  mkdir,
-  readFile,
-  symlink,
-  unlink,
-} from "node:fs/promises";
+import { mkdir, readFile, symlink, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 
@@ -17,6 +10,10 @@ import { assertCleanLinuxHopperRuntime } from "../../scripts/lib/clean-linux-hop
 import { completeVerifierRun } from "../../scripts/lib/verifier-run.mjs";
 import { cleanupOwnedProcessGroup } from "../../src/process/ProcessOwnership.js";
 import { createTestTempDirectory } from "../fixtures/temporaryDirectory.js";
+import {
+  prepareRenamedNodeLauncher,
+  retainedRuntimeNodeCode,
+} from "../fixtures/retainedRuntimeNode.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -26,21 +23,16 @@ it
   "rejects a reparented %s without signaling it",
   async (mode) => {
     const runId = randomUUID();
-    const childCode =
-      "process.title = 'Xvfb'; setInterval(() => {}, 1000); process.send('ready');";
     const directory = await createTestTempDirectory("rea-clean-runtime-test-");
     const launcher = join(directory, "Hopper");
     const alternate = join(directory, "Hopper-alternate");
     const procRoot = join(directory, "proc");
     await mkdir(procRoot);
     const alternateMode = mode === "alternate launcher";
-    if (alternateMode) {
-      // Python's native interpreter keeps its executable identity and argv[0]
-      // when copied and invoked through an alias; utility dispatch need not.
-      await copyFile("/usr/bin/python3", launcher);
-      await chmod(launcher, 0o700);
-      await symlink(launcher, alternate);
-    }
+    const childCode = retainedRuntimeNodeCode(
+      alternateMode ? undefined : "Xvfb",
+    );
+    if (alternateMode) await prepareRenamedNodeLauncher(launcher, alternate);
     // A rejection must come from the fixture we are about to launch. An
     // existing Xvfb would otherwise mask a broken executable-identity check.
     // The copied launcher has a unique file identity and has not run yet.
@@ -51,30 +43,18 @@ it
       procRoot,
     );
     const command = alternateMode ? alternate : process.execPath;
-    const arguments_ = alternateMode
-      ? ["-I", "-c", "import time; print('ready', flush=True); time.sleep(30)"]
-      : ["-e", childCode];
+    const arguments_ = ["-e", childCode];
     const parentCode = `
       const { spawn } = require('node:child_process');
       const child = spawn(${JSON.stringify(command)}, ${JSON.stringify(arguments_)}, {
-        detached: true, stdio: ${JSON.stringify(alternateMode ? ["ignore", "pipe", "pipe"] : ["ignore", "ignore", "ignore", "ipc"])}
+        detached: true, stdio: ["ignore", "ignore", "ignore", "ipc"]
       });
       child.once('error', () => process.exit(1));
-      let published = false;
-      let diagnostics = '';
-      child.stderr?.on('data', (data) => { diagnostics += data.toString(); });
-      child.once('exit', () => {
-        if (!published) { process.stderr.write(diagnostics); process.exit(1); }
-      });
-      const ready = () => {
-        published = true;
+      child.once('message', () => {
         process.stdout.write(JSON.stringify({ pid: child.pid, parentPid: process.pid }));
         if (child.connected) child.disconnect();
-        child.stdout?.destroy();
-        child.stderr?.destroy();
         child.unref();
-      };
-      ${alternateMode ? "child.stdout.once('data', ready);" : "child.once('message', ready);"}
+      });
     `;
     const parent = execFileAsync(process.execPath, ["-e", parentCode], {
       env: { ...process.env, REA_PROCESS_RUN_ID: runId },

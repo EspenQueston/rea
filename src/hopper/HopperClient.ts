@@ -1,3 +1,4 @@
+import { analysisSettingLimit } from "../domain/analysisSettingDefinitions.js";
 import { randomBytes, randomUUID } from "node:crypto";
 import { access } from "node:fs/promises";
 import type { Socket } from "node:net";
@@ -33,6 +34,7 @@ import {
 import { err, ok, type Result } from "../domain/result.js";
 import { ProviderCleanupError } from "../domain/providerCleanupError.js";
 import type { JsonValue } from "../domain/jsonValue.js";
+import { jsonValueByteLength } from "../domain/jsonValueByteLength.js";
 import type { ProgressReporter } from "../application/ProgressReporter.js";
 import { silentLogger } from "../logger.js";
 import type { Logger } from "pino";
@@ -72,7 +74,13 @@ import {
   hopperLauncherReportedApplicationNotFound,
   nativeHopperLaunchWasDenied,
 } from "./HopperProcessDiagnostic.js";
-import { DEFAULT_HOPPER_STARTUP_TIMEOUT_MS } from "../config/providerStartupTimeout.js";
+import { DEFAULT_HOPPER_STARTUP_TIMEOUT_MS } from "../domain/analysisResourceLimits.js";
+import {
+  bridgeRequestLimitMismatchError,
+  bridgeRequestOversizeError,
+  DEFAULT_BRIDGE_MAX_REQUEST,
+  type BridgeMaxRequestBytes,
+} from "../config/bridgeMaxRequestBytes.js";
 import {
   HopperRequestQueue,
   type HopperRequestActivity,
@@ -94,6 +102,9 @@ export interface HopperClientOptions {
   readonly launcher: BridgeLauncher;
   readonly runId?: string;
   readonly startupTimeoutMs?: number;
+  readonly readStartupTimeoutMs?: () => number;
+  /** Effective request ceiling. Omitted uses the 16 MiB default. */
+  readonly bridgeMaxRequestBytes?: BridgeMaxRequestBytes;
   readonly onDiagnostic?: (event: HopperDiagnostic) => void;
   readonly logger?: Logger;
 }
@@ -122,7 +133,9 @@ type HopperClientCloseOptions = {
  * Hopper launcher does not confer ownership of the GUI application.
  */
 export class HopperClient {
-  readonly #options: Required<Pick<HopperClientOptions, "startupTimeoutMs">> &
+  readonly #options: Required<
+    Pick<HopperClientOptions, "startupTimeoutMs" | "bridgeMaxRequestBytes">
+  > &
     HopperClientOptions;
   readonly #requests: HopperRequestQueue;
   readonly #responses: HopperResponseStream;
@@ -197,6 +210,8 @@ export class HopperClient {
       ...options,
       startupTimeoutMs:
         options.startupTimeoutMs ?? DEFAULT_HOPPER_STARTUP_TIMEOUT_MS,
+      bridgeMaxRequestBytes:
+        options.bridgeMaxRequestBytes ?? DEFAULT_BRIDGE_MAX_REQUEST,
     };
     this.#requests = new HopperRequestQueue(
       ({ id, method, params }, failed) => {
@@ -206,12 +221,39 @@ export class HopperClient {
           failed();
           return;
         }
-        socket.write(
-          `${JSON.stringify({ id, token, method, params })}\n`,
-          (cause) => {
-            if (cause !== undefined && cause !== null) failed();
-          },
-        );
+        // The FIFO keeps the caller's params. The encoded frame exists only
+        // for the request that has reached the wire.
+        const payloadValue = { id, token, method, params };
+        let payload: string;
+        try {
+          payload = JSON.stringify(payloadValue);
+        } catch (cause: unknown) {
+          this.#requests.accept(
+            id,
+            err(
+              new HopperProtocolError("Hopper socket write failed", { cause }),
+            ),
+          );
+          return;
+        }
+        const payloadBytes = Buffer.byteLength(payload);
+        if (payloadBytes > this.#options.bridgeMaxRequestBytes.maximumBytes) {
+          this.#requests.accept(
+            id,
+            err(
+              bridgeRequestOversizeError(
+                method,
+                this.#options.bridgeMaxRequestBytes,
+                payloadBytes,
+                "Hopper",
+              ),
+            ),
+          );
+          return;
+        }
+        socket.write(`${payload}\n`, (cause) => {
+          if (cause !== undefined && cause !== null) failed();
+        });
       },
     );
     this.#responses = new HopperResponseStream({
@@ -400,7 +442,7 @@ export class HopperClient {
     this.#resources.shutdownConfirmed = false;
     this.#resources.externalApplication = undefined;
     const deadline = new ProviderStartupDeadline(
-      this.#options.startupTimeoutMs,
+      this.#options.readStartupTimeoutMs?.() ?? this.#options.startupTimeoutMs,
       signal,
     );
     this.#startupOutcome = undefined;
@@ -413,7 +455,7 @@ export class HopperClient {
     try {
       const result = await this.#startWithin(deadline);
       return result.ok && deadline.signal.aborted
-        ? this.#startupFailure(await this.#interruptionFailure(deadline))
+        ? await this.#startupFailure(await this.#interruptionFailure(deadline))
         : result;
     } finally {
       deadline.signal.removeEventListener("abort", onStartupAbort);
@@ -511,6 +553,18 @@ export class HopperClient {
     }
     const parsed = await this.#authenticateServerInfo(health.value, runId);
     if (!parsed.ok) return this.#startupFailure(parsed.error);
+    if (
+      parsed.value.maxRequestBytes !==
+      this.#options.bridgeMaxRequestBytes.maximumBytes
+    )
+      return this.#startupFailure(
+        bridgeRequestLimitMismatchError(
+          "hopper_bridge",
+          this.#options.bridgeMaxRequestBytes,
+          parsed.value.maxRequestBytes,
+          "Hopper",
+        ),
+      );
     try {
       await this.#lineage.observe(this.#resources.launch);
     } catch (cause: unknown) {
@@ -908,6 +962,13 @@ export class HopperClient {
         (await this.#resources.processSupervisor?.waitForOutputClose(0)) ??
           false,
       ),
+      {
+        limit: analysisSettingLimit(
+          "hopper.startup_timeout_ms",
+          deadline.timeoutMs,
+          undefined,
+        ),
+      },
     );
   }
 
@@ -998,7 +1059,7 @@ export class HopperClient {
       readonly timeoutMs?: number;
       readonly progress?: ProgressReporter;
     },
-  ): Promise<Result<JsonValue, HopperError>> {
+  ): Promise<Result<JsonValue, AnalysisError>> {
     const id = this.#nextId++;
     if (
       this.#resources.launch?.providerLifetime === "launcher-process" &&
@@ -1032,6 +1093,23 @@ export class HopperClient {
     }
     if (options.signal?.aborted === true)
       return err(hopperCancelledBySignal(options.signal));
+    const payloadValue = { id, token, method, params };
+    // Count escaped JSON before the request can wait in the FIFO. A rejected
+    // payload is not serialized, and an admitted one is serialized only when
+    // it reaches the wire.
+    const measured = jsonValueByteLength(
+      payloadValue,
+      this.#options.bridgeMaxRequestBytes.maximumBytes,
+    );
+    if (measured > this.#options.bridgeMaxRequestBytes.maximumBytes)
+      return err(
+        bridgeRequestOversizeError(
+          method,
+          this.#options.bridgeMaxRequestBytes,
+          measured,
+          "Hopper",
+        ),
+      );
     const startedAt = performance.now();
     const result = await this.#requests.run(id, method, params, {
       ...(options.signal === undefined ? {} : { signal: options.signal }),

@@ -1,14 +1,13 @@
+import { binaryMetadataArchitecture } from "../binaryMetadataArchitecture.js";
 import { metadataReportSubjectFormat } from "../apple/machoTargetSelection.js";
 import { z } from "zod";
 import type { AnalysisError } from "../analysisErrorBase.js";
 import {
-  rustArchitectureForSubject,
   rustBinarySchema,
   rustAuditableMetadataSchema,
   rustcCommitSchema,
   type RustBinary,
 } from "../rust/rustBinary.js";
-import { isImmutableJsonSnapshot } from "../immutableJson.js";
 import { err, ok, type Result } from "../result.js";
 import type {
   AnalysisViewParent,
@@ -21,7 +20,7 @@ import {
   pageViewCoverage,
 } from "./analysisViewCoverage.js";
 import { analysisViewInputError } from "./analysisViewErrors.js";
-import { parseAnalysisViewResult } from "./analysisViewParent.js";
+import { createAnalysisViewResultReader } from "./analysisViewParent.js";
 import { selectViewRows } from "./selectViewRows.js";
 
 const count = z.number().int().nonnegative();
@@ -59,26 +58,7 @@ export const rustBinaryViewContextSchema = z.strictObject({
   }),
 });
 
-// Exact immutable Evidence identity, not a path or a live-file result cache.
-// Mutable/merely frozen imports are validated normally; no failures are cached.
-const checkedReports = new WeakMap<object, RustBinary>();
-const parseReport = (
-  parent: AnalysisViewParent,
-): Result<RustBinary, AnalysisError> => {
-  const key = parent.normalizedResult;
-  const reusable =
-    parent.sealedResult === true &&
-    typeof key === "object" &&
-    key !== null &&
-    isImmutableJsonSnapshot(key);
-  const known = reusable ? checkedReports.get(key) : undefined;
-  if (known !== undefined) return ok(known);
-  const parsed = parseAnalysisViewResult(rustBinarySchema, parent);
-  if (!parsed.ok) return parsed;
-  const report = reusable ? (key as RustBinary) : parsed.value;
-  if (reusable) checkedReports.set(key, report);
-  return ok(report);
-};
+const parseReport = createAnalysisViewResultReader(rustBinarySchema);
 
 const summarize = (
   report: RustBinary,
@@ -150,7 +130,7 @@ export const projectRustBinaryView = (
     subject.digest.sha256 !== report.artifact.sha256 ||
     subject.format !== metadataReportSubjectFormat(report) ||
     subject.architecture !==
-      (rustArchitectureForSubject(report.architecture) ?? null)
+      (binaryMetadataArchitecture(report.architecture) ?? null)
   )
     return err(
       analysisViewInputError([
@@ -228,6 +208,9 @@ export const projectRustBinaryView = (
         ...((fields?.has("root") ?? true) && { root: row.root }),
         ...(fields?.has("dependencies") === true && {
           dependencies: row.dependencies,
+        }),
+        ...(fields?.has("features") === true && {
+          features: row.features,
         }),
       }),
     );

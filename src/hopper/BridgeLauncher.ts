@@ -39,14 +39,22 @@ import {
 import {
   prepareHopperMachOImage,
   type HopperMachOImage,
-  type HopperMachOImageFileSystem,
 } from "./HopperMachOImage.js";
+import {
+  prepareHopperExecutableImage,
+  type HopperImageCopyFileSystem,
+} from "./HopperImageCopy.js";
 
 import {
   acquireHopperTargetLease,
   acquireLinuxHopperApplicationLease,
 } from "../process/HopperLease.js";
-import type { HopperTargetLease } from "../process/HopperLease.js";
+import type { OwnedLease } from "../process/OwnedLease.js";
+import {
+  MAXIMUM_BRIDGE_MAX_REQUEST_BYTES,
+  MINIMUM_BRIDGE_MAX_REQUEST_BYTES,
+  type BridgeMaxRequestBytes,
+} from "../config/bridgeMaxRequestBytes.js";
 import { HOPPER_SHUTDOWN_TIMEOUT_MS } from "./HopperSessionValues.js";
 import { verifyMacHopperNativeHelper } from "./HopperMacPublisher.js";
 import { inspectLinuxHopperLauncher } from "../application/LinuxHopper.js";
@@ -127,8 +135,12 @@ interface SharedHopperApplicationLauncherOptions {
   readonly launcherPath: string;
   readonly targetPath: string;
   readonly targetKind: "executable" | "database";
+  /** Selected artifact identity; provider-created executable launches always supply it. */
+  readonly targetSha256?: string;
   readonly loaderArgs: readonly string[];
   readonly bridgeScriptPath: string;
+  /** Caller-selected request ceiling. Omitted or source default leaves the bridge at 16 MiB. */
+  readonly bridgeMaxRequestBytes?: BridgeMaxRequestBytes;
   readonly preparedImage?: {
     readonly image: HopperMachOImage;
     readonly sourceSha256: string;
@@ -147,7 +159,7 @@ export type HopperApplicationLauncherOptions =
     });
 
 export interface HopperApplicationLauncherDependencies {
-  readonly imageFileSystem?: HopperMachOImageFileSystem;
+  readonly imageFileSystem?: HopperImageCopyFileSystem;
   readonly verifyNativeHelper?: typeof verifyMacHopperNativeHelper;
   readonly verifyLinuxLauncher?: typeof inspectLinuxHopperLauncher;
   readonly retryPublisherCleanup?: typeof retryLinuxHopperPublisherCleanup;
@@ -182,6 +194,7 @@ export interface HopperApplicationLauncherDependencies {
  */
 export class HopperApplicationLauncher implements BridgeLauncher {
   readonly #preparedImageResources = new ArtifactResourceScope();
+  readonly #probeResources = new ArtifactResourceScope();
 
   constructor(
     readonly options: HopperApplicationLauncherOptions,
@@ -196,6 +209,22 @@ export class HopperApplicationLauncher implements BridgeLauncher {
       const observation = ArtifactReaderFailure.cleanupObservation(
         cause,
         this.#preparedImageResources.cleanupResources,
+      );
+      const failure = new ProviderCleanupError(
+        "hopper",
+        observation.resources,
+        { reason: observation.reason },
+        { cause },
+      );
+      bindRetainedArtifactCleanup(failure, cause);
+      failures.push(failure);
+    }
+    try {
+      await this.#probeResources.retryCleanup();
+    } catch (cause: unknown) {
+      const observation = ArtifactReaderFailure.cleanupObservation(
+        cause,
+        this.#probeResources.cleanupResources,
       );
       const failure = new ProviderCleanupError(
         "hopper",
@@ -264,25 +293,36 @@ export class HopperApplicationLauncher implements BridgeLauncher {
     try {
       let loadedPath = this.options.targetPath;
       const preparedImage = this.options.preparedImage;
-      if (preparedImage !== undefined) {
+      const sourceSha256 =
+        preparedImage?.sourceSha256 ??
+        (this.options.targetKind === "executable"
+          ? this.options.targetSha256
+          : undefined);
+      if (sourceSha256 !== undefined) {
         let prepared: Awaited<ReturnType<typeof prepareHopperMachOImage>>;
         try {
+          const copyOptions = {
+            ...(options.signal === undefined ? {} : { signal: options.signal }),
+            resourceScope: this.#preparedImageResources,
+            ...(this.dependencies.imageFileSystem === undefined
+              ? {}
+              : { fileSystem: this.dependencies.imageFileSystem }),
+          };
           prepared = await this.#preparedImageResources.run(() =>
-            prepareHopperMachOImage(
-              this.options.targetPath,
-              preparedImage.sourceSha256,
-              preparedImage.image,
-              join(session.directory, "image.macho"),
-              {
-                ...(options.signal === undefined
-                  ? {}
-                  : { signal: options.signal }),
-                resourceScope: this.#preparedImageResources,
-                ...(this.dependencies.imageFileSystem === undefined
-                  ? {}
-                  : { fileSystem: this.dependencies.imageFileSystem }),
-              },
-            ),
+            preparedImage === undefined
+              ? prepareHopperExecutableImage(
+                  this.options.targetPath,
+                  sourceSha256,
+                  join(session.directory, "image.executable"),
+                  copyOptions,
+                )
+              : prepareHopperMachOImage(
+                  this.options.targetPath,
+                  sourceSha256,
+                  preparedImage.image,
+                  join(session.directory, "image.macho"),
+                  copyOptions,
+                ),
           );
         } catch (cause: unknown) {
           const failure = new HopperStartError({
@@ -327,7 +367,7 @@ export class HopperApplicationLauncher implements BridgeLauncher {
     readonly bootstrapPath: string;
     readonly loadedPath: string;
     readonly ownsProcessLifetime: boolean;
-    readonly lease: HopperTargetLease | undefined;
+    readonly lease: OwnedLease | undefined;
   }): Promise<
     Result<
       BridgeLaunch,
@@ -411,7 +451,7 @@ export class HopperApplicationLauncher implements BridgeLauncher {
             LINUX_DEMO_ORDERLY_SHUTDOWN_GRACE_MS,
         });
       const ownedLauncher = {
-        ...(this.options.preparedImage === undefined
+        ...(input.loadedPath === this.options.targetPath
           ? {}
           : { preparedImagePath: input.loadedPath }),
         process: started.process,
@@ -457,7 +497,7 @@ export class HopperApplicationLauncher implements BridgeLauncher {
 
   async #acquireLaunchLease(
     runId: string,
-  ): Promise<Result<HopperTargetLease | undefined, HopperStartError>> {
+  ): Promise<Result<OwnedLease | undefined, HopperStartError>> {
     const platform = this.dependencies.platform ?? process.platform;
     const applicationLease =
       platform === "linux" && usesLinuxDemo(this.options);
@@ -541,35 +581,71 @@ export class HopperApplicationLauncher implements BridgeLauncher {
       environment: this.options.environment,
       ...(signal === undefined ? {} : { signal }),
     });
-    if (signal?.aborted === true)
-      return { ok: false, error: hopperCancelledBySignal(signal) };
-    return selection.ok
-      ? { ok: true, strategy: selection.strategy }
-      : {
-          ok: false,
-          error: new HopperProcessError(selection.exitCode, {
-            diagnostic: selection.diagnostic,
-          }),
-        };
+    const pending = selection.ok ? undefined : selection.cleanup;
+    if (pending !== undefined)
+      this.#probeResources.retain({
+        kind: "lease",
+        resource: "hopper-private-display-probe",
+        lease: pending.lease,
+      });
+    const cleanup =
+      pending === undefined
+        ? undefined
+        : {
+            reason: pending.reason,
+            resources: [
+              ...(pending.lease.cleanupResources ?? [
+                "hopper-private-display-probe",
+              ]),
+            ],
+          };
+    const error =
+      signal?.aborted === true
+        ? new HopperCancelledError(signal.reason, { cleanup })
+        : selection.ok
+          ? undefined
+          : new HopperProcessError(selection.exitCode, {
+              diagnostic: selection.diagnostic,
+              cleanup,
+            });
+    if (error === undefined)
+      return {
+        ok: true,
+        strategy: selection.ok ? selection.strategy : undefined,
+      };
+    if (pending !== undefined)
+      new AnalysisCleanupLeaseGroup(error, [pending.lease]);
+    return { ok: false, error };
   }
 }
 
-const bridgeBootstrapSource = (
+/** Bootstrap assignments Hopper execs before the bridge module. Exported for the ceiling regression. */
+export const bridgeBootstrapSource = (
   session: BridgeSession,
   options: SharedHopperApplicationLauncherOptions,
   ownsProcessLifetime: boolean,
   loadedPath: string,
-): string =>
-  [
+): string => {
+  const limit = options.bridgeMaxRequestBytes;
+  const injectedLimit =
+    limit?.source === "setting" &&
+    Number.isSafeInteger(limit.maximumBytes) &&
+    limit.maximumBytes >= MINIMUM_BRIDGE_MAX_REQUEST_BYTES &&
+    limit.maximumBytes <= MAXIMUM_BRIDGE_MAX_REQUEST_BYTES
+      ? `REA_BRIDGE_MAX_REQUEST_BYTES = ${String(limit.maximumBytes)}`
+      : undefined;
+  return [
     `REA_SOCKET = ${JSON.stringify(session.socketPath)}`,
     `REA_TOKEN = ${JSON.stringify(session.token)}`,
     `REA_RUN_ID = ${JSON.stringify(session.runId)}`,
     `REA_TARGET_PATH = ${JSON.stringify(loadedPath)}`,
     `REA_OWNS_PROCESS_LIFETIME = ${ownsProcessLifetime ? "True" : "False"}`,
     `REA_RECONNECT_TIMEOUT_SECONDS = ${HOPPER_SHUTDOWN_TIMEOUT_MS / 1_000}`,
+    ...(injectedLimit === undefined ? [] : [injectedLimit]),
     `exec(compile(open(${JSON.stringify(options.bridgeScriptPath)}, 'rb').read(), ${JSON.stringify(options.bridgeScriptPath)}, 'exec'))`,
     "",
   ].join("\n");
+};
 
 const launchHopperProcess = async (input: {
   readonly options: HopperApplicationLauncherOptions;

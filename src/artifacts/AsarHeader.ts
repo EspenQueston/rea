@@ -7,11 +7,13 @@ import { err, ok, type Result } from "../domain/result.js";
 import {
   ASAR_HEADER_ADMISSION_SETTING,
   DEFAULT_ASAR_HEADER_ADMISSION,
-  DEFAULT_ASAR_MAX_HEADER_BYTES,
-  MAXIMUM_ASAR_MAX_HEADER_BYTES,
   parseAsarHeaderAdmission,
   type AsarHeaderAdmission,
 } from "../config/asarHeaderAdmission.js";
+import {
+  DEFAULT_ASAR_MAX_HEADER_BYTES,
+  MAXIMUM_ASAR_MAX_HEADER_BYTES,
+} from "../domain/analysisResourceLimits.js";
 
 /**
  * Resolve the admission from a composition root's selected environment; an
@@ -43,7 +45,7 @@ export const asarHeaderAdmissionRecovery = (
 ): string =>
   [
     `ASAR header/index admission is limited to ${byteAllowance(admission.maximumBytes)}${admission.source === "setting" ? ` by ${ASAR_HEADER_ADMISSION_SETTING}` : ""}.`,
-    `Set ${ASAR_HEADER_ADMISSION_SETTING} in the environment that starts REA to a byte count up to ${byteAllowance(MAXIMUM_ASAR_MAX_HEADER_BYTES)} (default ${byteAllowance(DEFAULT_ASAR_MAX_HEADER_BYTES)}), then restart REA.`,
+    `On MCP, call update_analysis_settings with setting asar.max_header_bytes, action set, and a value in bytes up to ${byteAllowance(MAXIMUM_ASAR_MAX_HEADER_BYTES)} (default ${byteAllowance(DEFAULT_ASAR_MAX_HEADER_BYTES)}), then retry the original request. It applies to the next operation without restarting REA. For CLI or future REA processes, set ${ASAR_HEADER_ADMISSION_SETTING} in the launch environment.`,
     "Selecting fewer sources or narrowing an internal path does not bypass header admission, because the archive index is read before any member can be selected.",
     "Raising max_heap_mb or available host memory does not raise it.",
     "Alternatively, analyze an extracted application directory, which does not admit an ASAR header.",
@@ -53,13 +55,18 @@ export const asarHeaderAdmissionRecovery = (
 /** Refuse an ASAR whose header/index exceeds the effective admission budget. */
 export const asarHeaderAdmissionFailure = (
   admission: AsarHeaderAdmission,
+  requiredBytes?: number,
 ): ArtifactReaderFailure =>
   new ArtifactReaderFailure("limit", asarHeaderAdmissionRecovery(admission), {
-    admission: { kind: "asar-header", ...admission },
+    admission: {
+      kind: "asar-header",
+      ...admission,
+      ...(requiredBytes === undefined ? {} : { requiredBytes }),
+    },
   });
 
 /** Absolute archive prefix required to inspect a header under this admission. */
-export const asarHeaderProbeBytes = (admission: AsarHeaderAdmission): number =>
+const asarHeaderProbeBytes = (admission: AsarHeaderAdmission): number =>
   admission.maximumBytes + 8;
 
 export interface AsarHeaderExtents {
@@ -113,7 +120,7 @@ export type FinalAsarHeaderProbeObservation = Exclude<
  * observed archive size. This establishes byte extents only; JSON validity and
  * the ASAR header schema belong to the decoder at the interpretation boundary.
  */
-export const parseAsarHeaderExtents = (
+const parseAsarHeaderExtents = (
   prefix: Uint8Array,
   archiveBytes?: number,
 ): Result<Omit<AsarHeaderExtents, "archiveBytes">, ArtifactReaderFailure> => {
@@ -405,7 +412,7 @@ export const admitAsarHeader = async (
   const parsed = parseAsarHeaderExtents(prefix, observed.size);
   if (!parsed.ok) throw parsed.error;
   if (parsed.value.headerBytes > admission.maximumBytes)
-    throw asarHeaderAdmissionFailure(admission);
+    throw asarHeaderAdmissionFailure(admission, parsed.value.headerBytes);
   return {
     archiveBytes: observed.size,
     ...parsed.value,

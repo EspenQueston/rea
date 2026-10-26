@@ -2,6 +2,12 @@ import { z } from "zod";
 import { localPathStringSchema } from "../localPath.js";
 import { digestSchema } from "../digests.js";
 
+/** Summary capture admission and discovery share this native-bound host profile. */
+export const pcapCaptureHostSupported = (platform: string): boolean =>
+  platform === "linux" || platform === "win32";
+export const PCAP_CAPTURE_UNSUPPORTED_HOST_REASON =
+  "Packet summaries require an enforceable native memory bound: Linux with util-linux prlimit, or Windows with owned Job Objects. This host's capture boundary remains unsupported.";
+
 /**
  * Caller intent for packet-capture analysis through caller-supplied tshark
  * and capinfos. REA never installs Wireshark or its tools.
@@ -41,9 +47,29 @@ const client = z.strictObject({
   tshark_command: z.string().min(1),
   tshark_source: z.enum(["environment", "path"]),
   tshark_version: z.string().min(1).nullable(),
+  tshark_resolved_path: localPathStringSchema.nullable(),
+  tshark_sha256: digestSchema.nullable(),
+  tshark_identity_status: z.enum(["verified", "unresolved"]),
   capinfos_command: z.string().min(1),
   capinfos_source: z.enum(["environment", "path"]),
   capinfos_version: z.string().min(1).nullable(),
+  capinfos_resolved_path: localPathStringSchema.nullable(),
+  capinfos_sha256: digestSchema.nullable(),
+  capinfos_identity_status: z.enum(["verified", "unresolved"]),
+});
+
+/** Defaults for historical report Evidence written before executable identity was recorded. */
+const legacyClientIdentity = client.extend({
+  tshark_resolved_path: localPathStringSchema.nullable().default(null),
+  tshark_sha256: digestSchema.nullable().default(null),
+  tshark_identity_status: z
+    .enum(["verified", "unresolved"])
+    .default("unresolved"),
+  capinfos_resolved_path: localPathStringSchema.nullable().default(null),
+  capinfos_sha256: digestSchema.nullable().default(null),
+  capinfos_identity_status: z
+    .enum(["verified", "unresolved"])
+    .default("unresolved"),
 });
 
 const endpoint = z.strictObject({
@@ -106,5 +132,12 @@ export const pcapResultSchemas = {
     diagnostics: z
       .strictObject({ capinfos_stderr: z.string(), tshark_stderr: z.string() })
       .optional(),
+  }),
+} as const;
+
+/** Read compatibility for retained capture Evidence from earlier REA versions. */
+export const pcapEvidenceSchemas = {
+  inspect_pcap_capture: pcapResultSchemas.inspect_pcap_capture.extend({
+    client: legacyClientIdentity,
   }),
 } as const;
