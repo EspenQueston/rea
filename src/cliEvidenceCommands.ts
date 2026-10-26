@@ -1,3 +1,7 @@
+import { safeParseJson } from "./domain/safeJson.js";
+import { AnalysisInputError } from "./domain/analysisErrorCore.js";
+import { analysisInputErrorFromIssues } from "./domain/inputIssueProjection.js";
+import { bundleComparisonInputSchema } from "./domain/bundleComparison.js";
 import { Cli, z } from "incur";
 
 import {
@@ -48,17 +52,55 @@ export const registerEvidenceCommands = (
       }),
   });
   cli.command(CLI_COMMANDS.compare, {
-    aliases: ["compare-bundles"],
     description: "Compare two canonical Evidence bundles",
     args: z.object({
       left: z.string().describe("Left Evidence bundle JSON path"),
       right: z.string().describe("Right Evidence bundle JSON path"),
     }),
-    run: ({ args }) =>
+    options: z.object({
+      record_pairs: z
+        .string()
+        .optional()
+        .describe(
+          "JSON array of explicit left_evidence_id/right_evidence_id observation pairs",
+        ),
+    }),
+    run: ({ args, options }) =>
       logCliCommand(logger, "compare", async () => {
+        const decoded =
+          options.record_pairs === undefined
+            ? { ok: true as const, value: [] }
+            : safeParseJson(options.record_pairs);
+        if (!decoded.ok)
+          return cliError(
+            new AnalysisInputError(
+              "compare_bundles",
+              { cause: decoded.cause },
+              [
+                {
+                  path: ["record_pairs"],
+                  reason: "invalid_format",
+                  expected: "JSON array",
+                },
+              ],
+            ),
+          );
+        const input = { record_pairs: decoded.value };
+        const selected = bundleComparisonInputSchema
+          .pick({ record_pairs: true })
+          .safeParse(input);
+        if (!selected.success)
+          return cliError(
+            analysisInputErrorFromIssues(
+              "compare_bundles",
+              selected.error.issues,
+              input,
+            ),
+          );
         const compared = await compareEvidenceBundlesCommand({
           leftPath: args.left,
           rightPath: args.right,
+          recordPairs: selected.data.record_pairs,
         });
         return compared.ok ? compared.value : cliError(compared.error);
       }),

@@ -4,7 +4,7 @@ import type { JSONRPCMessage, McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 
 import { EvidenceMcpServer } from "./EvidenceMcpServer.js";
-import { ToolResultDelivery } from "./toolResult.js";
+import { ToolResultDelivery } from "./ToolResultDelivery.js";
 
 /**
  * Protocol revision 2026-07-28 made `resultType` a REQUIRED member of every
