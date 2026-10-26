@@ -14,7 +14,7 @@ import {
 } from "../../../src/android/JadxConfiguration.js";
 import { AnalysisCapabilityUnavailableError } from "../../../src/domain/analysisErrorCore.js";
 import {
-  linuxOwnedProcessPrerequisiteRefusal,
+  LinuxOwnedProcessPrerequisiteError,
   systemProcessOwnershipHost,
 } from "../../../src/process/ProcessOwnershipObservation.js";
 import { createTestTempDirectory } from "../../fixtures/temporaryDirectory.js";
@@ -616,7 +616,9 @@ it("reports the owned-process prerequisite as JADX unavailability, not a probe f
 
   vi.spyOn(systemProcessOwnershipHost, "prepare").mockImplementation(
     async () => {
-      throw linuxOwnedProcessPrerequisiteRefusal(new Error("spawn ps ENOENT"));
+      throw new LinuxOwnedProcessPrerequisiteError(
+        new Error("spawn ps ENOENT"),
+      );
     },
   );
   onTestFinished(() => {

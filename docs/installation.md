@@ -412,10 +412,10 @@ The public error code varies by caller: `capability_unavailable`,
 only a generic startup error. Check this prerequisite before following
 provider-specific recovery advice.
 
-`binary_session` still returns status on such a host. The JADX and Apktool
-tool groups report `available: false` with reason `provider_unavailable` and a
-remediation naming the missing `ps`; the other providers keep their own
-status.
+`binary_session` still returns status on such a host. Providers whose
+readiness check launches an owned child, such as Ghidra's Java probe, JADX and
+Apktool, report themselves unavailable with a reason naming the missing `ps`.
+The other providers keep their own status.
 
 ## Diagnose, update, and remove
 

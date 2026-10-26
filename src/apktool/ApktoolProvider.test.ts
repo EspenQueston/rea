@@ -15,7 +15,7 @@ import { describe, expect, onTestFinished, test, vi } from "vitest";
 
 import { ApktoolProvider } from "./ApktoolProvider.js";
 import {
-  linuxOwnedProcessPrerequisiteRefusal,
+  LinuxOwnedProcessPrerequisiteError,
   systemProcessOwnershipHost,
 } from "../process/ProcessOwnershipObservation.js";
 import { ApktoolWorkspace } from "./ApktoolWorkspace.js";
@@ -1719,7 +1719,9 @@ it("reports the owned-process prerequisite as Apktool unavailability, not a prob
   const { command } = await writeApktoolStub(() => VERSION_BLOCK);
   vi.spyOn(systemProcessOwnershipHost, "prepare").mockImplementation(
     async () => {
-      throw linuxOwnedProcessPrerequisiteRefusal(new Error("spawn ps ENOENT"));
+      throw new LinuxOwnedProcessPrerequisiteError(
+        new Error("spawn ps ENOENT"),
+      );
     },
   );
   onTestFinished(() => {

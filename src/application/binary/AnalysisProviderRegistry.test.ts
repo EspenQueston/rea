@@ -16,10 +16,12 @@ import type { BinaryTarget } from "../../domain/binaryTargetTypes.js";
 import { ProviderAdapterError } from "../../domain/providerAdapterError.js";
 import { ProviderCleanupError } from "../../domain/providerCleanupError.js";
 import {
+  AnalysisCapabilityUnavailableError,
   AnalysisUnsupportedTargetError,
   AnalysisCancelledError,
 } from "../../domain/analysisErrorCore.js";
 import { ProviderSelectionError } from "../../domain/providerSelectionError.js";
+import { LinuxOwnedProcessPrerequisiteError } from "../../process/ProcessOwnershipObservation.js";
 import { projectAnalysisError } from "../../domain/analysisErrorProjection.js";
 import { err, ok } from "../../domain/result.js";
 
@@ -107,6 +109,45 @@ it("uses one owner readiness snapshot for candidate availability and capabilitie
     },
     capabilities: [{ operation: "address_name" }],
   });
+});
+
+it("reports a missing Linux ps as one candidate's unavailability and keeps the others", async () => {
+  const base = candidate("alpha").provider;
+  const gamma = candidate("gamma").provider;
+  const refused: AnalysisProviderCandidate = {
+    ...base,
+    // Mirrors a provider adapter re-attributing the refusal to its own operation.
+    inspectReadinessSnapshot: () => {
+      throw new AnalysisCapabilityUnavailableError(
+        "process-ownership",
+        "ghidra:inspection",
+        "ps is unavailable",
+        {
+          cause: new LinuxOwnedProcessPrerequisiteError(
+            new Error("spawn ps ENOENT"),
+          ),
+        },
+      );
+    },
+  };
+
+  const statuses = await new AnalysisProviderRegistry([
+    refused,
+    gamma,
+  ]).candidates();
+  expect(statuses).toMatchObject([
+    {
+      provider: { id: "alpha" },
+      availability: {
+        status: "unavailable",
+        code: "runtime_unavailable",
+        reason: expect.stringContaining("spawn ps ENOENT") as unknown,
+        diagnostics: { stage: "ownership_preparation" },
+      },
+      capabilities: [{ operation: "address_name" }],
+    },
+    { provider: { id: "gamma" }, availability: { status: "available" } },
+  ]);
 });
 
 it("selects the sole available provider and honors explicit selection precedence", async () => {

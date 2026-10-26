@@ -1254,7 +1254,7 @@ export const createSystemProcessOwnershipHost = (
             throw new Error("ps did not report REA's current process");
         } catch (cause: unknown) {
           if (isExpectedAbort(cause, signal)) throw cause;
-          throw linuxOwnedProcessPrerequisiteRefusal(cause);
+          throw new LinuxOwnedProcessPrerequisiteError(cause);
         }
       }
     },
@@ -1434,37 +1434,16 @@ export const signalProcessWithStartIdentity = async (
   }
 };
 
-const OWNED_PROCESS_PREREQUISITE_PROVIDER_ID = "process-ownership";
-const OWNED_PROCESS_PREREQUISITE_OPERATION = "prepare_owned_process";
-
-const LINUX_OWNED_PROCESS_PREREQUISITE_REMEDIATION =
-  "Install your distribution's procps or procps-ng package, or put a procps-compatible ps on REA's PATH, then retry.";
-
-/** Refuse an owned launch when Linux `ps` is missing or incompatible. */
-export const linuxOwnedProcessPrerequisiteRefusal = (
-  cause: unknown,
-): AnalysisCapabilityUnavailableError => {
-  const reason = `Linux process ownership inspection requires a procps-compatible ps on REA's PATH before launching a child: ${errorMessage(cause)}`;
-  return new AnalysisCapabilityUnavailableError(
-    OWNED_PROCESS_PREREQUISITE_PROVIDER_ID,
-    OWNED_PROCESS_PREREQUISITE_OPERATION,
-    reason,
-    {
+/** Refusal before an owned launch when Linux `ps` is missing or incompatible. */
+export class LinuxOwnedProcessPrerequisiteError extends AnalysisCapabilityUnavailableError {
+  constructor(cause: unknown) {
+    const reason = `Linux process ownership inspection requires a procps-compatible ps on REA's PATH before launching a child: ${errorMessage(cause)}`;
+    super("process-ownership", "prepare_owned_process", reason, {
       cause,
       userMessage: reason,
-      remediationAction: LINUX_OWNED_PROCESS_PREREQUISITE_REMEDIATION,
-    },
-  );
-};
-
-export const ownedProcessPrerequisiteFailure = (
-  cause: unknown,
-): AnalysisCapabilityUnavailableError | undefined =>
-  cause instanceof AnalysisCapabilityUnavailableError &&
-  cause.providerId === OWNED_PROCESS_PREREQUISITE_PROVIDER_ID &&
-  cause.operation === OWNED_PROCESS_PREREQUISITE_OPERATION
-    ? cause
-    : undefined;
+    });
+  }
+}
 
 /** Prepare native token inspection before REA launches a captured child. */
 export const prepareProcessOwnershipInspection = async (

@@ -1,5 +1,5 @@
 import { parseMcpToolError } from "../../fixtures/mcpToolError.js";
-import { chmod, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
 import type { CallToolResult } from "@modelcontextprotocol/server";
@@ -25,7 +25,7 @@ import { observed as ok } from "../../fixtures/analysisExecution.js";
 import { createServer } from "../../../src/server/createServer.js";
 import { ApktoolProvider } from "../../../src/apktool/ApktoolProvider.js";
 import {
-  linuxOwnedProcessPrerequisiteRefusal,
+  LinuxOwnedProcessPrerequisiteError,
   systemProcessOwnershipHost,
 } from "../../../src/process/ProcessOwnershipObservation.js";
 import { silentLogger } from "../../../src/logger.js";
@@ -232,13 +232,12 @@ describe("owned-process prerequisite during status discovery", () => {
       await writeFile(launcher, "#!/bin/sh\nprintf '2.9.3\\n'\n", {
         mode: 0o755,
       });
-      await chmod(launcher, 0o755);
       const apktoolAnalysis = new ApktoolProvider({
         environment: { REA_APKTOOL_COMMAND: launcher },
       });
       vi.spyOn(systemProcessOwnershipHost, "prepare").mockImplementation(
         async () => {
-          throw linuxOwnedProcessPrerequisiteRefusal(
+          throw new LinuxOwnedProcessPrerequisiteError(
             new Error("spawn ps ENOENT"),
           );
         },
