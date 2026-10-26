@@ -109,6 +109,24 @@ it("waits for physical close after an early process error", async () => {
   expect(child?.exitCode).toBe(0);
 });
 
+it("reports a stream failure below the output budget as its actual cause", async () => {
+  const pending = updateCommands.runProbe(
+    command("setTimeout(()=>process.stdout.write('late output'),50)"),
+    process.env,
+  );
+  await nextTurn();
+  child!.stdout!.emit("error", new Error("controlled stdout failure"));
+  const result = await pending;
+  expect(result).toMatchObject({
+    ok: false,
+    error: expect.stringContaining(
+      "stdout stream failed: controlled stdout failure",
+    ),
+  });
+  if (!result.ok)
+    expect(result.error).not.toContain("complete-output retention budget");
+});
+
 it("joins the final human progress write before reporting success", async () => {
   let acknowledge!: (cause?: Error | null) => void;
   let started!: () => void;
