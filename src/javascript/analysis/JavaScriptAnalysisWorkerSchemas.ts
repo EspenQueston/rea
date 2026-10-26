@@ -12,11 +12,11 @@ import type { JavaScriptStaticAnalysis } from "../../domain/javascript/javascrip
 import { javaScriptRouteSourceFactsSchema } from "../../domain/javascript/javascriptRouteFacts.js";
 import { javaScriptStaticCoverageSchema } from "../../domain/javascript/javascriptStaticCoverage.js";
 import { JAVASCRIPT_AST_FINGERPRINT_ALGORITHM } from "../../domain/javascript/javascriptStaticAnalysisTypes.js";
-import type {
-  JavaScriptSemanticProperty,
-  JavaScriptSemanticValue,
+import {
+  javaScriptSemanticResourceLimitSchema,
+  type JavaScriptSemanticProperty,
+  type JavaScriptSemanticValue,
 } from "../../domain/javascript/javascriptSemanticValueTypes.js";
-import { javaScriptSemanticResourceLimitSchema } from "../../domain/javascript/javascriptSemanticValueTypes.js";
 
 const range =
   javaScriptSemanticNodeSchema.shape.identity.shape.source_range.unwrap();
