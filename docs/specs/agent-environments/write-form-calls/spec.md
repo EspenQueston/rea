@@ -37,8 +37,9 @@ natural-language tasks ask for, or withheld them:
   or loaded so. An unsent update field that changes only between `null`, `[]` and `{}` is unchanged.
 - **Unruled fields.** A later create that stored a field no rule writes otherwise than the plan keeps it is
   `unexplained-change` at the create, so its recorded entity is held and later reads check other writes as before.
-- **Skill.** The second scratch create fills only what a person must give, and the skill shows how to read signed-in
-  pages' accessibility trees from a scenario.
+- **Skill.** The two scratch creates differ in what they send, the second only what a person must give, however they
+  are made; the skill shows how to read signed-in pages' accessibility trees from a scenario, and re-records once with
+  request steps a UI write whose body the browser did not expose.
 
 Plans and views that need none of this are unchanged.
 

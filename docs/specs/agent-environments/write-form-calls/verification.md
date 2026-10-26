@@ -1,6 +1,6 @@
 # Verification
 
-Executed on macOS with Node v24.22.1 at `54993559` (main `99062fea`), and on Ubuntu 24.04 VMs with snap Chromium for
+Executed on macOS with Node v24.22.1 at `5a3c6762` (main `99062fea`), and on Ubuntu 24.04 VMs with snap Chromium for
 the agent recordings.
 
 ## Gates
@@ -71,14 +71,49 @@ the required members.
 | Total                         | 42          | 18 19     | 24 23       |
 
 No recording passes fewer tasks with this branch. Paperless creates pass once served. The saved-values Grafana
-recording's rename is served and passes; its create still needs the saved-values branch's composed address. The
-Vikunja task create (its project path writes a type its list does not show as a list), EspoCRM's leftover contact and
-the main Homebox recording, which wrote no tags, are unchanged.
+recording's rename is served and passes; its create still needs the saved-values branch's composed address.
+Vikunja's task create, EspoCRM's leftover contact (held as seeded data, so every "nothing else changed" check fails)
+and the main Homebox recording, which wrote no tags, are unchanged.
 
-**Fresh recordings.** FRESH_RESULTS
+**Fresh recordings.** Each application was recorded afresh with main (skill 49) and with this branch. The branch was
+recorded again for the four applications whose first branch recording passed fewer tasks, and a third time after the
+skill's sixth step was reworded; the final skill's recordings are the last column (served writes, then tasks):
+
+| Application | Write tasks | Main                 | Branch, first two recordings | Branch, final skill  |
+| ----------- | ----------- | -------------------- | ---------------------------- | -------------------- |
+| Paperless   | 3           | 2, 1/3 2/3           | 8, 1/3 2/3                   |                      |
+| Linkding    | 2           | 0, 0/2 0/2           | 5, 2/2 2/2                   |                      |
+| Miniflux    | 3           | no bundle            | 4, 3/3 3/3                   |                      |
+| Grafana     | 2           | 3, 2/2 2/2           | 1, 0/2 1/2; 3, 1/2 2/2       | 0, 0/2 0/2           |
+| Vikunja     | 3 + 2       | 3, 1/3 1/3 + 2/2 2/2 | 0, 0/5 0/5; 0, 0/5 0/5       | 1, 1/3 1/3 + 0/2 0/2 |
+| EspoCRM     | 3           | 2, 1/3 1/3           | 2, 1/3 1/3; 2, 1/3 1/3       | 2, 1/3 1/3           |
+| Homebox     | 2           | 4, 2/2 2/2           | 1, 0/2 0/2; 1, 0/2 0/2       | 3, 2/2 2/2           |
+
+Every fresh recording builds the same plans with main and with this branch, except Paperless (main serves 0 of the
+branch recording's writes and 2 of 3 of its own), Vikunja's main recording (3 to 4) and the EspoCRM recordings below;
+the per-application differences are what each agent recorded:
+
+- **Paperless:** the branch recording serves creates, renames and deletes of tags, correspondents and document types.
+  Its two tag creates used a light and a dark color, whose derived `text_color` differs, so the tag create stays
+  withheld and the tasks, which create a tag, score as on main.
+- **Linkding:** main's agent recorded no writes. The branch's second bookmark create sent only `url` and `title`, so
+  the served create requires only those.
+- **Miniflux:** main's agent stopped and asked for an API key. The branch's agent created a token in the UI and sent it
+  as a literal header value, which REA recorded as written; the instance and its token were destroyed afterwards.
+- **EspoCRM:** following the sixth step, the branch's second contact sent only a last name, with `null` for strings the
+  first stored and for flags it sent `false`. That merge was refused until the empty-spelling fix in this PR; with it,
+  the create requires only `lastName` and `name` and its task passes, as on main.
+- **Vikunja:** the first two branch agents wrote through the UI, whose request bodies Chromium did not expose, so every
+  write was `body-unusable`. The sixth step then read "fill every field the form offers"; reworded to say how the
+  creates differ, not where they are made, the third agent wrote with request steps. It recorded no label writes.
+- **Homebox:** the first two branch agents recorded item writes only, the third tags as main's did.
+- **Grafana:** the branch agents created folders with request steps and their own uids. The second create's address
+  needs the saved-values branch's composed-address fixes to be explained, so the create is withheld here.
 
 ## Not verified
 
-- One or two fresh recordings per application and version; agent runs vary more than the builds do.
+- One to three fresh recordings per application and version; agent runs vary more than the builds do.
+- Request bodies Chromium does not expose for some UI writes (Vikunja's); the skill now re-records such a write once
+  with request steps.
 - Paperless derives `text_color` from `color`, so a create whose two recorded colors differ in brightness stays
   withheld; EspoCRM's create still requires `name` and `emailAddressData`, which it derives from other members.

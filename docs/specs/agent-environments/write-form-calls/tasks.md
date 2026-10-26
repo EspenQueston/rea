@@ -7,5 +7,5 @@
 - [x] Withhold later creates that store an unruled field otherwise.
 - [x] Add view, serving and unit tests.
 - [x] Document the rules and view member, and update the skill.
-- [ ] Measure the recorded captures and served write tasks.
+- [x] Measure the recorded captures and served write tasks.
 - [x] Run static, formatting, documentation and test gates.
