@@ -35,6 +35,7 @@ import { ZipArtifactReader } from "../ZipArtifactReader.js";
 import { isZipPackageFormat } from "../../domain/zipPackageFormat.js";
 import { MachOSliceArtifactReader } from "../MachOSliceArtifactReader.js";
 import { NodeSeaArtifactReader } from "../NodeSeaArtifactReader.js";
+import { UImageArtifactReader } from "../UImageArtifactReader.js";
 import { PyInstallerArtifactReader } from "../PyInstallerArtifactReader.js";
 import { containsPyInstallerArchive } from "../pyinstaller/CArchiveLayout.js";
 import { locateNodeSea } from "../nodeSea/NodeSeaLocation.js";
@@ -552,6 +553,7 @@ const requireExtractableFormat = async (
     format !== "asar" &&
     format !== "godot-pck" &&
     format !== "mach-o-universal" &&
+    format !== "uimage" &&
     !isZipPackageFormat(format)
   ) {
     const pack = await withArtifactRegularFile(
@@ -607,6 +609,7 @@ const createReader = async (
   if (containerFormat === "pyinstaller")
     return new PyInstallerArtifactReader(path);
   if (containerFormat === "node-sea") return new NodeSeaArtifactReader(path);
+  if (containerFormat === "uimage") return new UImageArtifactReader(path);
   if (await requireExtractableFormat(path, input, signal))
     return new DirectoryArtifactReader(path);
   if (format === "asar")
