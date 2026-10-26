@@ -22,13 +22,15 @@ const GUARDED_WORKFLOWS = new Set([
 // Sources compiled by build-conformance-fixtures.mjs. The readiness journey
 // analyzes the built C fixture as well as its own applications.
 const FIXTURE_SOURCES = [
+  "scripts/build-conformance-fixtures.mjs",
+  "scripts/verify-conformance-fixtures.mjs",
+  "scripts/lib/conformance-fixtures.mjs",
   "tests/conformance/c/**",
   "tests/conformance/napi/**",
   "tests/conformance/objc/**",
   "tests/conformance/swift/**",
   "tests/conformance/versions/**",
 ];
-const READINESS_SOURCES = ["tests/conformance/readiness/**"];
 // These reporters affect CI output only; they do not select a host or provider
 // verification lane when changed on their own.
 const PORTABLE_CI_REPORTERS = new Set([
@@ -63,6 +65,31 @@ function classifyPackage(base, head) {
   const after = JSON.parse(git("show", `${head}:package.json`));
   const { scripts: beforeScripts, ...beforeRest } = before;
   const { scripts: afterScripts, ...afterRest } = after;
+  const compilerDependencies = (metadata) => ({
+    dependencies: {
+      typescript: metadata.dependencies?.typescript,
+      tsrs: metadata.dependencies?.tsrs,
+    },
+    devDependencies: {
+      typescript: metadata.devDependencies?.typescript,
+      tsrs: metadata.devDependencies?.tsrs,
+    },
+  });
+  const compilerScripts = [
+    "compile",
+    "typecheck",
+    "build",
+    "build:cached",
+    "test:prepare",
+    "docs:prepare",
+    "verify:frida:bindings",
+  ].flatMap((name) => [name, `pre${name}`, `post${name}`]);
+  selected.package ||=
+    JSON.stringify(compilerDependencies(before)) !==
+      JSON.stringify(compilerDependencies(after)) ||
+    compilerScripts.some(
+      (name) => beforeScripts?.[name] !== afterScripts?.[name],
+    );
   if (JSON.stringify(beforeRest) !== JSON.stringify(afterRest)) {
     full("Package metadata or dependencies changed");
     return;
@@ -84,7 +111,7 @@ function classifyPackage(base, head) {
       continue;
     }
     if (
-      /^(test(?::|$)|check(?::|$)|lint(?::|$)|format(?::|$)|knip$|jscpd$)/.test(
+      /^(test(?::|$)|check(?::|$)|lint(?::|$)|format(?::|$)|knip(?::|$)|jscpd$)/.test(
         script,
       )
     )
@@ -256,7 +283,6 @@ if (tier === "reused") {
         selected.fixtures = true;
         selected.readiness = true;
       }
-      if (matchesAny(file, READINESS_SOURCES)) selected.readiness = true;
       if (file.startsWith("tests/")) continue;
       if (
         /^(src\/process\/|src\/filesystem\/|src\/contracts\/tool|src\/server\/createServer|src\/cli\.ts|scripts\/ci\/)/.test(

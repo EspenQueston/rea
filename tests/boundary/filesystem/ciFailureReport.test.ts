@@ -6,15 +6,15 @@ import { createTestTempDirectory } from "../../fixtures/temporaryDirectory.js";
 import { normalizeWorkflowRun } from "../../../scripts/ci/workflow-run.mjs";
 
 import {
+  classifyFailure,
   readStaticCheckArtifact,
   selectStaticCheckArtifact,
-} from "../../../scripts/ci/artifacts.mjs";
-import {
-  classifyFailure,
-  createGitHubApi,
-  reportCiFailures,
   type CiRun,
   type CiJob,
+} from "../../../scripts/ci/artifacts.mjs";
+import {
+  createGitHubApi,
+  reportCiFailures,
   type FailureReportApi,
 } from "../../../scripts/ci/failure-report.mjs";
 
@@ -119,6 +119,23 @@ it("attributes only an identical structured lint failure with matching task, con
       "supported_diagnostics_match_failed_task_and_source_on_verified_main_ancestor",
   });
 });
+
+it.each(["path", "code"] as const)(
+  "keeps applicability unknown when the lint %s is unavailable on both runs",
+  (missing) => {
+    const { [missing]: _omitted, ...retained } = diagnostic;
+    expect(
+      classifyFailure({
+        ...comparison(),
+        diagnostics: [retained],
+        mainDiagnostics: [retained],
+      }),
+    ).toEqual({
+      classification: "unknown",
+      reason: "diagnostic_shape_not_supported",
+    });
+  },
+);
 
 it.each([
   ["task hash", { mainContext: context(sha("c"), "b".repeat(16)) }],

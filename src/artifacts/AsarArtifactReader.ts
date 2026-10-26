@@ -1,3 +1,4 @@
+import type { AsarHeaderAdmission } from "../config/asarHeaderAdmission.js";
 import { artifactIntegrityDetails } from "../domain/artifactIntegrity.js";
 import { constants, createWriteStream, type Stats } from "node:fs";
 import {
@@ -29,10 +30,11 @@ import { OwnedFileHandle } from "../filesystem/OwnedFileHandle.js";
 import type { FileHandleChunkStream } from "../filesystem/readFileHandleChunks.js";
 import { readArtifactFileChunks } from "./readArtifactFileChunks.js";
 import {
-  readAsarListing,
-  type AsarListedEntry,
-  type AsarMetadata,
-} from "./AsarListing.js";
+  assertAsarReadActive,
+  asarCancellationFailure,
+  asarFailure,
+} from "./AsarFailure.js";
+import { readAsarListing, type AsarListedEntry } from "./AsarListing.js";
 
 /**
  * Official Electron ASAR adapter with range-streamed member reads.
@@ -67,7 +69,7 @@ export class AsarArtifactReader implements ArtifactReader {
         const admitted = await this.#admitHeader(snapshotPath, signal);
         this.#archiveSize = admitted.archiveBytes;
         this.#headerSize = admitted.headerBytes;
-        abortIfNeeded(signal);
+        assertAsarReadActive(signal);
         const ordered = await readAsarListing(
           getRawHeader(snapshotPath).header,
           signal,
@@ -84,39 +86,29 @@ export class AsarArtifactReader implements ArtifactReader {
     } catch (cause: unknown) {
       throw asarFailure(this.path, "inventory", cause);
     }
-    for (const { metadata, path } of paths) {
-      abortIfNeeded(signal);
+    for (const facts of paths) {
+      assertAsarReadActive(signal);
+      const { path, kind } = facts;
       const providerPath = path.split("/").join(sep);
-      const kind =
-        metadata.files !== undefined
-          ? "directory"
-          : metadata.link !== undefined
-            ? "symlink"
-            : "file";
       const entry: ArtifactEntry = {
         path,
         kind,
-        declaredSize: metadata.size ?? null,
+        declaredSize: facts.size,
         compressedSize: null,
-        executable: metadata.executable === true,
+        executable: facts.executable,
         encrypted: false,
         byteOffset: null,
-        declaredIntegrity:
-          metadata.integrity !== undefined &&
-          metadata.integrity.algorithm === "SHA256" &&
-          /^[a-f0-9]{64}$/u.test(metadata.integrity.hash)
-            ? { algorithm: "sha256", digest: metadata.integrity.hash }
-            : null,
-        unpacked: "unpacked" in metadata && metadata.unpacked === true,
+        declaredIntegrity: facts.declaredIntegrity,
+        unpacked: facts.unpacked,
         limitations:
           kind === "symlink"
             ? ["ASAR symlink target was not followed or disclosed."]
             : [],
         adapterKey: providerPath,
       };
-      if (kind === "file" && isAsarFileMetadata(metadata))
+      if (facts.kind === "file")
         this.#entries.set(providerPath, {
-          metadata,
+          facts,
           entry: copyArtifactEntry(entry),
         });
       yield entry;
@@ -137,7 +129,11 @@ export class AsarArtifactReader implements ArtifactReader {
     try {
       admission = {
         ok: true,
-        value: await admitAsarHeader(headerHandle, signal),
+        value: await admitAsarHeader(
+          headerHandle,
+          signal,
+          this.options.headerAdmission,
+        ),
       };
     } catch (cause: unknown) {
       admission = { ok: false, cause };
@@ -167,7 +163,7 @@ export class AsarArtifactReader implements ArtifactReader {
     entry: ArtifactEntry,
     signal?: AbortSignal,
   ): Promise<Readable> {
-    abortIfNeeded(signal);
+    assertAsarReadActive(signal);
     const state = this.#entries.get(entry.adapterKey);
     if (state === undefined && entry.kind !== "file")
       throw new ArtifactReaderFailure(
@@ -193,13 +189,10 @@ export class AsarArtifactReader implements ArtifactReader {
     state: AsarEntryState,
     signal?: AbortSignal,
   ): Promise<Readable> {
-    const { metadata, entry: producedEntry } = state;
+    const { facts, entry: producedEntry } = state;
     const archiveSize = this.#archiveSize;
     const headerSize = this.#headerSize;
-    const offset =
-      metadata.offset === undefined
-        ? undefined
-        : parseArchiveOffset(metadata.offset);
+    const offset = facts.packedOffset;
     const start =
       offset === undefined || headerSize === undefined
         ? undefined
@@ -208,10 +201,8 @@ export class AsarArtifactReader implements ArtifactReader {
       archiveSize === undefined ||
       start === undefined ||
       !Number.isSafeInteger(start) ||
-      metadata.size < 0 ||
-      !Number.isSafeInteger(metadata.size) ||
       start > archiveSize ||
-      metadata.size > archiveSize - start
+      facts.size > archiveSize - start
     )
       throw new ArtifactReaderFailure(
         "format",
@@ -226,13 +217,13 @@ export class AsarArtifactReader implements ArtifactReader {
       );
       handle = openedHandle;
       const observed = await openedHandle.stat();
-      abortIfNeeded(signal);
+      assertAsarReadActive(signal);
       if (!observed.isFile() || observed.size !== archiveSize)
         throw new ArtifactReaderFailure(
           "integrity",
           `ASAR container changed before read: ${producedEntry.path}`,
         );
-      if (metadata.size === 0) {
+      if (facts.size === 0) {
         handle = undefined;
         await closeAsarHandle(
           () => this.#closeOwnedHandle(openedHandle),
@@ -242,13 +233,13 @@ export class AsarArtifactReader implements ArtifactReader {
       }
       const source = this.#ownedReadStream(openedHandle, {
         start,
-        end: start + metadata.size - 1,
+        end: start + facts.size - 1,
         signal,
       });
       handle = undefined;
       const output = readValidatedAsarEntry(
         source,
-        metadata.size,
+        facts.size,
         producedEntry.path,
         this.path,
         signal,
@@ -284,7 +275,7 @@ export class AsarArtifactReader implements ArtifactReader {
     signal?: AbortSignal,
   ): Promise<void> {
     await this.#withSnapshotOperation(async () => {
-      abortIfNeeded(signal);
+      assertAsarReadActive(signal);
       if (this.#snapshot === undefined && this.#snapshotRoot !== undefined)
         await this.#closeSnapshot();
       if (this.#snapshot === undefined) await this.#captureSnapshot(signal);
@@ -303,7 +294,7 @@ export class AsarArtifactReader implements ArtifactReader {
   async openContainer(signal?: AbortSignal): Promise<Readable> {
     await this.prepareContainer(undefined, signal);
     return this.#withSnapshotOperation(async () => {
-      abortIfNeeded(signal);
+      assertAsarReadActive(signal);
       const snapshotPath = this.#snapshotPath();
       const handle = await this.#openOwned(
         snapshotPath,
@@ -345,7 +336,7 @@ export class AsarArtifactReader implements ArtifactReader {
       const completedInput = inputHandle;
       inputHandle = undefined;
       await this.#closeOwnedHandle(completedInput);
-      abortIfNeeded(signal);
+      assertAsarReadActive(signal);
       this.#snapshot = { path: snapshotPath, sha256: hash.digest("hex") };
     } catch (cause: unknown) {
       let failure = asarFailure(this.path, "snapshot", cause);
@@ -414,7 +405,7 @@ export class AsarArtifactReader implements ArtifactReader {
       throw cause;
     }
     try {
-      abortIfNeeded(signal);
+      assertAsarReadActive(signal);
       return await operation();
     } finally {
       release();
@@ -490,7 +481,7 @@ export class AsarArtifactReader implements ArtifactReader {
           ),
         );
       }
-      abortIfNeeded(signal);
+      assertAsarReadActive(signal);
       const source = this.#ownedReadStream(openedHandle, { start: 0, signal });
       handle = undefined;
       const output = readValidatedAsarEntry(
@@ -599,9 +590,8 @@ export class AsarArtifactReader implements ArtifactReader {
   }
 }
 
-type AsarFileMetadata = AsarMetadata & { readonly size: number };
 type AsarEntryState = {
-  readonly metadata: AsarFileMetadata;
+  readonly facts: Extract<AsarListedEntry, { readonly kind: "file" }>;
   readonly entry: ArtifactEntry;
 };
 type SharedAsarFileHandle = Pick<FileHandle, "fd" | "read" | "close"> & {
@@ -617,7 +607,9 @@ type OwnedAsarHandle = {
   source?: Readable;
   output?: Readable;
 };
-type AsarArtifactReaderOptions = {
+export type AsarArtifactReaderOptions = {
+  /** Header/index admission resolved by the caller's composition root; default otherwise. */
+  readonly headerAdmission?: AsarHeaderAdmission;
   readonly openFile?: OpenAsarFile;
   readonly openUnpackedFile?: OpenAsarFile;
   readonly removeSnapshot?: (path: string) => Promise<void>;
@@ -642,42 +634,18 @@ const asarUnpackedEntryFailure = (
   return asarFailure(archivePath, `read ${entry.path}`, cause);
 };
 
-const isAsarFileMetadata = (
-  metadata: AsarMetadata,
-): metadata is AsarFileMetadata =>
-  typeof metadata.size === "number" &&
-  metadata.files === undefined &&
-  metadata.link === undefined;
-
-const parseArchiveOffset = (value: string): number | undefined => {
-  if (!/^(?:0|[1-9][0-9]*)$/u.test(value)) return undefined;
-  const offset = Number(value);
-  return Number.isSafeInteger(offset) ? offset : undefined;
-};
-
-const abortIfNeeded = (signal?: AbortSignal): void => {
-  if (signal?.aborted === true)
-    throw new ArtifactReaderFailure("cancelled", "ASAR operation cancelled", {
-      cause: signal.reason,
-    });
-};
-
 const waitForOperation = async (
   operation: Promise<void>,
   signal?: AbortSignal,
 ): Promise<void> => {
   if (signal === undefined) return operation;
-  abortIfNeeded(signal);
+  assertAsarReadActive(signal);
   await new Promise<void>((resolve, reject) => {
     const removeAbortListener = (): void =>
       signal.removeEventListener("abort", onAbort);
     const onAbort = (): void => {
       removeAbortListener();
-      reject(
-        new ArtifactReaderFailure("cancelled", "ASAR operation cancelled", {
-          cause: signal.reason,
-        }),
-      );
+      reject(asarCancellationFailure(signal.reason));
     };
     signal.addEventListener("abort", onAbort, { once: true });
     operation.then(
@@ -692,34 +660,6 @@ const waitForOperation = async (
     );
   });
 };
-
-const asarFailure = (
-  path: string,
-  operation: string,
-  cause: unknown,
-): ArtifactReaderFailure => {
-  if (cause instanceof ArtifactReaderFailure) return cause;
-  if (isFilesystemFailure(cause))
-    return new ArtifactReaderFailure(
-      "io",
-      `Could not ${operation} ASAR at ${path}: ${cause.message}`,
-      { cause },
-    );
-  return new ArtifactReaderFailure(
-    "format",
-    `Malformed ASAR during ${operation}: ${path}`,
-    { cause },
-  );
-};
-
-const isFilesystemFailure = (
-  cause: unknown,
-): cause is NodeJS.ErrnoException & Error =>
-  cause instanceof Error &&
-  "errno" in cause &&
-  typeof cause.errno === "number" &&
-  "syscall" in cause &&
-  typeof cause.syscall === "string";
 
 const isMissingFile = (cause: unknown): boolean =>
   typeof cause === "object" &&

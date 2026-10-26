@@ -22,6 +22,7 @@ import {
 import { historicalHar } from "../../fixtures/historicalHar.js";
 import { decodeHarCapture } from "../../../src/browser/history/HarCapture.js";
 import { projectAnalysisError } from "../../../src/domain/analysisErrorProjection.js";
+import { primaryAnalysisError } from "../../../src/domain/analysisErrorBase.js";
 import { OwnedFileHandle } from "../../../src/filesystem/OwnedFileHandle.js";
 
 const linux = it.skipIf(process.platform !== "linux");
@@ -58,6 +59,49 @@ linux("allows a symlink to a regular mitmdump executable", async () => {
     ),
   ).resolves.toMatchObject({ command });
 });
+
+it("applies a non-default capture deadline and releases its runtime", async () => {
+  const root = await mkdtemp(join(tmpdir(), "rea-capture-deadline-"));
+  onTestFinished(() => rm(root, { recursive: true, force: true }));
+  const path = join(root, "capture.har");
+  await writeFile(path, JSON.stringify(historicalHar()));
+  let runtimePath: string | undefined;
+  const decoder = new HistoricalCaptureDecoder(
+    [
+      {
+        format: "har",
+        identity: HAR_CAPTURE_PROVIDER_IDENTITY,
+        command: () =>
+          Promise.resolve({
+            command: process.execPath,
+            arguments: ["-e", "setInterval(() => {}, 1_000_000)"],
+          }),
+      },
+    ],
+    process.env,
+    async () => {
+      const runtime = await PrivateRuntimeRoot.create({
+        prefix: "rea-capture-deadline-",
+      });
+      runtimePath = runtime.path;
+      return runtime;
+    },
+  );
+  const result = await decoder.inspect(
+    inspectWebNetworkCaptureInputSchema.parse({
+      capture_path: path,
+      format: "har",
+      capture_timeout_ms: 250,
+    }),
+  );
+  expect(result.ok).toBe(false);
+  if (result.ok) throw new Error("expected capture timeout");
+  expect(result.error._tag).toBe("AnalysisTimeoutError");
+  expect(result.error.userMessage).toContain("250");
+  expect(result.error.userMessage).toContain("capture_timeout_ms");
+  if (runtimePath === undefined) throw new Error("runtime was not acquired");
+  await expect(access(runtimePath)).rejects.toMatchObject({ code: "ENOENT" });
+}, 8_000);
 
 it.each([true, false])(
   "binds decoder replies to the complete selected provider identity (matching name: %s)",
@@ -638,6 +682,25 @@ it.each([
           ],
         },
       });
+    } else if (reason === "limit") {
+      expect(projected).toMatchObject({
+        code: "unreadable_output",
+        retryable: false,
+        message: expect.stringContaining(
+          String(WEB_NETWORK_CAPTURE_LIMITS.outputBytes),
+        ),
+        details: {
+          diagnostics: {
+            maximum_reply_bytes: WEB_NETWORK_CAPTURE_LIMITS.outputBytes,
+          },
+        },
+      });
+      expect(projected.remediation.action).toContain("no runtime override");
+      expect(projected.remediation.action).toContain(
+        "no completed capture Evidence",
+      );
+      expect(projected.remediation.action).not.toContain("rea doctor");
+      expect(result.error.partialObservation).toBeUndefined();
     } else if (tag === "ProviderAdapterError") {
       expect(projected).toMatchObject({
         details: {
@@ -792,5 +855,137 @@ it.each(["format", "process"])(
       },
     });
     expect(JSON.stringify(projected)).not.toContain("capture-private");
+  },
+);
+
+it.each([
+  { closeFails: false, reply: "capture" },
+  { closeFails: true, reply: "capture" },
+  { closeFails: false, reply: "malformed" },
+  { closeFails: true, reply: "malformed" },
+  { closeFails: false, reply: "malformed UTF-8" },
+  { closeFails: true, reply: "malformed UTF-8" },
+  { closeFails: false, reply: "malformed schema" },
+  { closeFails: true, reply: "malformed schema" },
+  { closeFails: false, reply: "refusal" },
+  { closeFails: true, reply: "refusal" },
+])(
+  "retains validated reply completion through descriptor cancellation %j",
+  async ({ closeFails, reply }) => {
+    const root = await mkdtemp(join(tmpdir(), "rea-reply-finalization-"));
+    onTestFinished(() => rm(root, { recursive: true, force: true }));
+    const path = join(root, "input.har");
+    const text = JSON.stringify(historicalHar());
+    await writeFile(path, text);
+    const controller = new AbortController();
+    const reason = { caller: "reply descriptor close" };
+    const originalClose = OwnedFileHandle.prototype.close;
+    let closes = 0;
+    const close = vi
+      .spyOn(OwnedFileHandle.prototype, "close")
+      .mockImplementation(async function (this: OwnedFileHandle) {
+        closes += 1;
+        if (closes === 2 && closeFails) {
+          controller.abort(reason);
+          throw new Error("controlled reply close denial");
+        }
+        await originalClose.call(this);
+        if (closes === 2) controller.abort(reason);
+      });
+    const decoder = new HistoricalCaptureDecoder(
+      [
+        {
+          format: "har",
+          identity: HAR_CAPTURE_PROVIDER_IDENTITY,
+          command: async (_, runtimePath) => {
+            const bytes =
+              reply === "malformed UTF-8"
+                ? Buffer.concat([
+                    Buffer.from('{"ok":false,"reason":"format","message":"'),
+                    Buffer.from([0xff]),
+                    Buffer.from('","pointer":""}'),
+                  ])
+                : Buffer.from(
+                    reply === "malformed"
+                      ? "{"
+                      : JSON.stringify(
+                          reply === "malformed schema"
+                            ? { ok: true, value: {} }
+                            : reply === "refusal"
+                              ? {
+                                  ok: false,
+                                  reason: "limit",
+                                  message: "Complete reply allowance exceeded",
+                                  pointer: "",
+                                }
+                              : { ok: true, value: decodeHarCapture(text, []) },
+                        ),
+                  );
+            return {
+              command: process.execPath,
+              arguments: [
+                "-e",
+                `require('node:fs').writeFileSync(process.argv[1],Buffer.from(${JSON.stringify(bytes.toString("base64"))},'base64'))`,
+                join(runtimePath, "reply.json"),
+              ],
+            };
+          },
+        },
+      ],
+      process.env,
+    );
+    try {
+      const result = await decoder.inspect(
+        inspectWebNetworkCaptureInputSchema.parse({
+          capture_path: path,
+          format: "har",
+        }),
+        { signal: controller.signal },
+      );
+      if (result.ok)
+        throw new Error("Expected reply finalization cancellation");
+      expect(projectAnalysisError(result.error).code).toBe(
+        closeFails
+          ? "cleanup_incomplete"
+          : reply === "capture"
+            ? "cancelled"
+            : "unreadable_output",
+      );
+      if (reply !== "capture")
+        expect(result.error.partialObservation).toBeUndefined();
+      else
+        expect(result.error.partialObservation).toMatchObject({
+          artifact: { path },
+          records: [{ ordinal: 0 }],
+        });
+      await decoder.close();
+      expect(result.error.cleanupIncomplete).toBe(false);
+      expect(projectAnalysisError(result.error).code).toBe(
+        reply === "capture" ? "cancelled" : "unreadable_output",
+      );
+      const primary = primaryAnalysisError(result.error);
+      if (reply !== "capture") {
+        expect(primary.diagnostics).toMatchObject({
+          reply_finalization_error: { code: "cancelled" },
+        });
+        expect(
+          primary.secondaryFailures.some(
+            (failure) =>
+              failure._tag === "AnalysisCancelledError" &&
+              failure.cause === reason,
+          ),
+        ).toBe(true);
+        if (reply === "malformed")
+          expect(primary.message).toContain("Reply is malformed JSON.");
+        if (reply === "malformed UTF-8")
+          expect(primary.message).toContain("Reply is not valid UTF-8.");
+        if (reply === "malformed schema")
+          expect(primary.message).toContain("Reply violates its schema");
+      } else expect(primary.cause).toBe(reason);
+      expect(closes).toBe(closeFails ? 3 : 2);
+    } finally {
+      close.mockRestore();
+      await decoder.close();
+    }
   },
 );
