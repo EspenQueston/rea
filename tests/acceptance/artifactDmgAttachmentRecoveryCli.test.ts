@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, realpath, writeFile } from "node:fs/promises";
 import { join, sep } from "node:path";
 import { expect } from "vitest";
 
@@ -37,15 +37,27 @@ cliTest.skipIf(process.platform !== "darwin")(
     const digest = createHash("sha256")
       .update(await readFile(image))
       .digest("hex");
+    const resolvedImage = await realpath(image);
     const owner = new NativeDmgArtifactReader(image, process.env);
     let mountRoot: string | undefined;
-    const mountedDevices = async (): Promise<string[]> => {
+    const attachedImages = async () => {
       const info = await processes.run("/usr/bin/hdiutil", ["info", "-plist"], {
         timeoutMs: 10_000,
       });
       expect(info.exitCode, info.stderr).toBe(0);
-      return parseNativeDmgInfo(info.stdout)
-        .images.flatMap((entry) => entry["system-entities"])
+      return parseNativeDmgInfo(info.stdout).images;
+    };
+    const attachedImagePaths = async () =>
+      Promise.all(
+        (await attachedImages()).map((entry) =>
+          entry["image-path"] === undefined
+            ? undefined
+            : realpath(entry["image-path"]).catch(() => undefined),
+        ),
+      );
+    const mountedDevices = async (): Promise<string[]> =>
+      (await attachedImages())
+        .flatMap((entry) => entry["system-entities"])
         .filter(
           (entry) =>
             mountRoot !== undefined &&
@@ -53,7 +65,6 @@ cliTest.skipIf(process.platform !== "darwin")(
         )
         .map((entry) => entry["dev-entry"])
         .sort();
-    };
     try {
       const entries: string[] = [];
       for await (const entry of owner.entries()) entries.push(entry.path);
@@ -67,6 +78,7 @@ cliTest.skipIf(process.platform !== "darwin")(
       expect(mountRoot).toBeDefined();
       const before = await mountedDevices();
       expect(before.length).toBeGreaterThan(0);
+      expect(await attachedImagePaths()).toContain(resolvedImage);
       const busy = await cli.run({
         arguments: ["inspect-artifact", image, "--json"],
         timeoutMs: 30_000,
@@ -122,7 +134,7 @@ cliTest.skipIf(process.platform !== "darwin")(
         ],
       },
     });
-    expect(await mountedDevices()).toEqual([]);
+    expect(await attachedImagePaths()).not.toContain(resolvedImage);
   },
   60_000,
 );
