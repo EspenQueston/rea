@@ -1,5 +1,6 @@
 import * as t from "@babel/types";
 import {
+  staticObjectProperty,
   semanticStaticPropertyKey,
   semanticWriteSiteTarget,
   semanticWriteTargets,
@@ -157,13 +158,13 @@ export class JavaScriptSymbolicBindings {
             t.isStringLiteral(key) &&
             t.isObjectExpression(descriptor)
           ) {
-            const value = descriptor.properties.find(
-              (p) =>
-                t.isObjectProperty(p) &&
-                semanticStaticPropertyKey(p.key, p.computed) === "value",
-            );
-            if (t.isObjectProperty(value))
-              this.#addWrite(target, [key.value], value.value, node);
+            const value = staticObjectProperty(descriptor, "value");
+            if (value.status === "explicit")
+              this.#addWrite(target, [key.value], value.property.value, node);
+            else if (value.status === "dynamic")
+              // Keep the unresolved call as a write so an earlier export cannot
+              // survive a descriptor whose effective value is unknown.
+              this.#addWrite(target, [key.value], node, node);
           }
         }
       },
