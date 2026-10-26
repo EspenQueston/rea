@@ -310,7 +310,7 @@ const bodyOf = (
 /** Explain every field of a created entity: echoed, copied, path, slug, generated, template or constant (unlisted). */
 /**
  * A slug rule as the held entities spell `&`: as the word when the call slugged none and they spell it so, and no rule
- * when they spell it otherwise than the call did. Other rules pass unchanged.
+ * when they spell it otherwise than the call did or in a way neither spelling gives. Other rules pass unchanged.
  */
 const heldSlugRule = (
   rule: FieldRule | undefined,
@@ -324,15 +324,18 @@ const heldSlugRule = (
       const value = ownMember(entity, rule.field);
       if (typeof from !== "string" || !from.includes("&")) return [];
       if (value === slugOf(from)) return ["dropped"];
-      return value === slugOf(from, "and") ? ["and"] : [];
+      if (value === slugOf(from, "and")) return ["and"];
+      // A slug neither spelling gives leaves how the application spells `&` unknown.
+      return value === undefined ? [] : ["unknown"];
     }),
   );
   const source = ownMember(sent, rule.from);
   if (typeof source === "string" && source.includes("&"))
-    return shown.has(rule.ampersand === "and" ? "dropped" : "and")
+    return shown.has("unknown") ||
+      shown.has(rule.ampersand === "and" ? "dropped" : "and")
       ? undefined
       : rule;
-  return shown.has("and") && !shown.has("dropped")
+  return shown.has("and") && !shown.has("dropped") && !shown.has("unknown")
     ? { ...rule, ampersand: "and" }
     : rule;
 };

@@ -684,6 +684,28 @@ describe("slug spellings across creates", () => {
       expect.objectContaining({ field: "slug", rule: "slug" }),
     );
   });
+
+  it("learns no & spelling from a held slug neither spelling gives", () => {
+    const rows = (created: string, slug: string): TimedCaptureRow[] => {
+      const seed = { id: 1, name: "Salt & Pepper", slug: "condiments" };
+      const tag = { id: 2, name: created, slug };
+      return [
+        ["GET", "/api/tags", [seed]],
+        ["GET", "/api/tags/1", seed],
+        ["POST", "/api/tags", tag, 201, { name: created }],
+        ["GET", "/api/tags/2", tag],
+        ["GET", "/api/tags", [seed, tag]],
+      ];
+    };
+    expect(
+      planOf(rows("Tide & Wind", "tide-and-wind"), "post_tags").rules,
+    ).not.toContainEqual(
+      expect.objectContaining({ field: "slug", rule: "slug" }),
+    );
+    expect(
+      planOf(rows("Harbour Notes", "harbour-notes"), "post_tags").rules,
+    ).toContainEqual({ field: "slug", rule: "slug", from: "name" });
+  });
 });
 
 describe("ambiguous addresses and templates across creates", () => {

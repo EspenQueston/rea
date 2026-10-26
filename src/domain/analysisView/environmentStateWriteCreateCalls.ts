@@ -20,8 +20,8 @@ export interface EarlierEvidence {
   readonly ampersands?: ReadonlyMap<string, AmpersandSpelling>;
 }
 
-/** How a field's slug showed `&`: dropped, or as the word. */
-export type AmpersandSpelling = "dropped" | Ampersand;
+/** How a field's slug showed `&`: dropped, as the word, or in a way neither spelling gives. */
+export type AmpersandSpelling = "dropped" | Ampersand | "unknown";
 
 /** The plan's rule for a field and a later call's agree: equal, or clocks one spelling covers given what earlier calls showed. */
 const agreeing = (
@@ -98,7 +98,7 @@ const ampersandSpelled = (
   if (heldSpells === !same(later.rule, unspelled(later.rule))) return undefined;
   if (heldSpells)
     return showsAmpersand(later.rule, later.entity) ? undefined : held;
-  return shown === "dropped" ? undefined : later.rule;
+  return shown === "dropped" || shown === "unknown" ? undefined : later.rule;
 };
 
 /** How a rule's slug spells `&`, for a rule that slugs a field. */
@@ -152,12 +152,12 @@ export const noteHeldAmpersands = (
                 entity,
               )
             : undefined;
-      // A field that spells neither way shows nothing of how its slug spells `&`; dropping it wins over the word.
+      // Dropping `&` outranks a spelling neither way gives, which outranks the word.
+      const known = ampersands.get(rule.field);
       if (spelled(undefined) === stored) ampersands.set(rule.field, "dropped");
-      else if (
-        spelled("and") === stored &&
-        ampersands.get(rule.field) !== "dropped"
-      )
+      else if (stored !== undefined && spelled("and") !== stored) {
+        if (known !== "dropped") ampersands.set(rule.field, "unknown");
+      } else if (stored !== undefined && known === undefined)
         ampersands.set(rule.field, "and");
     }
   }

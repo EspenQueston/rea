@@ -14,6 +14,7 @@ import {
   type BrowserScenarioAction,
   type BrowserScenarioUrl,
   type BrowserScenarioValue,
+  SAVED_URL_PLACEHOLDER,
   savedPlaceholderNames,
 } from "./browserScenarioValues.js";
 import type { JsonValue } from "./jsonValue.js";
@@ -83,11 +84,11 @@ const jsonStrings = (value: JsonValue | undefined): readonly string[] => {
 /** The saved values a step sends: `{saved:name}` in a request path, JSON string or goto URL, and saved header values and credential parts. */
 const sentSavedNames = (action: BrowserScenarioAction): readonly string[] => {
   if (action.action === "goto")
-    return savedPlaceholderNames(action.destination.url);
+    return savedPlaceholderNames(action.destination.url, SAVED_URL_PLACEHOLDER);
   if (action.action !== "request") return [];
   return [
-    ...[action.path, ...jsonStrings(action.json)].flatMap(
-      savedPlaceholderNames,
+    ...[action.path, ...jsonStrings(action.json)].flatMap((text) =>
+      savedPlaceholderNames(text),
     ),
     ...headerValues(action).flatMap((value) =>
       value.source === "saved" ? [value.name] : [],

@@ -138,16 +138,25 @@ const browserScenarioPageValueSchemas = [
   }),
 ] as const;
 
+/** A path on the start origin: one leading slash, never `//` or `/\`. Written without look-around or reserved class syntax, so every JSON Schema regex dialect reads it. */
+const START_ORIGIN_PATH = /^\x2F(?:[^\x2F\x5C]|$)/u;
+
+/** `{saved:name}` as written, which sends a saved value in a request path or a JSON body string. */
+export const SAVED_PLACEHOLDER = /\{saved:([A-Za-z][A-Za-z0-9._-]*)\}/gu;
+
 /**
- * `{saved:name}`, which sends a saved value in a request path, a goto URL or a JSON body string. A parsed URL spells the
- * braces, and may spell the colon, percent-encoded.
+ * `{saved:name}` in a goto destination's URL, which the scenario schema parsed, so it may spell the braces and the colon
+ * percent-encoded. Other text keeps an encoded spelling as written.
  */
-export const SAVED_PLACEHOLDER =
+export const SAVED_URL_PLACEHOLDER =
   /(?:\{|%7[Bb])saved(?::|%3[Aa])([A-Za-z][A-Za-z0-9._-]*)(?:\}|%7[Dd])/gu;
 
-/** The saved value names a text's `{saved:name}` placeholders send. */
-export const savedPlaceholderNames = (text: string): readonly string[] =>
-  [...text.matchAll(SAVED_PLACEHOLDER)].map(([, name]) => name!);
+/** The saved value names a text's placeholders send, as `placeholder` spells them. */
+export const savedPlaceholderNames = (
+  text: string,
+  placeholder: RegExp = SAVED_PLACEHOLDER,
+): readonly string[] =>
+  [...text.matchAll(placeholder)].map(([, name]) => name!);
 
 /** A value an earlier step saved from a JSON response. */
 const savedValueSchema = z.strictObject({
@@ -207,7 +216,7 @@ const saveResponseSchema = z
     method: z.enum(BROWSER_SCENARIO_REQUEST_METHODS),
     path: z
       .string()
-      .regex(/^\/(?![/\\])/u)
+      .regex(START_ORIGIN_PATH)
       .describe("`{*}` matches one segment; the query is ignored."),
     save: z.array(saveEntrySchema).min(1),
   })
@@ -402,8 +411,7 @@ export const browserScenarioActionSchema = z.discriminatedUnion("action", [
     method: z.enum(BROWSER_SCENARIO_REQUEST_METHODS),
     path: z
       .string()
-      // Preserve the prefix grammar without look-around or reserved class syntax.
-      .regex(/^\x2F(?:[^\x2F\x5C]|$)/u)
+      .regex(START_ORIGIN_PATH)
       .describe(
         "Path, and optional literal query, on the start URL's origin, such as /api/folders; it must resolve to that origin.",
       ),

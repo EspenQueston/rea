@@ -1,8 +1,9 @@
 import type { Locator, Page } from "playwright-core";
 
-import type {
-  BrowserScenarioAction,
-  BrowserScenarioValue,
+import {
+  SAVED_URL_PLACEHOLDER,
+  type BrowserScenarioAction,
+  type BrowserScenarioValue,
 } from "../domain/browserScenarioValues.js";
 import type { BrowserScenarioSecrets } from "./BrowserScenarioSecrets.js";
 import {
@@ -75,7 +76,11 @@ export const performPlaywrightScenarioAction = async (
       await page.goto(
         secrets.url({
           ...action.destination,
-          url: withSavedPlaceholders(action.destination.url, secrets),
+          url: withSavedPlaceholders(
+            action.destination.url,
+            secrets,
+            SAVED_URL_PLACEHOLDER,
+          ),
         }),
         { ...options, waitUntil: action.wait_until },
       );

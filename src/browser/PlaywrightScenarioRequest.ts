@@ -404,12 +404,13 @@ export const performScenarioRequest = async (input: {
     saveValues(action.step_id, response.body, action.save, secrets);
 };
 
-/** A path or URL with its `{saved:name}` placeholders filled, each value percent-encoded. */
+/** A path or URL with its `placeholder`s filled, each value percent-encoded; a request path's are spelled as written. */
 export const withSavedPlaceholders = (
   text: string,
   secrets: BrowserScenarioSecrets,
+  placeholder: RegExp = SAVED_PLACEHOLDER,
 ): string =>
-  text.replace(SAVED_PLACEHOLDER, (_placeholder, name: string) =>
+  text.replace(placeholder, (_placeholder, name: string) =>
     encodeURIComponent(String(secrets.savedValue(name))),
   );
 
@@ -557,6 +558,11 @@ const saveValues = (
     if (value === undefined)
       throw new ScenarioRequestError(
         `Step ${stepId}: the response has no string or number at ${json_pointer} to save as ${name}.`,
+      );
+    // JSON parsing rounds an integer past 2^53, so a later step would name another object.
+    if (Number.isInteger(value) && !Number.isSafeInteger(value))
+      throw new ScenarioRequestError(
+        `Step ${stepId}: the number at ${json_pointer} is too large to keep exactly, so ${name} cannot be saved from it.`,
       );
     secrets.save(`${stepId}.${name}`, name, value, secret);
   }

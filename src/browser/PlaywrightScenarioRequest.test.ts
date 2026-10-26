@@ -590,30 +590,30 @@ describe("page value redaction", () => {
   });
 });
 
-describe("saved value schema", () => {
-  const saved = (name: string) => ({ source: "saved", name });
-  const saveId = (stepId: string, name: string) =>
-    requestStep({
-      step_id: stepId,
-      save: [{ name, json_pointer: "/id" }],
-    });
-  const clickSaving = (name: string) => ({
-    step_id: "save-item",
-    action: "click",
-    locator: { kind: "role", role: "button", name: "Save" },
-    save_response: {
-      method: "POST",
-      path: "/api/items",
-      save: [{ name, json_pointer: "/id" }],
-    },
+const savedValue = (name: string) => ({ source: "saved", name });
+const saveIdStep = (stepId: string, name: string) =>
+  requestStep({
+    step_id: stepId,
+    save: [{ name, json_pointer: "/id" }],
   });
-  const gotoItem = (url: string) => ({
-    step_id: "open",
-    action: "goto",
-    destination: { url },
-    wait_until: "load",
-  });
+const clickSavingItem = (name: string) => ({
+  step_id: "save-item",
+  action: "click",
+  locator: { kind: "role", role: "button", name: "Save" },
+  save_response: {
+    method: "POST",
+    path: "/api/items",
+    save: [{ name, json_pointer: "/id" }],
+  },
+});
+const gotoStep = (url: string) => ({
+  step_id: "open",
+  action: "goto",
+  destination: { url },
+  wait_until: "load",
+});
 
+describe("saved value schema", () => {
   it("refuses a saved value no earlier step saves, wherever a step sends it", () => {
     const sendsItem = requestStep({
       step_id: "edit",
@@ -623,25 +623,25 @@ describe("saved value schema", () => {
     expect(issues([sendsItem])).toEqual([
       "Step edit sends saved value item, which no earlier step saves",
     ]);
-    expect(issues([sendsItem, saveId("create", "item")])).toContainEqual(
+    expect(issues([sendsItem, saveIdStep("create", "item")])).toContainEqual(
       expect.stringContaining("which no earlier step saves"),
     );
-    expect(issues([saveId("create", "item"), sendsItem])).toEqual([]);
-    expect(issues([clickSaving("item"), sendsItem])).toEqual([]);
+    expect(issues([saveIdStep("create", "item"), sendsItem])).toEqual([]);
+    expect(issues([clickSavingItem("item"), sendsItem])).toEqual([]);
     for (const step of [
-      gotoItem(`${ORIGIN}/items/{saved:item}`),
-      gotoItem(`${ORIGIN}/items/%7Bsaved%3Aitem%7D`),
+      gotoStep(`${ORIGIN}/items/{saved:item}`),
+      gotoStep(`${ORIGIN}/items/%7Bsaved%3Aitem%7D`),
       requestStep({ path: "/api/items?parent={saved:item}" }),
       requestStep({ json: { list: [{ parent: "{saved:item}" }] } }),
       requestStep({ json: { note: "Copied from {saved:item}" } }),
-      requestStep({ headers: [{ name: "X-Item", value: saved("item") }] }),
+      requestStep({ headers: [{ name: "X-Item", value: savedValue("item") }] }),
       requestStep({
         headers: [
           {
             name: "Authorization",
             value: {
               source: "basic_credentials",
-              parts: [saved("item"), { source: "literal", value: "x" }],
+              parts: [savedValue("item"), { source: "literal", value: "x" }],
             },
           },
         ],
@@ -652,15 +652,23 @@ describe("saved value schema", () => {
       );
   });
 
+  it("reads only `{saved:name}` as written in a JSON string, not its encoded spelling", () => {
+    expect(
+      issues([requestStep({ json: { note: "%7Bsaved:item%7D" } })]),
+    ).toEqual([]);
+  });
+
   it("sends other braces as written", () => {
     expect(
       issues([
-        gotoItem(`${ORIGIN}/search/{q}`),
+        gotoStep(`${ORIGIN}/search/{q}`),
         requestStep({ path: "/api/items/{id}", json: { name: "{draft}" } }),
       ]),
     ).toEqual([]);
   });
+});
 
+describe("saved value schema: credentials and response paths", () => {
   it("refuses a literal Basic password, which Evidence would record as written", () => {
     const basic = (password: unknown) =>
       requestStep({
@@ -724,7 +732,7 @@ describe("saved value schema", () => {
 
   it("requires a save_response to name a same-origin path and something to save", () => {
     const click = (saveResponse: unknown) => ({
-      ...clickSaving("item"),
+      ...clickSavingItem("item"),
       save_response: saveResponse,
     });
     for (const path of ["//evil.test/api", "api/items", "https://evil.test/"])
@@ -835,6 +843,33 @@ describe("saved value credentials and limits", () => {
     const redacted = secrets.redact(`X-Auth: ${encoded} pin x7`);
     expect(redacted).not.toContain(encoded);
     expect(redacted).not.toContain("x7");
+  });
+
+  it("saves no integer JSON parsing would round, so no later step names another object", async () => {
+    stubFetch(201, ['{"id":9007199254740993}']);
+    const parsed = scenario([
+      requestStep({ save: [{ name: "folder", json_pointer: "/id" }] }),
+    ]);
+    const secrets = resolved(parsed);
+    await expect(
+      perform(fakePage({}), parsed.actions[0]!, secrets),
+    ).rejects.toThrow("too large to keep exactly");
+    expect(() => secrets.savedValue("folder")).toThrow();
+  });
+
+  it("sends a JSON string that spells a placeholder percent-encoded as written", async () => {
+    const calls = stubFetch(200, ['{"id":7}']);
+    const parsed = scenario([
+      requestStep({ save: [{ name: "item", json_pointer: "/id" }] }),
+      requestStep({
+        step_id: "note",
+        json: { note: "%7Bsaved:item%7D", id: "{saved:item}" },
+      }),
+    ]);
+    const secrets = resolved(parsed);
+    for (const action of parsed.actions)
+      await perform(fakePage({}), action, secrets);
+    expect(calls[1]!.init.body).toBe('{"note":"%7Bsaved:item%7D","id":7}');
   });
 
   it("stops reading a response to save from once it passes the limit", async () => {
