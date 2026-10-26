@@ -1,8 +1,11 @@
 import { expect, it } from "vitest";
+import type { CapabilityDescriptor } from "../../../../src/application/AnalysisProvider.js";
 import { buildCapabilityInventory } from "../../../../src/application/CapabilityInventory.js";
 import { providerCapabilitySets } from "../../../../src/application/binary/BinarySessionStatus.js";
-import { idaCapabilities } from "../../../../src/ida/IdaProviderCapabilities.js";
-import { IDA_OPERATIONS } from "../../../../src/ida/IdaProviderCapabilities.js";
+import {
+  idaCapabilities,
+  IDA_OPERATIONS,
+} from "../../../../src/ida/IdaProviderCapabilities.js";
 import {
   TOOL_EFFECTS,
   toolSessionEffects,
@@ -111,6 +114,113 @@ it("omits effects of IDA calls hidden behind unavailable workflow prerequisites"
       annotations: { open_world: false },
     });
   }
+});
+
+it("advertises reachable IDA calls through native UI tracing", () => {
+  const ida = idaCapabilities("attached", false);
+  const source = ida[0];
+  if (source === undefined) throw new Error("IDA capability fixture is empty");
+  const metadata = {
+    ...source,
+    provider: { id: "native-fixture", name: "Native fixture", version: "1" },
+    operation: "inspect_native_dispatch_metadata" as const,
+    effects: {
+      ...source.effects,
+      launchesProcess: false,
+      mayAccessNetwork: false,
+      mayWriteFilesystem: false,
+      mayShowUi: false,
+    },
+  };
+  expect(TOOL_EFFECTS.trace_native_ui_action).toMatchObject({
+    accessesNetwork: true,
+    launchesProcess: true,
+    writesFilesystem: true,
+  });
+  expect(toolSessionEffects("trace_native_ui_action")).toMatchObject({
+    accessesNetwork: false,
+    launchesProcess: false,
+    writesFilesystem: false,
+  });
+  const status = (capabilities: readonly CapabilityDescriptor[]) => ({
+    open: true,
+    kind: "executable",
+    capabilities: providerCapabilitySets(capabilities),
+  });
+  const withoutMetadata = buildCapabilityInventory(status(ida), enabledPolicy);
+  expect(
+    withoutMetadata.find((entry) => entry.name === "trace_native_ui_action"),
+  ).toMatchObject({
+    effects: { accessesNetwork: false },
+    annotations: { open_world: false },
+  });
+  const withMetadata = buildCapabilityInventory(
+    status([...ida, metadata]),
+    enabledPolicy,
+  );
+  expect(
+    withMetadata.find((entry) => entry.name === "trace_native_ui_action"),
+  ).toMatchObject({
+    effects: { accessesNetwork: true },
+    annotations: { open_world: true },
+  });
+});
+
+it("includes reachable IDA document and procedure effects in address-context discovery", () => {
+  const ida = idaCapabilities("headless", false);
+  expect(TOOL_EFFECTS.inspect_address_context).toMatchObject({
+    accessesNetwork: true,
+    launchesProcess: true,
+    writesFilesystem: true,
+  });
+  expect(toolSessionEffects("inspect_address_context")).toMatchObject({
+    accessesNetwork: false,
+    launchesProcess: false,
+    writesFilesystem: false,
+  });
+  const entryFor = (capabilities: readonly CapabilityDescriptor[]) =>
+    buildCapabilityInventory(
+      {
+        open: true,
+        kind: "executable",
+        capabilities: providerCapabilitySets(capabilities),
+      },
+      enabledPolicy,
+    ).find((entry) => entry.name === "inspect_address_context");
+  expect(entryFor(ida)).toMatchObject({
+    effects: {
+      accessesNetwork: true,
+      launchesProcess: true,
+      writesFilesystem: true,
+    },
+    annotations: { open_world: true },
+  });
+  for (const operation of ["list_documents", "resolve_containing_procedure"]) {
+    expect(
+      entryFor(ida.filter((descriptor) => descriptor.operation === operation)),
+      operation,
+    ).toMatchObject({
+      effects: { accessesNetwork: true },
+      annotations: { open_world: true },
+    });
+  }
+  const local = ida.map((descriptor) => ({
+    ...descriptor,
+    effects: {
+      ...descriptor.effects,
+      mayAccessNetwork: false,
+      launchesProcess: false,
+      mayWriteFilesystem: false,
+    },
+  }));
+  expect(entryFor(local)).toMatchObject({
+    effects: {
+      accessesNetwork: false,
+      launchesProcess: false,
+      writesFilesystem: false,
+    },
+    annotations: { open_world: false },
+  });
 });
 
 it("keeps native attached UI effects limited to the operations that show them", () => {

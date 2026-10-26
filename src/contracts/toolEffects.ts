@@ -528,7 +528,7 @@ const TOOL_EFFECT_AUDIT: Readonly<Record<string, EffectAudit>> = {
   }),
   inspect_native_load_image: evidence,
   inspect_native_dispatch_metadata: evidence,
-  trace_native_ui_action: evidence,
+  trace_native_ui_action: providerNetworkEvidence,
   trace_native_values: providerUiNetworkEvidence,
   address_name: evidence,
   comment: evidence,
@@ -759,7 +759,10 @@ const TOOL_EFFECT_AUDIT: Readonly<Record<string, EffectAudit>> = {
   }),
   get_evidence_bundle: effects(),
   get_navigation_context: effects({ mutatesSession: true }),
-  inspect_address_context: effects({ mutatesSession: true }),
+  inspect_address_context: providerEffects(
+    effects({ mutatesSession: true }),
+    providerRemoteEffects,
+  ),
   import_evidence_bundle: effects({ mutatesSession: true }),
   capture_process_scenario: effects({
     mutatesSession: true,

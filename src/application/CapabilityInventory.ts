@@ -2,6 +2,7 @@ import { PCAP_CAPTURE_UNSUPPORTED_HOST_REASON } from "../domain/pcap/pcapAnalysi
 import { DEFAULT_CALL_RELATIONSHIP_DIRECTION } from "../contracts/enhancedInputs.js";
 import { FIRMWARE_TOOL_REQUIREMENTS } from "../contracts/firmware/firmwareToolRequirements.js";
 import { CALL_RELATIONSHIP_TRAVERSALS } from "./CallRelationshipTraversal.js";
+import { ADDRESS_CONTEXT_FACET_OPERATIONS } from "./AnalysisContextQueries.js";
 import { NATIVE_DISPATCH_METADATA_SOURCES } from "./native/NativeDispatchMetadataInspection.js";
 import { NATIVE_UI_ACTION_OPERATIONS } from "./native/NativeUiActionTrace.js";
 import { NATIVE_CALL_ROUTE_SOURCES } from "./native/NativeCallRoutes.js";
@@ -245,6 +246,22 @@ const NAVIGATION_CONTEXT_MODES = [
     requirements: ["current_address", "resolve_containing_procedure"],
   },
 ] as const;
+
+const ADDRESS_CONTEXT_EFFECT_COMPOSITION: ModeComposition = {
+  modes: [
+    {
+      name: "explicit_document",
+      requirements: [ADDRESS_CONTEXT_FACET_OPERATIONS],
+    },
+    {
+      name: "provider_document",
+      requirements: [
+        ["current_document", "list_documents"],
+        ADDRESS_CONTEXT_FACET_OPERATIONS,
+      ],
+    },
+  ],
+};
 
 /** Build stable per-operation availability for discovery and tool visibility. */
 export const buildCapabilityInventory = (
@@ -1024,7 +1041,9 @@ const composedEffects = (
   const composition: ProviderComposition | undefined =
     name === "get_navigation_context"
       ? { modes: NAVIGATION_CONTEXT_MODES }
-      : ENHANCED_REQUIREMENTS.get(name);
+      : name === "inspect_address_context"
+        ? ADDRESS_CONTEXT_EFFECT_COMPOSITION
+        : ENHANCED_REQUIREMENTS.get(name);
   const byOperation = new Map(
     descriptors.map((descriptor) => [descriptor.operation, descriptor]),
   );

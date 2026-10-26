@@ -21,6 +21,15 @@ type Facet =
       readonly remediation: string;
     };
 
+/** Facets inspected after an explicit or provider-resolved document is known. */
+export const ADDRESS_CONTEXT_FACET_OPERATIONS = [
+  "address_name",
+  "resolve_containing_procedure",
+  "comment",
+  "inline_comment",
+  "list_bookmarks",
+] as const satisfies readonly AnalysisOperation[];
+
 const parameters = (
   document: string | undefined,
   address?: string,
@@ -92,13 +101,7 @@ export const inspectAddressContext = async (
   );
   if (!document.ok) return document;
   const args = parameters(document.value, input.address);
-  const operations = [
-    "address_name",
-    "resolve_containing_procedure",
-    "comment",
-    "inline_comment",
-    "list_bookmarks",
-  ] as const satisfies readonly AnalysisOperation[];
+  const operations = ADDRESS_CONTEXT_FACET_OPERATIONS;
   const results = await Promise.all(
     operations.map((operation) =>
       analysis.execute(

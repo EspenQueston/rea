@@ -130,6 +130,15 @@ it("advertises attached IDA UI and network effects in SDK and session discovery"
       );
       expect(availability?.effects, name).toContain("accessesNetwork");
     }
+    for (const name of ["trace_native_ui_action", "inspect_address_context"]) {
+      const advertised = tools.find((tool) => tool.name === name);
+      expect(advertised?.annotations?.openWorldHint, name).toBe(true);
+    }
+    const addressContext = status.tool_availability.groups.find(({ names }) =>
+      names.includes("inspect_address_context"),
+    );
+    expect(addressContext?.effects).toContain("accessesNetwork");
+    expect(addressContext?.annotations).toContain("open_world");
   } finally {
     await mcp.close();
     await session?.close();
