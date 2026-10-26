@@ -257,7 +257,6 @@ export const discoverCdpBrowserSocket = async (
       if (typeof row !== "object" || row === null || Array.isArray(row))
         return row;
       const record = row as Record<string, unknown>;
-      if (!Object.hasOwn(record, "targetId")) return row;
       const { targetId, ...rest } = record;
       return { ...rest, id: targetId };
     }),

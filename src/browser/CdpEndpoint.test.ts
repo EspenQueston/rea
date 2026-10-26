@@ -344,6 +344,7 @@ it("keeps sibling browser-socket targets when attached metadata is malformed", a
           attached: "unknown",
         },
         { targetId: 1, type: "page", url: "https://example.test/dropped" },
+        { id: "alias", type: "page", url: "https://example.test/alias" },
         {
           targetId: "good",
           type: "page",
@@ -374,6 +375,9 @@ it("keeps sibling browser-socket targets when attached metadata is malformed", a
   );
   expect(discovery.limitations?.join("\n")).toContain(
     "CDP Target.getTargets row 1 was excluded because its target identity is malformed",
+  );
+  expect(discovery.limitations?.join("\n")).toContain(
+    "CDP Target.getTargets row 2 was excluded because its target identity is malformed",
   );
 });
 
