@@ -1334,9 +1334,10 @@ raw/DOS/DOL and special pinned-language import profiles require fresh import.
 
 REA fingerprints only the selected `.gpr`/`.rep` pair, copies it into its owned
 runtime, verifies the copied content against the committed analysis profile,
-and runs `-process <program> -noanalysis -readOnly`. It neither opens nor saves
-the original project, copies unrelated sibling projects, reruns repair scripts,
-nor admits bridge database edits in this mode. Cleanup removes the owned copy.
+and runs `-process <program> -noanalysis -readOnly`. Ghidra never opens or saves
+the original database; REA reads selected files only for fingerprinting and copying.
+This mode does not copy unrelated sibling projects, rerun repair scripts, or
+admit bridge database edits. Cleanup removes the owned copy.
 The bridge checks the program's recorded import SHA-256 against the admitted
 target digest; mismatches and project changes fail explicitly. Reopen the target
 to resolve a new profile after intentionally changing the source project.

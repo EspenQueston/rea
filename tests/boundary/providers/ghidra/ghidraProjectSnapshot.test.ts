@@ -100,3 +100,17 @@ it("parses an opt-in project once for shared CLI/MCP configuration and rejects i
     false,
   );
 });
+
+it("reports an invalid derived program name at its selection boundary", async () => {
+  const { source } = await fixture();
+  await expect(
+    resolveGhidraProject(
+      { path: join(source, "selected.gpr") },
+      "/tmp/*",
+      resources,
+    ),
+  ).rejects.toMatchObject({
+    _tag: "ConfigurationError",
+    settings: [{ setting: "REA_GHIDRA_PROGRAM_NAME" }],
+  });
+});

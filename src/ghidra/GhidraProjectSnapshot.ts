@@ -36,9 +36,12 @@ export type GhidraProjectCommitment = z.infer<
   typeof ghidraProjectCommitmentSchema
 >;
 
-const selectionFailure = (message: string): ConfigurationError =>
+const selectionFailure = (
+  message: string,
+  setting = "REA_GHIDRA_PROJECT_PATH",
+): ConfigurationError =>
   new ConfigurationError(message, {
-    settings: [{ setting: "REA_GHIDRA_PROJECT_PATH", constraint: message }],
+    settings: [{ setting, constraint: message }],
   });
 const entriesFor = (name: string) => [`${name}.gpr`, `${name}.rep`];
 
@@ -143,7 +146,8 @@ export const resolveGhidraProject = async (
   const program = ghidraProgramNameSchema.safeParse(
     selection.programName ?? basename(targetPath),
   );
-  if (!program.success) throw selectionFailure(program.error.message);
+  if (!program.success)
+    throw selectionFailure(program.error.message, "REA_GHIDRA_PROGRAM_NAME");
   const programName = program.data;
   return {
     configured_path: selection.path,
