@@ -963,7 +963,6 @@ describe("saved numbers JSON cannot spell back", () => {
   it.each([
     ["0", 0],
     ["0.0", 0],
-    ["-0", -0],
     ["1.5", 1.5],
     ["12.50", 12.5],
     ["1E2", 100],
@@ -980,7 +979,7 @@ describe("saved numbers JSON cannot spell back", () => {
       expect(secrets.savedValue("item")).toBe(kept);
     },
   );
-  it.each(["1e-400", "-1e-400", "1.0000000000000000001"])(
+  it.each(["-0", "1e-400", "-1e-400", "1.0000000000000000001"])(
     "refuses a saved numeric identity that loses precision during parsing: %s",
     async (number) => {
       stubFetch(201, [`{"id":${number}}`]);

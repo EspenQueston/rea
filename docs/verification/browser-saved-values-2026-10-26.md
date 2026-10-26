@@ -1,12 +1,13 @@
 # Browser saved values: integration verification
 
 Executed on Linux x64, Node 24.22.1, Chromium through `/usr/bin/chromium`,
-with PocketBase 0.40.6 on an owned loopback instance. Baseline:
-`6d5532a204b338a6c770fcbae61e0d55bda70793`. The imported implementation is
+with PocketBase 0.40.6 on an owned loopback instance. Measured runtime: `355e2dcb8` (same browser implementation as the measured
+uncommitted build). Baseline: `6d5532a204b338a6c770fcbae61e0d55bda70793`. The imported implementation is
 Edgar Arakelyan's PR #7162, upstream head
 `d39f386d202fe8e98592fb2d9d26e43d8d0fb94f`; The subsequent upstream fixes through `81a275b130e85a40a227f6a61cfa2fe1162a217e`
 were compared during integration. Their numeric and slug semantics are retained
-through existing shared owners; positive decimal cases are preserved. The
+through existing shared owners; positive decimal cases are preserved; negative zero is refused by the shared
+exact-number owner because serialization loses its sign. The
 upstream compressed-body fallback is not enabled: this implementation requires
 a known positive identity-encoded size before whole-body reads. Its historical evaluations are
 attributed separately in the [original verification](../specs/agent-environments/scenario-saved-values/verification.md).
@@ -15,7 +16,7 @@ attributed separately in the [original verification](../specs/agent-environments
 
 The official PocketBase Linux amd64 release archive was 12,824,710 bytes,
 SHA-256 `0e1f609158ed945f809f8a02ae012aa0427129c66ebb63c1aee76f2c0309373f`.
-The [owned UI harness](../../experiments/analysis-efficiency/fixtures/browser-saved-values/index.html)
+The [owned UI harness](https://github.com/morluto/rea/blob/355e2dcb8/experiments/analysis-efficiency/fixtures/browser-saved-values/index.html)
 uses PocketBase's actual superuser authentication and record APIs. It is a
 small test frontend, rather than PocketBase's complete administrative UI.
 Collection `rea_items` has required text `title` and number `quantity` fields,
@@ -105,7 +106,7 @@ service-worker behavior, compressed UI response support, or other platforms.
 
 ## Regression evidence and limits
 
-Ten source suites passed: **289 tests**, including request bindings, network
+Ten source suites passed: **297 tests**, including request bindings, network
 content, scenario finalization, provider ownership, canonical validation,
 Evidence compatibility, and environment write inference. The previous four
 upstream findings now have regressions: decoded-body admission, distinct retained
@@ -121,5 +122,12 @@ one intermediate edit removed an adjacent write helper and was restored; deadlin
 fixtures initially used unknown body sizes, and one network refactor introduced
 an unnecessary scheduling await. Final suites retain their original cancellation
 assertions and pass. Real source-body privacy failed before the structural fix.
+The five MCP boundary suites passed all 41 distinct cases across a combined run
+and an isolated suite rerun. One case timed out at 30 seconds under contention
+and passed in 17.36 seconds when isolated; an earlier invocation accidentally
+used the older host Node and failed before executing tests. Documentation fact
+checks, rendered documentation and formatting passed; a relative HTML fixture
+link caught by the first documentation build was corrected.
+
 Historical upstream multi-application/model results were not rerun. Required
 integration gates and CI outcomes are recorded in the associated PR.

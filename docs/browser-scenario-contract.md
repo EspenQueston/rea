@@ -517,7 +517,7 @@ id the application assigns:
 - Validation refuses a saved value that no earlier step saves. A later save of
   the same name replaces the value. An integer past 2^53, which JSON parsing
   would round to another number, and a number that is not finite, such as
-  `1e400`, or a value that underflows to zero, such as `1e-400`, fail the step
+  `1e400`, negative zero, or a value that underflows to zero, such as `1e-400`, fail the step
   that saves it.
 - A scenario keeps at most 4,000,000 characters of saved values at once,
   counting distinct retained redaction spellings, including trimmed variants,
