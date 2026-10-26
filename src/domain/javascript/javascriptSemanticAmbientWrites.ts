@@ -19,7 +19,6 @@ import { isImportMetaUrl } from "./javascriptStaticAnalysisHelpers.js";
 import {
   semanticBindingAtRead,
   semanticEffectTiming,
-  semanticReadPrecedesEffectWithinActivation,
   semanticDefiniteEffectPrecedesReference,
 } from "./javascriptSemanticMutationInitializers.js";
 import {
@@ -839,7 +838,8 @@ export type GlobalReferenceRead =
 
 /** Reuse retained write provenance and activation ordering at a selected read.
  * The reader retains only matching effects, refreshing when their owner grows.
- * Missing timing, conditional replacements and parent writes stay unknown. */
+ * Missing timing, possibly repeated activations, conditional replacements and
+ * parent writes stay unknown. */
 export const createGlobalReferenceReader = (
   state: JavaScriptSemanticAnalysisState,
   path: readonly [string, ...string[]],
@@ -881,14 +881,7 @@ export const createGlobalReferenceReader = (
     }
     if (effects.length === 0) return { status: "unknown" };
     const active = effects.filter(
-      (effect) =>
-        semanticEffectTiming(callee, effect.node, state) !== "after" &&
-        (effect.node === undefined ||
-          !semanticReadPrecedesEffectWithinActivation(
-            callee,
-            effect.node,
-            state.parentsByNode,
-          )),
+      (effect) => semanticEffectTiming(callee, effect.node, state) !== "after",
     );
     if (active.length === 0) return { status: "unmodified" };
     if (
@@ -902,9 +895,14 @@ export const createGlobalReferenceReader = (
     let replacement: t.AssignmentExpression | undefined;
     for (const effect of active) {
       const write = effect.node;
+      const writeNamespace = t.isAssignmentExpression(write)
+        ? globalReferenceNamespace(write.left, state, path)
+        : undefined;
       if (
         t.isAssignmentExpression(write, { operator: "=" }) &&
-        globalReferenceNamespace(write.left, state, path) !== undefined &&
+        writeNamespace !== undefined &&
+        (writeNamespace === null ||
+          !state.ambientWrites.covers(["global", writeNamespace])) &&
         semanticDefiniteEffectPrecedesReference(
           write,
           callee,

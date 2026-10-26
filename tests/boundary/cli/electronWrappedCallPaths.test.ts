@@ -883,6 +883,7 @@ const descriptorCases: readonly (readonly [
   string,
   boolean,
   boolean?,
+  boolean?,
 ])[] = [
   ["control", `{value:${descriptorSender}}`, true],
   ["accessor-noop", `{get:function(){return ${descriptorNoop}}}`, false],
@@ -896,9 +897,10 @@ const descriptorCases: readonly (readonly [
     "{value" + descriptorSender.slice("function".length) + "}",
     true,
   ],
-  ["patch-after-sender", `{value:${descriptorSender}}`, true],
+  ["patch-after-sender", `{value:${descriptorSender}}`, true, false, false],
   ["negative-prototype", `{__proto__:-1,value:${descriptorSender}}`, true],
   ["bigint-prototype", `{__proto__:-1n,value:${descriptorSender}}`, true],
+  ["replaced-namespace", `{value:${descriptorNoop}}`, false],
   ["namespaced-noop", `{value:${descriptorNoop}}`, true],
   ["patch-after", `{value:${descriptorNoop}}`, false],
   ["outer-patch-after", `{value:${descriptorNoop}}`, false],
@@ -1027,8 +1029,8 @@ cliTest.for(["CLI", "stdio MCP"] as const)(
           2(module) { module.exports = require("electron"); },
           5(module, exports, load) {
             const electron = load(2);
-            ${name === "namespaced-noop" ? "globalThis.Object.defineProperty=()=>{};" : name === "patched-intrinsic" ? "Object.defineProperty=()=>{};" : name === "mutating-intrinsic" ? "Object.defineProperty=(target,key)=>{target[key]=" + descriptorNoop + ";};" : ""}
-            exports.sender = ${["accessor-noop", "namespaced-noop", "patched-intrinsic", "patch-after", "outer-patch-after", "mutating-intrinsic"].includes(name) ? descriptorSender : descriptorNoop};
+            ${name === "replaced-namespace" ? "globalThis={Object:{}};globalThis.Object.defineProperty=()=>{};" : name === "namespaced-noop" ? "globalThis.Object.defineProperty=()=>{};" : name === "patched-intrinsic" ? "Object.defineProperty=()=>{};" : name === "mutating-intrinsic" ? "Object.defineProperty=(target,key)=>{target[key]=" + descriptorNoop + ";};" : ""}
+            exports.sender = ${["accessor-noop", "replaced-namespace", "namespaced-noop", "patched-intrinsic", "patch-after", "outer-patch-after", "mutating-intrinsic"].includes(name) ? descriptorSender : descriptorNoop};
             Object.defineProperty(exports, "sender", ${descriptor});
             ${name.startsWith("patch-after") ? "Object.defineProperty=()=>{};" : ""}
             function send(channel, ...args) { electron.ipcRenderer.send(channel, ...args); }
@@ -1103,7 +1105,9 @@ cliTest.for(["CLI", "stdio MCP"] as const)(
       terminals.map(({ properties }) => properties.channel).sort(),
     ).toEqual(
       descriptorCases
-        .filter(([, , sends]) => sends)
+        // A factory with a later global patch can run repeatedly: its native
+        // intrinsic is unknown even though this test invokes it only once.
+        .filter(([, , sends, , admitted = sends]) => admitted)
         .map(([name]) => `${name}:copy`)
         .sort(),
     );

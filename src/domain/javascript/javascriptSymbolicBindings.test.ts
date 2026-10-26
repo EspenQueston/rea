@@ -906,3 +906,14 @@ it("does not preserve a sender through a possibly mutating intrinsic replacement
   })();`);
   expect(value.kind).toBe("unknown");
 });
+
+it("keeps a possibly repeated factory's native descriptor value unknown", () => {
+  const value = inspectOne(`(() => {
+    const modules={
+      1(module,exports){exports.api=null;Object.defineProperty(exports,"api",{value:require("electron")});Object.defineProperty=()=>{};},
+      2(module,exports,load){inspect(load(1).api);}
+    };
+    function load(id){const m={exports:{}};modules[id](m,m.exports,load);return m.exports;}load(2);
+  })();`);
+  expect(value.kind).toBe("unknown");
+});
