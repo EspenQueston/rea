@@ -18,6 +18,7 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 import {
   link,
   mkdir,
+  open,
   readFile,
   readdir,
   rename,
@@ -55,6 +56,7 @@ import {
   extractArtifact,
   formatDryRunNonFileAddedLimitation,
   formatDryRunNonFileKindMismatchReason,
+  formatDryRunPlanPageLimitation,
   formatExtractionIntegrityContradictionLimitation,
 } from "./ArtifactExtraction.js";
 
@@ -1501,6 +1503,146 @@ it("rejects unpaired UTF-16 surrogates in archive entries and output roots and m
         status: "unresolved",
         reason: expect.stringMatching(/ENAMETOOLONG/),
       });
+    } finally {
+      lstatOverride = undefined;
+    }
+  } finally {
+    await resourceScope.close();
+  }
+});
+
+it("revalidates transferred ZIP member and container bytes during dry-run, bounds component-limit probes across distinct names, and pages large dry-run plans", async () => {
+  const directory = await createTestTempDirectory("rea-extract-codex-p2-");
+  const resourceScope = new ArtifactResourceScope();
+  try {
+    // 1. Transferred ZIP rewritten in-place with identical size and restored mtime/ctime after inventory
+    const zipPath = join(directory, "rewritten-in-place.zip");
+    const writer1 = new ZipWriter(new Uint8ArrayWriter());
+    await writer1.add("payload.txt", new TextReader("AAAA-original-bytes"));
+    const zipBytes1 = Buffer.from(await writer1.close());
+
+    const writer2 = new ZipWriter(new Uint8ArrayWriter());
+    await writer2.add("payload.txt", new TextReader("BBBB-modified-bytes"));
+    const zipBytes2 = Buffer.from(await writer2.close());
+    expect(zipBytes2.byteLength).toBe(zipBytes1.byteLength);
+    await writeFile(zipPath, zipBytes1);
+
+    const originalZipClose = ZipArtifactReader.prototype.close;
+    let closeCount = 0;
+    const closeSpy = vi
+      .spyOn(ZipArtifactReader.prototype, "close")
+      .mockImplementation(async function (this: ZipArtifactReader) {
+        await originalZipClose.call(this);
+        closeCount += 1;
+        if (closeCount === 1) {
+          const handle = await open(zipPath, "r+");
+          try {
+            const before = await handle.stat();
+            await handle.write(zipBytes2, 0, zipBytes2.byteLength, 0);
+            await handle.utimes(before.atime, before.mtime);
+          } finally {
+            await handle.close();
+          }
+        }
+      });
+    try {
+      await expect(
+        extractArtifact({
+          inputPath: zipPath,
+          inputFormat: "zip",
+          outputRoot: join(directory, "rewritten-zip-dry-out"),
+          dryRun: true,
+          environment: {},
+          integrityPolicy: "fail",
+          resourceScope,
+        }),
+      ).rejects.toMatchObject({
+        reason: "integrity",
+      });
+    } finally {
+      closeSpy.mockRestore();
+    }
+
+    // 2. Bounded component-limit probes across many distinct 140..220-byte names + dry-run plan paging
+    const manyNamesArchive = join(directory, "many-names.zip");
+    const manyWriter = new ZipWriter(new Uint8ArrayWriter());
+    for (let index = 0; index < 40; index += 1) {
+      const padLen = 140 + (index % 20);
+      const name = `entry-${String(index).padStart(4, "0")}-${"x".repeat(padLen)}.txt`;
+      await manyWriter.add(name, new TextReader(`item-${String(index)}`));
+    }
+    await writeFile(manyNamesArchive, Buffer.from(await manyWriter.close()));
+
+    let destinationProbeCount = 0;
+    const pagedOutputRoot = join(directory, "paged-dry-out");
+    lstatOverride = (targetPath: string) => {
+      if (
+        targetPath.startsWith(`${directory}/entry-`) ||
+        targetPath.startsWith(`${directory}\entry-`)
+      ) {
+        destinationProbeCount += 1;
+      }
+      return undefined;
+    };
+    try {
+      const page1 = await extractArtifact({
+        inputPath: manyNamesArchive,
+        inputFormat: "zip",
+        outputRoot: pagedOutputRoot,
+        dryRun: true,
+        planOffset: 0,
+        planLimit: 15,
+        environment: {},
+        integrityPolicy: "fail",
+        resourceScope,
+      });
+      expect(destinationProbeCount).toBeLessThanOrEqual(2);
+      expect(page1.plan?.page).toEqual({
+        total_entries: 40,
+        offset: 0,
+        limit: 15,
+        returned_entries: 15,
+        next_offset: 15,
+        truncated: true,
+      });
+      expect(page1.plan?.entries).toHaveLength(15);
+      expect(page1.artifacts).toHaveLength(15);
+      expect(page1.plan?.totals).toMatchObject({
+        planned_files: 40,
+        unsupported_entries: 0,
+        unresolved_entries: 0,
+      });
+      expect(page1.limitations).toContain(
+        formatDryRunPlanPageLimitation(15, 40, 0, 15),
+      );
+
+      const page3 = await extractArtifact({
+        inputPath: manyNamesArchive,
+        inputFormat: "zip",
+        outputRoot: pagedOutputRoot,
+        dryRun: true,
+        planOffset: 30,
+        planLimit: 15,
+        environment: {},
+        integrityPolicy: "fail",
+        resourceScope,
+      });
+      expect(page3.plan?.page).toEqual({
+        total_entries: 40,
+        offset: 30,
+        limit: 15,
+        returned_entries: 10,
+        next_offset: null,
+        truncated: true,
+      });
+      expect(page3.plan?.entries).toHaveLength(10);
+      expect(page3.artifacts).toHaveLength(10);
+      expect(page3.extraction_manifest.extraction_id).toBe(
+        page1.extraction_manifest.extraction_id,
+      );
+      expect(page3.limitations).toContain(
+        formatDryRunPlanPageLimitation(10, 40, 30, null),
+      );
     } finally {
       lstatOverride = undefined;
     }

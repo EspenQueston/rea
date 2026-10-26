@@ -2,6 +2,8 @@ import type { AsarHeaderAdmission } from "../../config/asarHeaderAdmission.js";
 import { resolveAsarHeaderAdmission } from "../AsarHeader.js";
 import { locateGodotPck } from "../GodotPckLocation.js";
 import { withArtifactRegularFile } from "../ArtifactFileOperation.js";
+import { readArtifactFileChunks } from "../readArtifactFileChunks.js";
+import { sameRegularFileState } from "../../filesystem/RegularFile.js";
 import type {
   ArtifactCleanupAttempt,
   ArtifactResourceOwner,
@@ -32,7 +34,7 @@ import {
   type ArtifactReaderTraversal,
 } from "../ArtifactReader.js";
 import { ArtifactTraversalObservation } from "../ArtifactTraversalObservation.js";
-import { abortIfNeeded } from "../ArtifactHash.js";
+import { abortIfNeeded, hashReadable } from "../ArtifactHash.js";
 import { streamChunkToBuffer } from "../StreamBytes.js";
 import { DirectoryArtifactReader } from "../DirectoryArtifactReader.js";
 import { SafeOutputTree, normalizeDestinationPath } from "../SafeOutputTree.js";
@@ -45,6 +47,8 @@ import { PyInstallerArtifactReader } from "../PyInstallerArtifactReader.js";
 import { containsPyInstallerArchive } from "../pyinstaller/CArchiveLayout.js";
 import { locateNodeSea } from "../nodeSea/NodeSeaLocation.js";
 import {
+  DEFAULT_DRY_RUN_PLAN_ENTRY_LIMIT,
+  MAX_DRY_RUN_PLAN_ENTRY_LIMIT,
   artifactExtractionResultSchema,
   type ArtifactExtractionPlan,
   type ArtifactExtractionPlanEntry,
@@ -68,6 +72,8 @@ export interface ArtifactExtractionInput {
   readonly inputFormat: BinaryTarget["format"];
   readonly outputRoot: string;
   readonly dryRun?: boolean;
+  readonly planOffset?: number;
+  readonly planLimit?: number;
   readonly platform?: NodeJS.Platform;
   readonly environment: Readonly<NodeJS.ProcessEnv>;
   readonly integrityPolicy: ArtifactIntegrityPolicyName;
@@ -372,8 +378,7 @@ const materializeSelection = async ({
       limitations: [],
     };
     if (dryRun) {
-      const containerVerified =
-        zipSource !== undefined || reader.prepareContainer !== undefined;
+      const containerVerified = reader.prepareContainer !== undefined;
       unresolvedPlan = await planSelectedEntries({
         reader,
         inventory,
@@ -386,6 +391,13 @@ const materializeSelection = async ({
         traversal,
         signal,
       });
+      if (zipSource !== undefined)
+        await revalidateTransferredZipSource(
+          sourcePath,
+          zipSource.source,
+          inventory.manifest.root_sha256,
+          signal,
+        );
     } else {
       await writeSelectedEntries({
         reader,
@@ -487,6 +499,43 @@ export const formatExtractionIntegrityContradictionLimitation = (
 ): string =>
   `${String(count)} ${dryRun ? "selected" : "extracted"} file(s) contradict declared integrity metadata; their bytes are observed-untrusted.`;
 
+export const formatDryRunPlanPageLimitation = (
+  returnedEntries: number,
+  totalEntries: number,
+  offset: number,
+  nextOffset: number | null,
+): string =>
+  nextOffset !== null
+    ? `Dry-run plan entries are paged (${String(returnedEntries)} of ${String(totalEntries)} entries returned at offset ${String(offset)}; pass plan_offset=${String(nextOffset)} to inspect remaining entries).`
+    : `Dry-run plan entries are paged (${String(returnedEntries)} of ${String(totalEntries)} entries returned at offset ${String(offset)}).`;
+
+const revalidateTransferredZipSource = async (
+  path: string,
+  source: TransferredZipInventorySource["source"],
+  expectedSha256: string,
+  signal?: AbortSignal,
+): Promise<void> => {
+  const digest = await hashReadable(
+    readArtifactFileChunks(source.handle, {
+      start: 0,
+      end: source.initial.size,
+      signal,
+    }),
+    signal,
+  );
+  abortIfNeeded(signal);
+  const current = await source.handle.stat();
+  if (
+    !sameRegularFileState(source.initial, current) ||
+    digest.bytes !== source.initial.size ||
+    digest.sha256 !== expectedSha256
+  )
+    throw new ArtifactReaderFailure(
+      "integrity",
+      `Artifact root changed after inventory: ${path}`,
+    );
+};
+
 interface UnresolvedDryRunPlan {
   readonly byOccurrenceId: ReadonlyMap<string, string>;
   readonly limitations: readonly string[];
@@ -495,16 +544,41 @@ interface UnresolvedDryRunPlan {
 const MAX_PORTABLE_NAME_BYTES = 255;
 const MAX_PORTABLE_POSIX_PATH_BYTES = 1023;
 const MAX_PORTABLE_WIN32_PATH_LENGTH = 259;
+const MAX_COMPONENT_LIMIT_PROBES = 16;
+
+interface DestinationComponentLimitProbeState {
+  maxAcceptedBytes: number;
+  minRejectedBytes: number;
+  readonly byByteLength: Map<number, string | null>;
+  terminalFailure: string | undefined;
+  probesUsed: number;
+}
+
+const createComponentLimitProbeState =
+  (): DestinationComponentLimitProbeState => ({
+    maxAcceptedBytes: 0,
+    minRejectedBytes: MAX_PORTABLE_NAME_BYTES + 1,
+    byByteLength: new Map(),
+    terminalFailure: undefined,
+    probesUsed: 0,
+  });
 
 const probeDestinationComponentLimit = async (
   destinationParent: string,
   segment: string,
-  cache: Map<string, string | null>,
+  byteLength: number,
+  state: DestinationComponentLimitProbeState,
   signal?: AbortSignal,
 ): Promise<string | null> => {
-  const cached = cache.get(segment);
+  if (state.terminalFailure !== undefined) return state.terminalFailure;
+  if (byteLength <= state.maxAcceptedBytes) return null;
+  if (byteLength >= state.minRejectedBytes) return "ENAMETOOLONG";
+  const cached = state.byByteLength.get(byteLength);
   if (cached !== undefined) return cached;
+  if (state.probesUsed >= MAX_COMPONENT_LIMIT_PROBES)
+    return "component-limit probe budget exhausted";
   abortIfNeeded(signal);
+  state.probesUsed += 1;
   const probeFailure = await lstat(join(destinationParent, segment)).then(
     () => null,
     (cause: unknown) => {
@@ -519,8 +593,67 @@ const probeDestinationComponentLimit = async (
           : String(cause);
     },
   );
-  cache.set(segment, probeFailure);
+  if (probeFailure === null) {
+    state.maxAcceptedBytes = Math.max(state.maxAcceptedBytes, byteLength);
+  } else if (probeFailure === "ENAMETOOLONG") {
+    state.minRejectedBytes = Math.min(state.minRejectedBytes, byteLength);
+  } else {
+    state.terminalFailure = probeFailure;
+  }
+  state.byByteLength.set(byteLength, probeFailure);
   return probeFailure;
+};
+
+const primeComponentLimitProbeState = async (
+  destinationParent: string,
+  staged: readonly { readonly destinationPath: string }[],
+  state: DestinationComponentLimitProbeState,
+  signal?: AbortSignal,
+): Promise<void> => {
+  const representativeByLength = new Map<number, string>();
+  for (const { destinationPath } of staged) {
+    for (const segment of destinationPath.split("/")) {
+      const byteLength = Buffer.byteLength(segment, "utf8");
+      if (
+        byteLength <= 0 ||
+        byteLength > MAX_PORTABLE_NAME_BYTES ||
+        segment.length > MAX_PORTABLE_NAME_BYTES ||
+        representativeByLength.has(byteLength)
+      )
+        continue;
+      representativeByLength.set(byteLength, segment);
+    }
+  }
+  const buckets = [...representativeByLength.entries()].sort(
+    ([left], [right]) => left - right,
+  );
+  const longest = buckets.at(-1);
+  if (longest === undefined) return;
+  const [longestBytes, longestSegment] = longest;
+  const longestResult = await probeDestinationComponentLimit(
+    destinationParent,
+    longestSegment,
+    longestBytes,
+    state,
+    signal,
+  );
+  if (longestResult === null || state.terminalFailure !== undefined) return;
+  let low = 0;
+  let high = buckets.length - 2;
+  while (low <= high && state.probesUsed < MAX_COMPONENT_LIMIT_PROBES) {
+    const mid = (low + high) >> 1;
+    const [midBytes, midSegment] = buckets[mid]!;
+    const result = await probeDestinationComponentLimit(
+      destinationParent,
+      midSegment,
+      midBytes,
+      state,
+      signal,
+    );
+    if (state.terminalFailure !== undefined) return;
+    if (result === null) low = mid + 1;
+    else high = mid - 1;
+  }
 };
 
 const overLimitDestinationReason = async (
@@ -528,7 +661,7 @@ const overLimitDestinationReason = async (
   destinationParent: string,
   destinationPath: string,
   platform: NodeJS.Platform,
-  componentLimitCache: Map<string, string | null>,
+  componentLimitState: DestinationComponentLimitProbeState,
   signal?: AbortSignal,
 ): Promise<string | undefined> => {
   const segments = destinationPath.split("/");
@@ -542,7 +675,8 @@ const overLimitDestinationReason = async (
     const probeFailure = await probeDestinationComponentLimit(
       destinationParent,
       segment,
-      componentLimitCache,
+      byteLength,
+      componentLimitState,
       signal,
     );
     if (probeFailure !== null)
@@ -749,14 +883,20 @@ const planSelectedEntries = async ({
           staged.map(({ destinationPath }) => destinationPath),
         );
   const destinationParent = dirname(outputRoot);
-  const componentLimitCache = new Map<string, string | null>();
+  const componentLimitState = createComponentLimitProbeState();
+  await primeComponentLimitProbeState(
+    destinationParent,
+    staged,
+    componentLimitState,
+    signal,
+  );
   for (const { selectedItem, destinationPath } of staged) {
     const overLimitReason = await overLimitDestinationReason(
       outputRoot,
       destinationParent,
       destinationPath,
       platform,
-      componentLimitCache,
+      componentLimitState,
       signal,
     );
     if (overLimitReason !== undefined) {
@@ -802,10 +942,44 @@ const planSelectedEntries = async ({
   return { byOccurrenceId: unresolvedByOccurrenceId, limitations };
 };
 
+const resolveDryRunPlanPageOptions = (
+  input: Pick<ArtifactExtractionInput, "dryRun" | "planOffset" | "planLimit">,
+): { readonly offset: number; readonly limit: number } => {
+  if (
+    input.dryRun !== true &&
+    (input.planOffset !== undefined || input.planLimit !== undefined)
+  )
+    throw new ArtifactReaderFailure(
+      "format",
+      "Dry-run plan paging options require dry_run=true.",
+    );
+  const offset = input.planOffset ?? 0;
+  if (!Number.isSafeInteger(offset) || offset < 0)
+    throw new ArtifactReaderFailure(
+      "format",
+      `Invalid dry-run plan_offset: ${String(input.planOffset)}`,
+    );
+  const limit = input.planLimit ?? DEFAULT_DRY_RUN_PLAN_ENTRY_LIMIT;
+  if (
+    !Number.isSafeInteger(limit) ||
+    limit < 1 ||
+    limit > MAX_DRY_RUN_PLAN_ENTRY_LIMIT
+  )
+    throw new ArtifactReaderFailure(
+      "format",
+      `Invalid dry-run plan_limit: ${String(input.planLimit)}`,
+    );
+  return { offset, limit };
+};
+
 const createDryRunPlan = (
   inventory: ArtifactInventorySnapshot,
   selected: readonly SelectedOccurrence[],
   unresolvedCaseReasons: ReadonlyMap<string, string>,
+  pageOptions: { readonly offset: number; readonly limit: number } = {
+    offset: 0,
+    limit: DEFAULT_DRY_RUN_PLAN_ENTRY_LIMIT,
+  },
 ): ArtifactExtractionPlan => {
   const selectedById = new Map(
     selected.map((item) => [item.occurrence.occurrence_id, item] as const),
@@ -914,8 +1088,26 @@ const createDryRunPlan = (
       compareUnicodeCodePoints(left.logical_path, right.logical_path) ||
       compareUnicodeCodePoints(left.occurrence_id, right.occurrence_id),
   );
+  const totalEntries = entries.length;
+  const pagedEntries = entries.slice(
+    pageOptions.offset,
+    pageOptions.offset + pageOptions.limit,
+  );
+  const nextOffset =
+    pageOptions.offset + pagedEntries.length < totalEntries
+      ? pageOptions.offset + pagedEntries.length
+      : null;
+  const truncated = nextOffset !== null || pageOptions.offset > 0;
   return {
-    entries,
+    entries: pagedEntries,
+    page: {
+      total_entries: totalEntries,
+      offset: pageOptions.offset,
+      limit: pageOptions.limit,
+      returned_entries: pagedEntries.length,
+      next_offset: nextOffset,
+      truncated,
+    },
     totals: {
       planned_files: plannedFiles,
       unsupported_entries: unsupportedEntries,
@@ -1038,6 +1230,30 @@ const createExtractionResult = (
     output_root_alias: "$OUTPUT_ROOT" as const,
   };
   const dryRun = input.dryRun === true;
+  const pageOptions = resolveDryRunPlanPageOptions(input);
+  const plan = dryRun
+    ? createDryRunPlan(
+        inventory,
+        selected,
+        unresolvedPlan.byOccurrenceId,
+        pageOptions,
+      )
+    : undefined;
+  const platform = input.platform ?? process.platform;
+  const pagedPlannedPaths =
+    plan?.page?.truncated === true
+      ? new Set(
+          plan.entries
+            .filter((entry) => entry.status === "planned")
+            .map((entry) =>
+              normalizeDestinationPath(entry.logical_path, platform),
+            ),
+        )
+      : undefined;
+  const returnedArtifacts =
+    pagedPlannedPaths === undefined
+      ? extracted
+      : extracted.filter((item) => pagedPlannedPaths.has(item.relative_path));
   return artifactExtractionResultSchema.parse({
     manifest: inventory.manifest,
     extraction_manifest: {
@@ -1045,17 +1261,13 @@ const createExtractionResult = (
       extraction_id: `aex_${digestCanonicalValue(extractionSemantic, "Artifact")}`,
     },
     output_root: input.outputRoot,
-    ...(dryRun
+    ...(plan !== undefined
       ? {
           dry_run: true,
-          plan: createDryRunPlan(
-            inventory,
-            selected,
-            unresolvedPlan.byOccurrenceId,
-          ),
+          plan,
         }
       : {}),
-    artifacts: extracted,
+    artifacts: returnedArtifacts,
     containment_verified: true,
     cleanup: { attempted: false, verified: true, residual_paths: [] },
     provenance: [...inventory.provenance, ...materializationProvenance],
@@ -1085,6 +1297,16 @@ const createExtractionResult = (
         ? DRY_RUN_BYTE_TOTALS_LIMITATION
         : "Publication verifies the selected inventoried regular files; it does not establish complete content decoding.",
       ...unresolvedPlan.limitations,
+      ...(plan?.page?.truncated === true
+        ? [
+            formatDryRunPlanPageLimitation(
+              plan.page.returned_entries,
+              plan.page.total_entries,
+              plan.page.offset,
+              plan.page.next_offset,
+            ),
+          ]
+        : []),
       ...(integrityContradictions.length === 0
         ? []
         : [

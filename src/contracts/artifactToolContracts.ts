@@ -2,6 +2,10 @@ import { z } from "zod";
 
 import type { ToolContract } from "./toolContractTypes.js";
 import { artifactOutputSchemas } from "./toolOutputSchemaGroups.js";
+import {
+  DEFAULT_DRY_RUN_PLAN_ENTRY_LIMIT,
+  MAX_DRY_RUN_PLAN_ENTRY_LIMIT,
+} from "../domain/artifactGraph.js";
 import { artifactIntegrityPolicySchema } from "../domain/artifactIntegrityPolicy.js";
 import { jsonValueSchema } from "../domain/jsonValue.js";
 import { toolContractMetadata } from "./toolEffects.js";
@@ -27,22 +31,67 @@ export const artifactInspectionInputSchema =
       ),
   });
 
-/** Extraction needs no selector: it materializes every regular child file. */
-export const artifactExtractionInputSchema = z.strictObject({
+const refineArtifactExtractionInput = (
+  value: {
+    readonly dry_run?: boolean;
+    readonly plan_offset?: number;
+    readonly plan_limit?: number;
+  },
+  context: z.RefinementCtx,
+): void => {
+  if (value.dry_run === true) return;
+  if (value.plan_offset !== undefined) {
+    context.addIssue({
+      code: "custom",
+      path: ["plan_offset"],
+      message: "plan_offset requires dry_run=true.",
+    });
+  }
+  if (value.plan_limit !== undefined) {
+    context.addIssue({
+      code: "custom",
+      path: ["plan_limit"],
+      message: "plan_limit requires dry_run=true.",
+    });
+  }
+};
+
+const artifactExtractionInputShapeSchema = z.strictObject({
   integrity_policy: artifactIntegrityPolicySchema,
   dry_run: z
     .boolean()
     .exactOptional()
     .describe(
-      "When true, validate destination admission, path collisions, and reader entries and return an extraction plan without creating destination files or directories.",
+      "When true, validate destination admission, path collisions, and reader entries and return a bounded extraction plan without creating destination files or directories.",
+    ),
+  plan_offset: z
+    .int()
+    .min(0)
+    .exactOptional()
+    .describe(
+      "Zero-based start index into dry-run plan.entries when dry_run is true (default 0).",
+    ),
+  plan_limit: z
+    .int()
+    .min(1)
+    .max(MAX_DRY_RUN_PLAN_ENTRY_LIMIT)
+    .exactOptional()
+    .describe(
+      `Maximum number of dry-run plan.entries items returned per page when dry_run is true (default ${String(DEFAULT_DRY_RUN_PLAN_ENTRY_LIMIT)}, max ${String(MAX_DRY_RUN_PLAN_ENTRY_LIMIT)}).`,
     ),
 });
 
+/** Extraction needs no selector: it materializes every regular child file. */
+export const artifactExtractionInputSchema =
+  artifactExtractionInputShapeSchema.superRefine(refineArtifactExtractionInput);
+
 /** Provider input containing the destination chosen by the local adapter. */
 export const artifactExtractionExecutionSchema =
-  artifactExtractionInputSchema.extend({
-    output_root: localPathStringSchema,
-  });
+  artifactExtractionInputShapeSchema
+    .extend({
+      output_root: localPathStringSchema,
+    })
+    .superRefine(refineArtifactExtractionInput);
 
 const exampleInputSchema = z.record(z.string(), jsonValueSchema);
 const examples: Readonly<

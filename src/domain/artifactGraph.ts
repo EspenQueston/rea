@@ -276,9 +276,23 @@ export const artifactExtractionPlanTotalsSchema = z.strictObject({
   byte_totals_note: z.string().min(1),
 });
 
+export const DEFAULT_DRY_RUN_PLAN_ENTRY_LIMIT = 500;
+export const MAX_DRY_RUN_PLAN_ENTRY_LIMIT = 1_000;
+
+/** Paging metadata for bounded dry-run extraction plan entry delivery. */
+export const artifactExtractionPlanPageSchema = z.strictObject({
+  total_entries: z.int().min(0),
+  offset: z.int().min(0),
+  limit: z.int().min(1).max(MAX_DRY_RUN_PLAN_ENTRY_LIMIT),
+  returned_entries: z.int().min(0),
+  next_offset: z.int().min(0).nullable(),
+  truncated: z.boolean(),
+});
+
 /** Dry-run extraction plan without destination filesystem writes. */
 export const artifactExtractionPlanSchema = z.strictObject({
   entries: z.array(artifactExtractionPlanEntrySchema),
+  page: artifactExtractionPlanPageSchema.exactOptional(),
   totals: artifactExtractionPlanTotalsSchema,
 });
 

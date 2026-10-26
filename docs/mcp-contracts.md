@@ -1222,11 +1222,15 @@ to write), `unsupported` (directories, logical metadata declarations, or nested
 archive members that single-container extraction does not expand), or
 `unresolved` (symlinks, case-folding or length-limit paths that cannot be
 verified without creating files, or non-file entries that drifted from the
-inventory snapshot). `plan.totals` reports `planned_files`,
-`unsupported_entries`, `unresolved_entries`, `observed_bytes_estimate`, and
-`declared_bytes_estimate` with `byte_totals_basis:
-"declared-and-observed-content-estimates"`; these byte totals measure archive
-content bytes rather than filesystem allocation or disk-block usage.
+inventory snapshot). `plan.page` bounds `plan.entries` per call (`plan_offset` default `0`,
+`plan_limit` default `500`, maximum `1000`) and reports `total_entries`,
+`offset`, `limit`, `returned_entries`, `next_offset`, and `truncated` while
+`plan.totals` always summarizes the complete inventory. `plan.totals` reports
+`planned_files`, `unsupported_entries`, `unresolved_entries`,
+`observed_bytes_estimate`, and `declared_bytes_estimate` with
+`byte_totals_basis: "declared-and-observed-content-estimates"`; these byte
+totals measure archive content bytes rather than filesystem allocation or
+disk-block usage.
 When that reader exposes a nested archive as a file, extraction copies the
 archive file; inspect and extract that file separately to unpack its contents.
 Extraction retains inventory and materialization traversal limitations in its
