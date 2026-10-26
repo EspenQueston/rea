@@ -516,6 +516,9 @@ id the application assigns:
   the same name replaces the value. An integer past 2^53, which JSON parsing
   would round to another number, and a number that is not finite, such as
   `1e400`, fail the step that saves it.
+- A scenario keeps at most 4,000,000 characters of saved values at once,
+  counting the redaction spellings of values saved as secret, and a save past
+  that fails its step before the value is kept.
 - A value saved with `secret: true` is redacted however short, as a declared
   secret is, as `[REDACTED:page:<step_id>.<name>]`, from records made after it
   is saved. The

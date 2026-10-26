@@ -1093,6 +1093,47 @@ describe("values a URL path or Basic header cannot carry", () => {
   });
 });
 
+describe("saved value retention", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("refuses a new saved name that would keep more than the limit, before keeping it", () => {
+    const secrets = resolved(scenario([requestStep({})]));
+    secrets.save("a.first", "first", "x".repeat(3_000_000), false);
+    expect(() =>
+      secrets.save("b.second", "second", "y".repeat(1_500_000), false),
+    ).toThrow("more than 4000000 characters of saved values");
+    expect(() => secrets.savedValue("second")).toThrow("No earlier step saved");
+    // A later save of the same name replaces its value rather than adding to it.
+    secrets.save("c.first", "first", "z".repeat(3_500_000), false);
+    expect(String(secrets.savedValue("first"))).toHaveLength(3_500_000);
+  });
+
+  it("counts the redaction spellings a secret save keeps", () => {
+    const plain = resolved(scenario([requestStep({})]));
+    plain.save("a.token", "token", "t".repeat(2_500_000), false);
+    const secret = resolved(scenario([requestStep({})]));
+    expect(() =>
+      secret.save("a.token", "token", "t".repeat(2_500_000), true),
+    ).toThrow("more than 4000000 characters of saved values");
+  });
+
+  it("fails the step that would save past the limit", async () => {
+    stubFetch(201, [`{"id":"${"y".repeat(200_000)}"}`]);
+    const parsed = scenario([
+      requestStep({ save: [{ name: "item", json_pointer: "/id" }] }),
+    ]);
+    const secrets = resolved(parsed);
+    secrets.save("seed.big", "big", "x".repeat(3_900_000), false);
+    await expect(
+      perform(fakePage({}), parsed.actions[0]!, secrets),
+    ).rejects.toThrow(
+      "Step create: item cannot be saved: the scenario would keep more than",
+    );
+  });
+});
+
 describe("goto placeholders", () => {
   it("fills a goto destination's placeholders, percent-encoded", async () => {
     const parsed = scenario([

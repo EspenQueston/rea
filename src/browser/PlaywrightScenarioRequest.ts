@@ -650,6 +650,12 @@ const saveValues = (
       throw new ScenarioRequestError(
         `Step ${stepId}: the number at ${json_pointer} is too large to keep exactly, so ${name} cannot be saved from it.`,
       );
-    secrets.save(`${stepId}.${name}`, name, value, secret);
+    try {
+      secrets.save(`${stepId}.${name}`, name, value, secret);
+    } catch (cause) {
+      throw new ScenarioRequestError(
+        `Step ${stepId}: ${cause instanceof Error ? cause.message : String(cause)}`,
+      );
+    }
   }
 };

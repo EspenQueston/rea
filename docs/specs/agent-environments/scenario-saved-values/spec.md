@@ -41,6 +41,9 @@ values.
   local storage entry. The encoded value and parts read from the page are
   redacted as page values are. A username with a colon fails the step.
 - Validation refuses a saved value no earlier step saves.
+- A scenario keeps at most 4,000,000 characters of saved values at once, counting
+  the redaction spellings of values saved as secret; a save past that fails its
+  step before the value is kept.
 - A value saved with `secret: true` is redacted from records made after it is
   saved. The environment build warns about saved values named like credentials
   that are not marked secret (`credential-named-saved-values`).

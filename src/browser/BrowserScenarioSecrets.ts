@@ -19,6 +19,9 @@ const REDACTION_PREFIX = "[REDACTED:";
 /** Page values shorter than this are not redacted: redacting them would rewrite ids, ports and hosts throughout the capture. */
 export const MIN_REDACTED_PAGE_VALUE_LENGTH = 8;
 
+/** The most saved-value text a scenario keeps at once, with the redaction spellings of values saved as secret: as much as one saved response can carry. */
+export const MAX_RETAINED_SAVED_CHARACTERS = 4_000_000;
+
 const encodedSecretValues = (secret: string): ReadonlySet<string> =>
   new Set([
     encodeURIComponent(secret),
@@ -74,6 +77,17 @@ const secretPatterns = (
     return true;
   });
 };
+
+/** The code units a secret's redaction spellings keep, each distinct spelling once. */
+const spellingUnits = (secret: string): number =>
+  [
+    ...new Set(
+      [
+        ...secretPatterns(secret, "text"),
+        ...secretPatterns(secret, "url"),
+      ].flatMap(({ text, searchText }) => [text, searchText]),
+    ),
+  ].reduce((units, spelling) => units + spelling.length, 0);
 
 const declaredPatterns = (
   values: ReadonlyMap<string, string>,
@@ -331,15 +345,35 @@ export class BrowserScenarioSecrets {
   /** Values steps saved from JSON responses, by name, as strings or numbers. */
   private readonly saved = new Map<string, string | number>();
 
-  /** Keep a value a step saved from a JSON response; a secret one is redacted from everything recorded after it. */
+  /** Code units the current saved values keep, and those the redaction spellings of secret saves keep for the rest of the scenario. */
+  private savedUnits = 0;
+  private secretSpellingUnits = 0;
+
+  /** Keep a value a step saved from a JSON response; a secret one is redacted from everything recorded after it. Refused before it is kept when the scenario would hold more than {@link MAX_RETAINED_SAVED_CHARACTERS}. */
   save(
     label: string,
     name: string,
     value: string | number,
     secret: boolean,
   ): void {
+    const text = String(value);
+    const replaced = this.saved.get(name);
+    const savedUnits =
+      this.savedUnits -
+      (replaced === undefined ? 0 : String(replaced).length) +
+      text.length;
+    let kept = savedUnits + this.secretSpellingUnits;
+    const spellings =
+      secret && kept <= MAX_RETAINED_SAVED_CHARACTERS ? spellingUnits(text) : 0;
+    kept += spellings;
+    if (kept > MAX_RETAINED_SAVED_CHARACTERS)
+      throw new Error(
+        `${name} cannot be saved: the scenario would keep more than ${String(MAX_RETAINED_SAVED_CHARACTERS)} characters of saved values.`,
+      );
     this.saved.set(name, value);
-    if (secret) this.admitCredential(label, String(value));
+    this.savedUnits = savedUnits;
+    this.secretSpellingUnits += spellings;
+    if (secret) this.admitCredential(label, text);
   }
 
   /** A saved value with the JSON type it was saved with. */
