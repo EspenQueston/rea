@@ -1702,17 +1702,26 @@ describe("saved response limits and deadlines", () => {
   });
 });
 
-it.each(["array", "embedded"])(
+it.each(["array", "embedded", "headers"])(
   "refuses repeated large saved JSON values in %s before expansion or browser dispatch",
   async (kind) => {
     const parsed = scenario([
       requestStep({ save: [{ name: "large", json_pointer: "/value" }] }),
       requestStep({
         step_id: "expanded",
+        headers:
+          kind === "headers"
+            ? Array.from({ length: 1000 }, (_, i) => ({
+                name: `X-Repeated-${i}`,
+                value: { source: "saved" as const, name: "large" },
+              }))
+            : [],
         json:
-          kind === "array"
-            ? Array.from({ length: 1000 }, () => "{saved:large}")
-            : "prefix" + "{saved:large}".repeat(1000),
+          kind === "headers"
+            ? undefined
+            : kind === "array"
+              ? Array.from({ length: 1000 }, () => "{saved:large}")
+              : "prefix" + "{saved:large}".repeat(1000),
       }),
     ]);
     const secrets = resolved(parsed);
@@ -1724,3 +1733,22 @@ it.each(["array", "embedded"])(
     expect(page.evaluate).not.toHaveBeenCalled();
   },
 );
+
+it("refuses repeated saved URL expansion before browser navigation", async () => {
+  const parsed = scenario([
+    requestStep({ save: [{ name: "large", json_pointer: "/value" }] }),
+    {
+      step_id: "open",
+      action: "goto",
+      destination: { url: `${ORIGIN}/` + "{saved:large}".repeat(1000) },
+      wait_until: "load",
+    },
+  ]);
+  const secrets = resolved(parsed);
+  secrets.save("source.large", "large", "x".repeat(3_000_000), false);
+  const goto = vi.fn();
+  await expect(
+    perform({ goto } as unknown as Page, parsed.actions[1]!, secrets),
+  ).rejects.toThrow("serialization allowance");
+  expect(goto).not.toHaveBeenCalled();
+});

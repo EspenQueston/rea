@@ -543,13 +543,16 @@ id the application assigns:
   environments model them. The environment build warns about saved values
   named like credentials that are not marked secret
   (`credential-named-saved-values`).
-- Expanded request JSON is admitted before substituting saved values or
+- Saved URLs and expanded request JSON are admitted before building their expanded strings or
   serializing. Its allowance is the smaller of Node's string limit and
   one sixteenth of current V8 available heap bytes, allowing for the expanded
   tree, serialization, Playwright transport and browser-side copies. Size
   accounting includes JSON escaping and repeated references; each distinct
   saved value's size is measured once per request. An oversized request fails
-  before browser dispatch. Reduce the payload/repetitions, or raise the parent
+  before browser dispatch; the complete request envelope, including repeated
+  header values, is checked as well. URL encoding uses a conservative
+  nine-characters-per-UTF-16-unit allowance before encoding a saved value.
+  Reduce the payload/repetitions, or raise the parent
   Node heap and restart; this is a conservative allocation estimate, not a
   measurement or guarantee of browser/process-family memory.
 - Evidence records a request step's empty `save` list as absent, so a scenario

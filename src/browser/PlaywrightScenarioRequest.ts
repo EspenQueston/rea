@@ -346,6 +346,24 @@ export const performScenarioRequest = async (input: {
     readLimit:
       action.save.length > 0 ? MAX_SAVED_RESPONSE_CHARACTERS : undefined,
   };
+  const envelopeLimit = requestSerializationAllowance();
+  if (
+    jsonValueByteLength(
+      {
+        url: target,
+        origin: startOrigin,
+        method: action.method,
+        headers,
+        body: request.body ?? null,
+        deadline: deadline ?? null,
+        readLimit: request.readLimit ?? null,
+      },
+      envelopeLimit,
+    ) > envelopeLimit
+  )
+    throw new ScenarioRequestError(
+      "Expanded request envelope exceeds the current heap/string serialization allowance; reduce repeated values or raise the parent Node heap and restart.",
+    );
   // The browser can queue evaluate behind a busy page. Keep a host-side gate
   // until that evaluation settles, including after the step boundary stops
   // waiting. A queued fetch then observes live cancellation at dispatch.
@@ -427,10 +445,33 @@ export const withSavedPlaceholders = (
   secrets: BrowserScenarioSecrets,
   placeholder: RegExp = SAVED_PLACEHOLDER,
 ): string => {
-  const fill = (part: string): string =>
-    part.replace(placeholder, (_placeholder, name: string) =>
-      encodeURIComponent(String(secrets.savedValue(name))),
+  const limit = requestSerializationAllowance();
+  let expandedUnits = text.length;
+  if (expandedUnits > limit)
+    throw new ScenarioRequestError(
+      "Saved URL exceeds the current heap/string serialization allowance.",
     );
+  const encoded = new Map<string, string>();
+  const fill = (part: string): string =>
+    part.replace(placeholder, (matched, name: string) => {
+      let replacement = encoded.get(name);
+      if (replacement === undefined) {
+        const raw = String(secrets.savedValue(name));
+        // A UTF-16 unit needs at most nine ASCII characters under URI encoding.
+        if (raw.length * 9 > limit)
+          throw new ScenarioRequestError(
+            "Saved URL encoding exceeds the current heap/string serialization allowance.",
+          );
+        replacement = encodeURIComponent(raw);
+        encoded.set(name, replacement);
+      }
+      expandedUnits += replacement.length - matched.length;
+      if (expandedUnits > limit)
+        throw new ScenarioRequestError(
+          "Expanded saved URL exceeds the current heap/string serialization allowance.",
+        );
+      return replacement;
+    });
   const pathEnd = text.search(/[?#]/u);
   const path = pathEnd < 0 ? text : text.slice(0, pathEnd);
   // WHATWG special URLs treat literal backslashes as path separators too.
@@ -600,18 +641,20 @@ export const awaitSavedResponse = (
 
 /** Allow for the expanded tree, stringify, Playwright transport and browser-side copies. */
 const REQUEST_JSON_ALLOCATION_FACTOR = 16;
+const requestSerializationAllowance = (): number =>
+  Math.min(
+    bufferConstants.MAX_STRING_LENGTH,
+    Math.floor(
+      getHeapStatistics().total_available_size / REQUEST_JSON_ALLOCATION_FACTOR,
+    ),
+  );
 
 /** Count serialization expansion without allocating substituted strings or their serialized copies. */
 const admitSavedJson = (
   value: JsonValue,
   secrets: BrowserScenarioSecrets,
 ): void => {
-  const limit = Math.min(
-    bufferConstants.MAX_STRING_LENGTH,
-    Math.floor(
-      getHeapStatistics().total_available_size / REQUEST_JSON_ALLOCATION_FACTOR,
-    ),
-  );
+  const limit = requestSerializationAllowance();
   let bytes = 0;
   const savedSizes = new Map<string, number>();
   const charge = (size: number): void => {

@@ -540,11 +540,6 @@ try {
         },
       ],
     });
-    assert.ok(
-      followup.normalized_result.summary.steps.every(
-        (step) => step.status === "completed",
-      ),
-    );
     const followupPath = join(output, "followup-evidence.json");
     await invoke("export_evidence_bundle", { path: followupPath });
     const followupBundle = JSON.parse(await readFile(followupPath, "utf8"));
@@ -553,6 +548,12 @@ try {
         record.evidence_id === followup.normalized_result.parent_evidence_id,
     );
     assert.ok(followupParent);
+    assert.ok(
+      followup.normalized_result.summary.steps.every(
+        (step) => step.status === "completed",
+      ),
+    );
+
     const followupPost = followupParent.normalized_result.events.items.find(
       (event) => event.kind === "request" && event.method === "POST",
     );
