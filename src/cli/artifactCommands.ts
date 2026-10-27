@@ -9,6 +9,8 @@ import { projectAnalysisError } from "../domain/analysisErrorProjection.js";
 import { ARTIFACT_GRAPH_PROVIDER } from "../domain/investigationProviders.js";
 import { z } from "incur";
 
+import { artifactExtractionInputSchema } from "../contracts/artifactToolContracts.js";
+
 import type { DirectAnalysis } from "../composition/directAnalysis.js";
 import { createArtifactExtractionDestination } from "../application/artifacts/ArtifactExtractionDestination.js";
 import { logCliCommand } from "../cliLogging.js";
@@ -201,11 +203,20 @@ const registerExtractionCommand = (
 ): void => {
   cli.command(CLI_COMMANDS.extractArtifact, {
     description:
-      "Extract regular contents of supported artifacts; DMG extraction is unavailable",
+      "Extract all or selected regular artifact contents safely; DMG extraction is unavailable",
     args: z.object({
       path: z.string().describe("Application or package path"),
     }),
     options: z.object({
+      outputRoot: artifactExtractionInputSchema.shape.output_root
+        .unwrap()
+        .optional(),
+      occurrenceId: artifactExtractionInputSchema.shape.occurrence_ids
+        .unwrap()
+        .optional()
+        .describe(
+          "Inventory occurrence ID to extract (repeatable); omit to extract all regular entries",
+        ),
       integrityPolicy: z
         .enum(["fail", "record-and-continue"])
         .default("fail")
@@ -218,7 +229,12 @@ const registerExtractionCommand = (
           "extract_artifact",
           {
             integrity_policy: options.integrityPolicy,
-            output_root: createArtifactExtractionDestination(),
+            output_root: createArtifactExtractionDestination(
+              options.outputRoot,
+            ),
+            ...(options.occurrenceId === undefined
+              ? {}
+              : { occurrence_ids: options.occurrenceId }),
           },
           logger,
         ).then(projectCliAnalysisResult),
