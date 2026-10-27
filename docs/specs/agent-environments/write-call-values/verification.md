@@ -49,8 +49,8 @@ The 130 captures #7274 measured, built by #7274 at `45832406` and by this branch
 - Vikunja's task create in main's recording is now explained, by its counter, template and made subscription, but
   main's `unknown-clock` withholds it in both builds, as that capture has no clock anchor. Measured on #7274 at
   `4ede1305`, before that rule, it was served too (339 to 341).
-- Seven plans that stay withheld explain more: Homebox entity creates learn `assetId` as a counter from 5 in four
-  recordings, and Vikunja task creates in three.
+- Six plans that stay withheld explain more: Homebox entity creates learn `assetId` as a counter from 5 in four
+  recordings, and Vikunja task creates in two.
 - In #7260's two Vikunja recordings whose UI writes lost their bodies, the bulk create now counts as a task write, so
   the scratch task it made is no longer held as seeded (35 to 34 and 36 to 35 initial entities), a read tool that read
   only that task replays its recordings, and later reads check fewer lines. Every other view is unchanged.
