@@ -1,19 +1,25 @@
+import { importVerifierSource } from "./lib/verifier-source-loader.mjs";
+
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
-import { CATALOG_IDENTITY } from "../dist/catalogIdentity.js";
+import { FULL_CATALOG_IDENTITY } from "../dist/catalogIdentity.js";
 
-import { exec } from "./lib/verify-package-core.mjs";
+import { parseTarListing } from "./lib/verify-package-listing.mjs";
 import { verifyPackedBridge } from "./verify-packed-bridge.mjs";
 
+const { parseSkillManifestMetadata } = await importVerifierSource(
+  new URL("../src/domain/skillManifest.ts", import.meta.url).href,
+  import.meta.url,
+);
+
 /** Create a tarball and assert production packaging constraints. */
-export async function verifyPackagePack({ root, workspace }) {
+export async function verifyPackagePack({ root, workspace, commands }) {
   const packDirectory = join(workspace, "pack");
   await mkdir(packDirectory);
   const tarball = join(
     packDirectory,
     (
-      await exec(
-        "npm",
+      await commands.execNpm(
         ["pack", "--silent", "--pack-destination", packDirectory],
         {
           cwd: root,
@@ -21,9 +27,12 @@ export async function verifyPackagePack({ root, workspace }) {
       )
     ).stdout.trim(),
   );
-  const packedFiles = (await exec("tar", ["-tf", tarball])).stdout.split("\n");
+  const packedFiles = parseTarListing(
+    (await commands.exec("tar", ["-tf", tarball])).stdout,
+  );
   const packedManifest = JSON.parse(
-    (await exec("tar", ["-xOf", tarball, "package/package.json"])).stdout,
+    (await commands.exec("tar", ["-xOf", tarball, "package/package.json"]))
+      .stdout,
   );
   if (
     packedManifest.scripts?.postinstall !== undefined ||
@@ -38,6 +47,8 @@ export async function verifyPackagePack({ root, workspace }) {
     throw new Error("package did not expose both rea command entry points");
   if (packedManifest.mcpName !== "io.github.morluto/rea")
     throw new Error("package did not retain its MCP Registry ownership marker");
+  if (!packedFiles.includes("package/scripts/lib/cli-process-environment.mjs"))
+    throw new Error("package omitted the CLI process environment owner");
   if (packedFiles.some((path) => path.startsWith("package/.agents/")))
     throw new Error(
       "package included authored skill sources instead of only the generated bundle",
@@ -45,17 +56,17 @@ export async function verifyPackagePack({ root, workspace }) {
   if (packedFiles.some((path) => path.startsWith("package/.cache/")))
     throw new Error("package included development cache or test metadata");
   const skill = (
-    await exec("tar", [
+    await commands.exec("tar", [
       "-xOf",
       tarball,
       "package/skills/reverse-engineer-anything/SKILL.md",
     ])
   ).stdout;
+  const skillMetadata = parseSkillManifestMetadata(skill);
   if (
-    !skill.includes(
-      `  tool_count: ${String(CATALOG_IDENTITY.counts.mcp_tools)}\n`,
-    ) ||
-    skill.includes("  catalog_digest:")
+    !skillMetadata.ok ||
+    skillMetadata.value.toolCount !== FULL_CATALOG_IDENTITY.counts.mcp_tools ||
+    skillMetadata.value.hasCatalogDigest
   )
     throw new Error(
       "packaged skill metadata did not match the catalog shipped in the package",
@@ -67,6 +78,6 @@ export async function verifyPackagePack({ root, workspace }) {
   ) {
     throw new Error("package contained generated Python bytecode");
   }
-  await verifyPackedBridge({ workspace, tarball, packedFiles });
+  await verifyPackedBridge({ tarball, packedFiles, commands });
   return { tarball };
 }

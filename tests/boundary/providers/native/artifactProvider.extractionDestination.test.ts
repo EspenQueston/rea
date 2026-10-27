@@ -10,7 +10,11 @@ import { join } from "node:path";
 
 import { expect, it } from "vitest";
 
-import type { BinaryTarget } from "../../../../src/domain/binaryTargetTypes.js";
+import { parseBinaryTarget } from "../../../../src/application/BinaryTargetResolver.js";
+import {
+  CPU,
+  machoImage,
+} from "../../../../src/artifacts/apple/MachoImage.fixture.js";
 import { withArtifactClient } from "../../../support/artifactClientScope.js";
 import { createTestTempDirectory } from "../../../fixtures/temporaryDirectory.js";
 
@@ -20,9 +24,16 @@ it.each(["direct", "symlink"] as const)(
     const root = await createTestTempDirectory(
       "rea-extraction-source-boundary-",
     );
-    const source = join(root, "source");
+    const source = join(root, "source.app");
     await mkdir(source);
     await writeFile(join(source, "payload.txt"), "caller bytes");
+    await writeFile(
+      join(source, "Info.plist"),
+      '<plist version="1.0"><dict><key>CFBundleExecutable</key><string>Main</string></dict></plist>',
+    );
+    await writeFile(join(source, "Main"), machoImage({ cpu: CPU.arm64 }));
+    const target = await parseBinaryTarget(source);
+    if (!target.ok) throw target.error;
     let parent = source;
     if (kind === "symlink") {
       parent = join(root, "alias");
@@ -32,19 +43,16 @@ it.each(["direct", "symlink"] as const)(
         process.platform === "win32" ? "junction" : "dir",
       );
     }
-    const target: BinaryTarget = {
-      path: source,
-      sourcePath: source,
-      sha256: "0".repeat(64),
-      kind: "archive",
-      format: "asar",
-    };
     const output = join(parent, "output");
-    const result = await withArtifactClient(target, (client) =>
+    const result = await withArtifactClient(target.value, (client) =>
       client.execute("extract_artifact", { output_root: output }),
     );
     expect(result).toMatchObject({ ok: false, error: { reason: "path" } });
-    expect(await readdir(source)).toEqual(["payload.txt"]);
+    expect((await readdir(source)).sort()).toEqual([
+      "Info.plist",
+      "Main",
+      "payload.txt",
+    ]);
     expect(await readFile(join(source, "payload.txt"), "utf8")).toBe(
       "caller bytes",
     );

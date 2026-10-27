@@ -1,3 +1,12 @@
+import { projectCliAnalysisResult } from "./projectCliAnalysisResult.js";
+import {
+  analysisEvidenceDeliveryOptions,
+  cliEvidenceDeliveryInputError,
+  publishCliAnalysisEvidence,
+} from "./analysisEvidenceDelivery.js";
+import { withCommandCancellation } from "./commandCancellation.js";
+import { projectAnalysisError } from "../domain/analysisErrorProjection.js";
+import { ARTIFACT_GRAPH_PROVIDER } from "../domain/investigationProviders.js";
 import { z } from "incur";
 
 import { artifactExtractionInputSchema } from "../contracts/artifactToolContracts.js";
@@ -57,7 +66,7 @@ export const registerArtifactCommands = (
             ...(options.root === undefined ? {} : { root: options.root }),
           },
           logger,
-        ),
+        ).then(projectCliAnalysisResult),
       ),
   });
 };
@@ -97,7 +106,7 @@ const registerDylibResolutionCommand = (
               : { architecture: options.architecture }),
           },
           logger,
-        ),
+        ).then(projectCliAnalysisResult),
       ),
   });
 };
@@ -132,7 +141,7 @@ const registerAssetCatalogCommand = (
           "inspect_asset_catalog",
           { offset: options.offset, limit: options.limit },
           logger,
-        ),
+        ).then(projectCliAnalysisResult),
       ),
   });
 };
@@ -182,7 +191,7 @@ const registerInterfaceBuilderCommand = (
             max_connections: options.maxConnections,
           },
           logger,
-        ),
+        ).then(projectCliAnalysisResult),
       ),
   });
 };
@@ -193,15 +202,21 @@ const registerExtractionCommand = (
   runProviderAnalysis: DirectAnalysis["runProviderAnalysis"],
 ): void => {
   cli.command(CLI_COMMANDS.extractArtifact, {
-    description: "Extract all or selected regular artifact contents safely",
+    description:
+      "Extract all or selected regular artifact contents safely; DMG extraction is unavailable",
     args: z.object({
       path: z.string().describe("Application or package path"),
     }),
     options: z.object({
-      outputRoot: artifactExtractionInputSchema.shape.output_root,
-      occurrenceId: artifactExtractionInputSchema.shape.occurrence_ids.describe(
-        "Inventory occurrence ID to extract (repeatable); omit to extract all regular entries",
-      ),
+      outputRoot: artifactExtractionInputSchema.shape.output_root
+        .unwrap()
+        .optional(),
+      occurrenceId: artifactExtractionInputSchema.shape.occurrence_ids
+        .unwrap()
+        .optional()
+        .describe(
+          "Inventory occurrence ID to extract (repeatable); omit to extract all regular entries",
+        ),
       integrityPolicy: z
         .enum(["fail", "record-and-continue"])
         .default("fail")
@@ -222,7 +237,7 @@ const registerExtractionCommand = (
               : { occurrence_ids: options.occurrenceId }),
           },
           logger,
-        ),
+        ).then(projectCliAnalysisResult),
       ),
   });
 };
@@ -239,6 +254,7 @@ const registerInspectionCommand = (
       path: z.string().min(1).describe("Application or package path"),
     }),
     options: z.object({
+      ...analysisEvidenceDeliveryOptions,
       integrityPolicy: z
         .enum(["fail", "record-and-continue"])
         .default("fail")
@@ -246,14 +262,25 @@ const registerInspectionCommand = (
     }),
     run: ({ args, options }) =>
       logCliCommand(logger, "inspect-artifact", () =>
-        runProviderAnalysis(
-          args.path,
-          "inspect_artifact",
-          {
-            integrity_policy: options.integrityPolicy,
-          },
-          logger,
-        ),
+        withCommandCancellation(async (signal) => {
+          const delivery = {
+            providerId: ARTIFACT_GRAPH_PROVIDER.id,
+            operation: "inspect_artifact",
+            signal,
+            detail: options.detail,
+            evidenceOutput: options.evidence_output,
+          };
+          const inputError = cliEvidenceDeliveryInputError(delivery);
+          if (inputError !== undefined) return projectAnalysisError(inputError);
+          const complete = await runProviderAnalysis(
+            args.path,
+            "inspect_artifact",
+            { integrity_policy: options.integrityPolicy },
+            logger,
+            signal,
+          );
+          return publishCliAnalysisEvidence(complete, delivery);
+        }),
       ),
   });
 };

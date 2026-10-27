@@ -1,4 +1,11 @@
-import { lstat, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import {
+  lstat,
+  mkdir,
+  readFile,
+  readdir,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 
@@ -89,6 +96,70 @@ const extract = (
       signal === undefined ? undefined : { signal },
     ),
   );
+
+describe("duplicate artifact occurrence selection", () => {
+  it.each(["first", "second", "excluded", "both"] as const)(
+    "preserves duplicate ZIP occurrence identity when %s entries are selected",
+    async (selection) => {
+      const root = await createTestTempDirectory("rea-duplicate-selection-");
+      const path = join(root, "duplicates.zip");
+      const bytes = Buffer.from(
+        await archive([
+          ["first.txt", "first bytes"],
+          ["other.txt", "second bytes"],
+          ["keep.txt", "unrelated bytes"],
+        ]),
+      );
+      // Both local and central-directory names keep their original byte length.
+      for (
+        let offset = bytes.indexOf("other.txt");
+        offset !== -1;
+        offset = bytes.indexOf("other.txt", offset + 9)
+      )
+        bytes.write("first.txt", offset);
+      await writeFile(path, bytes);
+      const target = await parseBinaryTarget(path);
+      if (!target.ok) throw target.error;
+      const inventory = await inventoryOf(target.value);
+      const duplicates = inventory.occurrences.filter(
+        ({ logical_path }) => logical_path === "first.txt",
+      );
+      expect(duplicates).toHaveLength(2);
+      expect(
+        new Set(duplicates.map(({ occurrence_id }) => occurrence_id)).size,
+      ).toBe(2);
+      const keep = inventory.occurrences.find(
+        ({ logical_path }) => logical_path === "keep.txt",
+      );
+      if (keep === undefined) throw new Error("Missing unrelated occurrence");
+      const ids =
+        selection === "excluded"
+          ? [keep.occurrence_id]
+          : selection === "both"
+            ? duplicates.map(({ occurrence_id }) => occurrence_id)
+            : [duplicates[selection === "first" ? 0 : 1]!.occurrence_id];
+      const output = join(root, "selected");
+      const result = await extract(target.value, output, ids);
+      if (selection === "both") {
+        expect(result.ok).toBe(false);
+        await expect(lstat(output)).rejects.toMatchObject({ code: "ENOENT" });
+        return;
+      }
+      if (!result.ok) throw result.error;
+      const value = artifactExtractionResultSchema.parse(result.value.result);
+      expect(value.extraction_manifest.selected_occurrence_ids).toEqual(ids);
+      const name = selection === "excluded" ? "keep.txt" : "first.txt";
+      expect(await readdir(output)).toEqual([name]);
+      expect(await readFile(join(output, name), "utf8")).toBe(
+        selection === "excluded"
+          ? "unrelated bytes"
+          : selection === "first"
+            ? "first bytes"
+            : "second bytes",
+      );
+    },
+  );
+});
 
 describe("selected artifact extraction", () => {
   it("selects occurrences, not shared content IDs, and avoids unselected name collisions", async () => {
@@ -201,6 +272,51 @@ describe("selected artifact extraction", () => {
 });
 
 describe("selected extraction ownership and rollback", () => {
+  it.skipIf(process.platform === "win32")(
+    "reports the actual output selected through symlink/.. traversal",
+    async () => {
+      const data = await fixture();
+      const nested = join(data.root, "deep", "nested");
+      await mkdir(nested, { recursive: true });
+      const alias = join(data.root, "alias");
+      await symlink(nested, alias, "dir");
+      const requested = `${alias}/../chosen`;
+      const result = await extract(data.target, requested, [
+        data.selected.occurrence_id,
+      ]);
+      if (!result.ok) throw result.error;
+      const value = artifactExtractionResultSchema.parse(result.value.result);
+      expect(value.output_root).toBe(join(data.root, "deep", "chosen"));
+      expect(
+        await readFile(`${requested}/${data.selected.logical_path}`, "utf8"),
+      ).toBe("native fixture");
+      expect(
+        await readFile(
+          join(value.output_root, data.selected.logical_path),
+          "utf8",
+        ),
+      ).toBe("native fixture");
+      await expect(lstat(join(data.root, "chosen"))).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "refuses missing/.. output parents before creating any destination",
+    async () => {
+      const data = await fixture();
+      const requested = `${data.root}/missing/../chosen`;
+      const result = await extract(data.target, requested, [
+        data.selected.occurrence_id,
+      ]);
+      expect(result.ok).toBe(false);
+      await expect(lstat(join(data.root, "chosen"))).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+    },
+  );
+
   it("never overwrites a caller-owned destination", async () => {
     const data = await fixture();
     const output = join(data.root, "existing");

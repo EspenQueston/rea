@@ -22,6 +22,11 @@ export const selectArtifactExtractionOccurrences = (
       occurrence.logical_path !== ".",
   );
   const regularPaths = new Set(regular.map(({ logical_path }) => logical_path));
+  const directoryPaths = new Set(
+    occurrences
+      .filter(({ entry_kind }) => entry_kind === "directory")
+      .map(({ logical_path }) => logical_path),
+  );
   const available = regular.filter(({ logical_path }) => {
     let path = logical_path;
     for (
@@ -30,7 +35,7 @@ export const selectArtifactExtractionOccurrences = (
       slash = path.lastIndexOf("/")
     ) {
       path = path.slice(0, slash);
-      if (regularPaths.has(path)) return false;
+      if (regularPaths.has(path) && !directoryPaths.has(path)) return false;
     }
     return true;
   });
