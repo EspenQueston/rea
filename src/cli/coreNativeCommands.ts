@@ -1,5 +1,6 @@
 import { projectCliAnalysisResult } from "./projectCliAnalysisResult.js";
 import { nativeDispatchMetadataInputSchema } from "../domain/native/objcSwiftMetadata.js";
+import { nativeDataTypeInputSchema } from "../domain/native/nativeDataType.js";
 import { z } from "incur";
 import {
   addressOrProcedureGuidance,
@@ -24,6 +25,7 @@ import {
   publishCliAnalysisEvidence,
 } from "./analysisEvidenceDelivery.js";
 import { projectAnalysisError } from "../domain/analysisErrorProjection.js";
+import { analysisInputErrorFromIssues } from "../domain/inputIssueProjection.js";
 
 /** Register native load-image, memory, and annotation CLI commands. */
 export const registerCoreNativeCommands = (
@@ -235,19 +237,30 @@ export const registerCoreNativeCommands = (
       ...nativeOpenOptionFields,
     }),
     run: ({ args, options }) =>
-      logCliCommand(logger, CLI_COMMANDS.inspectNativeDataType, () =>
-        runDirectAnalysis(
+      logCliCommand(logger, CLI_COMMANDS.inspectNativeDataType, async () => {
+        const input = {
+          ...(options.type === undefined ? {} : { type: options.type }),
+          ...(options.address === undefined
+            ? {}
+            : { address: options.address }),
+        };
+        // Admit the canonical selector choice before opening the target.
+        const selected = nativeDataTypeInputSchema.safeParse(input);
+        if (!selected.success)
+          return projectAnalysisError(
+            analysisInputErrorFromIssues(
+              "inspect_native_data_type",
+              selected.error.issues,
+              input,
+            ),
+          );
+        return runDirectAnalysis(
           args.path,
           "inspect_native_data_type",
-          {
-            ...(options.type === undefined ? {} : { type: options.type }),
-            ...(options.address === undefined
-              ? {}
-              : { address: options.address }),
-          },
+          input,
           directAnalysisOptionsFromCli(logger, options),
-        ).then(projectCliAnalysisResult),
-      ),
+        ).then(projectCliAnalysisResult);
+      }),
   });
   for (const [command, operation] of [
     [CLI_COMMANDS.inspectNativeInstruction, "inspect_native_instruction"],
