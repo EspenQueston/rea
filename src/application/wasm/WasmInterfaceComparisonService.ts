@@ -37,7 +37,26 @@ import type { z } from "zod";
 import { completeProviderEvidence } from "../ProviderOperationExecution.js";
 
 const OPERATION = "compare_wasm_interfaces";
+/** Attribute a rejected side to the input argument that supplied it. */
 const parseInspection = (
+  raw: unknown,
+  side: "left" | "right",
+): { evidence: Evidence; result: WasmArtifact } => {
+  try {
+    return parseSideInspection(raw);
+  } catch (cause: unknown) {
+    if (cause instanceof AnalysisError) throw cause;
+    throw new AnalysisInputError(OPERATION, { cause }, [
+      {
+        path: [side],
+        reason: "invalid_value",
+        message: cause instanceof Error ? cause.message : String(cause),
+      },
+    ]);
+  }
+};
+
+const parseSideInspection = (
   raw: unknown,
 ): { evidence: Evidence; result: WasmArtifact } => {
   const evidence = parseEvidence(raw);
@@ -89,8 +108,8 @@ export const compareWasmInterfaces = async (
   try {
     await setImmediate();
     assertActive();
-    const left = parseInspection(resolved.value.left);
-    const right = parseInspection(resolved.value.right);
+    const left = parseInspection(resolved.value.left, "left");
+    const right = parseInspection(resolved.value.right, "right");
     const scope = parsed.data.scope;
     const selected = (entry: WasmInterfaceEntry): boolean =>
       scope === "both" ||
