@@ -443,7 +443,6 @@ const writeSelectedEntries = async ({
   const registry = new ArtifactPathRegistry();
   for await (const entry of reader.entries(signal, traversal)) {
     const path = normalizeArtifactPath(entry.path);
-    registry.add(path, entry.kind);
     // Logical declarations may share a query path with a real file. They do
     // not consume that file's selection or participate in materialization.
     if (entry.kind !== "file" && entry.kind !== "slice") continue;
@@ -463,6 +462,9 @@ const writeSelectedEntries = async ({
     if (queue.next === queue.occurrences.length) expected.delete(path);
     const selectedItem = selected.get(occurrence.occurrence_id);
     if (selectedItem === undefined) continue;
+    // Validate the full reader inventory above, but only selected regular
+    // entries claim destination paths. Excluded declarations may collide.
+    registry.add(path, entry.kind);
     preflight(entry);
     const stream = await reader.open(entry, signal);
     const written = await output.write(

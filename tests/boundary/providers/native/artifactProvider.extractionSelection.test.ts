@@ -9,6 +9,7 @@ import {
 import { join } from "node:path";
 import { Readable } from "node:stream";
 
+import { createPackage } from "@electron/asar";
 import {
   TextReader,
   Uint8ArrayReader,
@@ -28,9 +29,20 @@ import {
   artifactInventoryResultSchema,
 } from "../../../../src/domain/artifactGraph.js";
 import type { BinaryTarget } from "../../../../src/domain/binaryTargetTypes.js";
+import type { ArtifactEntry } from "../../../../src/artifacts/ArtifactReader.js";
 import { ZipArtifactReader } from "../../../../src/artifacts/ZipArtifactReader.js";
+import {
+  cArchiveExecutable,
+  pyzArchive,
+  PYTHON_39_MAGIC,
+  type CArchiveFixtureMember,
+} from "../../../../src/artifacts/pyinstaller/CArchive.fixture.js";
 import { selectArtifactExtractionOccurrences } from "../../../../src/artifacts/extraction/ArtifactExtractionSelection.js";
 import { withArtifactClient } from "../../../support/artifactClientScope.js";
+import {
+  materializeArtifactInventory,
+  scanArtifactInventory,
+} from "../../../fixtures/artifactInventory.js";
 import { createTestTempDirectory } from "../../../fixtures/temporaryDirectory.js";
 
 afterEach(() => vi.restoreAllMocks());
@@ -96,6 +108,149 @@ const extract = (
       signal === undefined ? undefined : { signal },
     ),
   );
+
+const pyInstallerFixture = async (
+  members: readonly CArchiveFixtureMember[],
+) => {
+  const root = await createTestTempDirectory("rea-pyinstaller-selection-");
+  const path = join(root, "fixture");
+  await writeFile(
+    path,
+    cArchiveExecutable({ layout: "2.1", pythonVersion: 39, members }),
+  );
+  const target = await parseBinaryTarget(path);
+  if (!target.ok) throw target.error;
+  return {
+    root,
+    target: target.value,
+    inventory: await inventoryOf(target.value),
+  };
+};
+
+describe("selected PyInstaller destination paths", () => {
+  it.each(["sibling.txt", "PYZ.pyz", "PYZ.pyz/member.txt", "all"])(
+    "checks directory/file collisions only for selected output: %s",
+    async (selection) => {
+      const contents = new Map([
+        ["PYZ.pyz", "independent file"],
+        ["PYZ.pyz/member.txt", "inner data"],
+        ["sibling.txt", "sibling data"],
+      ]);
+      const data = await pyInstallerFixture([
+        {
+          name: "PYZ.pyz",
+          typeCode: "z",
+          payload: pyzArchive({
+            magic: PYTHON_39_MAGIC,
+            modules: [
+              {
+                name: "member.txt",
+                typeCode: 2,
+                body: Buffer.from("inner data"),
+              },
+            ],
+          }),
+          compress: false,
+        },
+        ...["PYZ.pyz", "sibling.txt"].map((name) => ({
+          name,
+          typeCode: "x",
+          payload: Buffer.from(contents.get(name)!),
+          compress: false,
+        })),
+      ]);
+      expect(
+        data.inventory.occurrences
+          .filter(({ logical_path }) => logical_path === "PYZ.pyz")
+          .map(({ entry_kind }) => entry_kind),
+      ).toEqual(["directory", "file"]);
+      const selected = data.inventory.occurrences.filter(
+        ({ entry_kind, logical_path }) =>
+          entry_kind === "file" && logical_path === selection,
+      );
+      if (selection !== "all") expect(selected).toHaveLength(1);
+      const output = join(data.root, "output");
+      const result = await extract(
+        data.target,
+        output,
+        selection === "all"
+          ? undefined
+          : selected.map(({ occurrence_id }) => occurrence_id),
+      );
+      if (selection === "all") {
+        expect(result).toMatchObject({ ok: false, error: { reason: "path" } });
+        await expect(lstat(output)).rejects.toMatchObject({ code: "ENOENT" });
+        return;
+      }
+      if (!result.ok) throw result.error;
+      const value = artifactExtractionResultSchema.parse(result.value.result);
+      expect(value.manifest).toEqual(data.inventory.manifest);
+      expect(value.artifacts.map(({ relative_path }) => relative_path)).toEqual(
+        [selection],
+      );
+      expect(await readFile(join(output, selection), "utf8")).toBe(
+        contents.get(selection),
+      );
+      expect(await readdir(output)).toEqual([selection.split("/")[0]]);
+    },
+  );
+
+  it.each(["assets", "assets/item", "both"])(
+    "keeps independent prefix-sharing TOC entries selectable: %s",
+    async (selection) => {
+      const contents = new Map([
+        ["assets", "parent name bytes"],
+        ["assets/item", "child name bytes"],
+      ]);
+      const data = await pyInstallerFixture(
+        [...contents].map(([name, bytes]) => ({
+          name,
+          typeCode: "x",
+          payload: Buffer.from(bytes),
+          compress: false,
+        })),
+      );
+      const entries = data.inventory.occurrences.filter(
+        ({ entry_kind, logical_path }) =>
+          entry_kind === "file" && logical_path !== ".",
+      );
+      expect(entries.map(({ logical_path }) => logical_path)).toEqual([
+        "assets",
+        "assets/item",
+      ]);
+      expect(entries[0]?.parent_occurrence_id).toBe(
+        entries[1]?.parent_occurrence_id,
+      );
+      const selected = entries.filter(
+        ({ logical_path }) =>
+          selection === "both" || logical_path === selection,
+      );
+      const output = join(data.root, "output");
+      const result = await extract(
+        data.target,
+        output,
+        selected.map(({ occurrence_id }) => occurrence_id),
+      );
+      if (selection === "both") {
+        expect(result).toMatchObject({ ok: false, error: { reason: "path" } });
+        await expect(lstat(output)).rejects.toMatchObject({ code: "ENOENT" });
+        return;
+      }
+      if (!result.ok) throw result.error;
+      const value = artifactExtractionResultSchema.parse(result.value.result);
+      expect(value.artifacts.map(({ relative_path }) => relative_path)).toEqual(
+        [selection],
+      );
+      expect(value.extraction_manifest.selected_occurrence_ids).toEqual([
+        selected[0]?.occurrence_id,
+      ]);
+      expect(await readFile(join(output, selection), "utf8")).toBe(
+        contents.get(selection),
+      );
+      expect(await readdir(output)).toEqual(["assets"]);
+    },
+  );
+});
 
 describe("duplicate artifact occurrence selection", () => {
   it.each(["first", "second", "excluded", "both"] as const)(
@@ -234,37 +389,51 @@ describe("selected artifact extraction", () => {
   });
 
   it("does not promote nested inventory records when their containing file is excluded", async () => {
-    const data = await fixture();
-    const container = {
-      ...data.selected,
-      occurrence_id: `occ_${"a".repeat(64)}`,
-      logical_path: "inner.zip",
-    };
-    const nested = {
-      ...data.selected,
-      occurrence_id: `occ_${"b".repeat(64)}`,
-      parent_occurrence_id: container.occurrence_id,
-      logical_path: "inner.zip/nested.txt",
-    };
-    const occurrences = [...data.inventory.occurrences, container, nested];
-    expect(() =>
-      selectArtifactExtractionOccurrences(occurrences, [nested.occurrence_id]),
-    ).toThrowError(
-      expect.objectContaining({
-        _tag: "AnalysisInputError",
-        issues: [
-          expect.objectContaining({
-            path: ["occurrence_ids"],
-            reason: "invalid_value",
-            message: expect.stringContaining(
-              "not a regular file or slice exposed by the active reader",
-            ),
-          }),
-        ],
-      }),
+    const root = await createTestTempDirectory("rea-nested-selection-");
+    const source = join(root, "source");
+    const contents = join(root, "contents");
+    await mkdir(source);
+    await mkdir(join(contents, "assets"), { recursive: true });
+    await writeFile(join(contents, "assets", "nested.txt"), "nested bytes");
+    await createPackage(contents, join(source, "inner.asar"));
+    const inventory = await scanArtifactInventory(source);
+    const container = inventory.occurrences.find(
+      ({ logical_path }) => logical_path === "inner.asar",
     );
+    const nested = inventory.occurrences.find(
+      ({ logical_path }) => logical_path === "inner.asar/assets/nested.txt",
+    );
+    if (container === undefined || nested === undefined)
+      throw new Error("Nested ASAR fixture inventory missing");
+    const output = join(root, "output");
+    await expect(
+      materializeArtifactInventory(
+        {
+          inputPath: source,
+          inputFormat: "asar",
+          outputRoot: output,
+          occurrenceIds: [nested.occurrence_id],
+          environment: process.env,
+          integrityPolicy: "fail",
+        },
+        source,
+        inventory,
+      ),
+    ).rejects.toMatchObject({
+      _tag: "AnalysisInputError",
+      issues: [
+        expect.objectContaining({
+          path: ["occurrence_ids"],
+          reason: "invalid_value",
+          message: expect.stringContaining(
+            "not a regular file or slice exposed by the active reader",
+          ),
+        }),
+      ],
+    });
+    await expect(lstat(output)).rejects.toMatchObject({ code: "ENOENT" });
     expect(
-      selectArtifactExtractionOccurrences(occurrences, [
+      selectArtifactExtractionOccurrences(inventory.occurrences, [
         container.occurrence_id,
       ]).selected,
     ).toEqual([container]);
@@ -272,6 +441,46 @@ describe("selected artifact extraction", () => {
 });
 
 describe("selected extraction ownership and rollback", () => {
+  it.each(["missing", "added", "unsafe-directory"] as const)(
+    "validates excluded entries during materialization: %s",
+    async (change) => {
+      const data = await fixture();
+      const output = join(data.root, "changed-inventory");
+      const entries = ZipArtifactReader.prototype.entries;
+      let traversals = 0;
+      vi.spyOn(ZipArtifactReader.prototype, "entries").mockImplementation(
+        async function* (
+          this: ZipArtifactReader,
+          signal,
+        ): AsyncIterable<ArtifactEntry> {
+          const materializing = ++traversals === 2;
+          for await (const entry of entries.call(this, signal)) {
+            if (!materializing || entry.path !== "res/2f.xml") {
+              yield entry;
+              continue;
+            }
+            if (change === "missing") continue;
+            yield entry;
+            yield {
+              ...entry,
+              path: change === "added" ? "new.txt" : "../unsafe",
+              kind: change === "added" ? "file" : "directory",
+            };
+          }
+        },
+      );
+      const result = await extract(data.target, output, [
+        data.selected.occurrence_id,
+      ]);
+      expect(traversals).toBe(2);
+      expect(result).toMatchObject({
+        ok: false,
+        error: { reason: change === "unsafe-directory" ? "path" : "integrity" },
+      });
+      await expect(lstat(output)).rejects.toMatchObject({ code: "ENOENT" });
+    },
+  );
+
   it.skipIf(process.platform === "win32")(
     "reports the actual output selected through symlink/.. traversal",
     async () => {

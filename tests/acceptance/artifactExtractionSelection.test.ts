@@ -10,6 +10,7 @@ import { Client } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import { expect, it } from "vitest";
 
+import { artifactMcpCall } from "../../scripts/lib/artifact-e2e.mjs";
 import {
   artifactExtractionResultSchema,
   artifactInventoryResultSchema,
@@ -129,12 +130,12 @@ it("keeps CLI/MCP selection identity, invalid-input refusals and committed outpu
   const output = join(data.root, "mcp-output");
   try {
     await client.connect(transport);
-    const opened = await client.callTool({
+    const opened = await artifactMcpCall(client, {
       name: "open_binary",
       arguments: { path: data.path },
     });
     expect(opened.isError).not.toBe(true);
-    const reply = await client.callTool({
+    const reply = await artifactMcpCall(client, {
       name: "extract_artifact",
       arguments: { output_root: output, occurrence_ids: [id] },
     });
@@ -147,7 +148,7 @@ it("keeps CLI/MCP selection identity, invalid-input refusals and committed outpu
     expect(result.extraction_manifest).toEqual(cliResult.extraction_manifest);
     expect(result.artifacts).toEqual(cliResult.artifacts);
     const invalidOutput = join(data.root, "invalid-output");
-    const invalid = await client.callTool({
+    const invalid = await artifactMcpCall(client, {
       name: "extract_artifact",
       arguments: {
         output_root: invalidOutput,
@@ -158,7 +159,7 @@ it("keeps CLI/MCP selection identity, invalid-input refusals and committed outpu
     await expect(lstat(invalidOutput)).rejects.toMatchObject({
       code: "ENOENT",
     });
-    const closed = await client.callTool({
+    const closed = await artifactMcpCall(client, {
       name: "close_binary",
       arguments: {},
     });

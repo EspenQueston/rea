@@ -16,26 +16,24 @@ export const selectArtifactExtractionOccurrences = (
   occurrences: readonly ArtifactOccurrence[],
   requestedIds?: readonly string[],
 ): ArtifactExtractionSelection => {
-  const regular = occurrences.filter(
-    (occurrence) =>
-      (occurrence.entry_kind === "file" || occurrence.entry_kind === "slice") &&
-      occurrence.logical_path !== ".",
+  const byId = new Map(
+    occurrences.map((occurrence) => [occurrence.occurrence_id, occurrence]),
   );
-  const regularPaths = new Set(regular.map(({ logical_path }) => logical_path));
-  const directoryPaths = new Set(
-    occurrences
-      .filter(({ entry_kind }) => entry_kind === "directory")
-      .map(({ logical_path }) => logical_path),
-  );
-  const available = regular.filter(({ logical_path }) => {
-    let path = logical_path;
-    for (
-      let slash = path.lastIndexOf("/");
-      slash >= 0;
-      slash = path.lastIndexOf("/")
-    ) {
-      path = path.slice(0, slash);
-      if (regularPaths.has(path) && !directoryPaths.has(path)) return false;
+  const available = occurrences.filter((occurrence) => {
+    if (
+      (occurrence.entry_kind !== "file" && occurrence.entry_kind !== "slice") ||
+      occurrence.logical_path === "."
+    )
+      return false;
+    // Directories preserve reader ownership; a regular container ancestor
+    // crosses into a nested reader. A shared name prefix alone proves neither.
+    let parentId = occurrence.parent_occurrence_id;
+    while (parentId !== null) {
+      const parent = byId.get(parentId);
+      if (parent === undefined) return false;
+      if (parent.logical_path === ".") break;
+      if (parent.entry_kind !== "directory") return false;
+      parentId = parent.parent_occurrence_id;
     }
     return true;
   });
@@ -49,9 +47,6 @@ export const selectArtifactExtractionOccurrences = (
     throw invalidSelection("Occurrence IDs must be unique.");
   const activeIds = new Set(
     available.map(({ occurrence_id }) => occurrence_id),
-  );
-  const byId = new Map(
-    occurrences.map((occurrence) => [occurrence.occurrence_id, occurrence]),
   );
   for (const id of requested) {
     const occurrence = byId.get(id);
