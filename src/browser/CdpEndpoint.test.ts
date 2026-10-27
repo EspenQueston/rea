@@ -7,7 +7,9 @@ import { WEB_RUNTIME_LIMITS } from "../domain/webRuntime.js";
 
 import { afterEach, describe, expect, it } from "vitest";
 
+import type { CdpConnection } from "./CdpConnection.js";
 import {
+  discoverCdpBrowserSocket,
   discoverCdpEndpoint,
   readCdpJson,
   withCdpDiscoveryDeadline,
@@ -321,6 +323,99 @@ it("names the HTTP discovery document budget when that response deadline expires
   expect(failure.userMessage).not.toContain(
     `${String(WEB_RUNTIME_LIMITS.protocolBytes)}-byte browser-socket message budget`,
   );
+});
+
+const socketDiscoveryConnection = (targetReply: unknown): CdpConnection =>
+  ({
+    async send(method: string): Promise<unknown> {
+      if (method === "Browser.getVersion")
+        return {
+          protocolVersion: "1.3",
+          product: "fixture",
+          revision: "fixture",
+          userAgent: "fixture",
+          jsVersion: "fixture",
+        };
+      if (method === "Target.getTargets") return targetReply;
+      throw new Error(method);
+    },
+  }) as unknown as CdpConnection;
+
+it("keeps sibling browser-socket targets when attached metadata is malformed", async () => {
+  const connection = socketDiscoveryConnection({
+    targetInfos: [
+      {
+        targetId: "bad",
+        type: "page",
+        title: 3,
+        url: "https://example.test/bad",
+        attached: "unknown",
+      },
+      { targetId: 1, type: "page", url: "https://example.test/dropped" },
+      { id: "alias", type: "page", url: "https://example.test/alias" },
+      {
+        targetId: "good",
+        type: "page",
+        title: "Good",
+        url: "https://example.test/good",
+        attached: false,
+      },
+    ],
+  });
+  const discovery = await discoverCdpBrowserSocket(
+    connection,
+    "ws://127.0.0.1:9222/devtools/browser/fixture",
+    "list_browser_targets",
+  );
+  expect(
+    discovery.targets.map(({ id, attached, title }) => [id, attached, title]),
+  ).toEqual([
+    ["bad", null, ""],
+    ["good", false, "Good"],
+  ]);
+  expect(discovery.limitations?.join("\n")).toContain(
+    'CDP Target.getTargets row 0 target bad reported malformed attached metadata "unknown"',
+  );
+  expect(discovery.limitations?.join("\n")).toContain(
+    "CDP Target.getTargets row 0 target bad reported malformed title metadata 3",
+  );
+  expect(discovery.limitations?.join("\n")).toContain(
+    "CDP Target.getTargets row 1 was excluded because its target identity is malformed",
+  );
+  expect(discovery.limitations?.join("\n")).toContain(
+    "CDP Target.getTargets row 2 was excluded because its target identity is malformed",
+  );
+});
+
+it.each([
+  { label: "absent document", reply: undefined },
+  { label: "null document", reply: null },
+  { label: "array document", reply: [] },
+  { label: "missing target list", reply: {} },
+  { label: "null target list", reply: { targetInfos: null } },
+  { label: "string target list", reply: { targetInfos: "invalid" } },
+  { label: "object target list", reply: { targetInfos: {} } },
+])("rejects an $label during browser-socket discovery", async ({ reply }) => {
+  await expect(
+    discoverCdpBrowserSocket(
+      socketDiscoveryConnection(reply),
+      "ws://127.0.0.1:9222/devtools/browser/fixture",
+      "list_browser_targets",
+    ),
+  ).rejects.toMatchObject({
+    reason: "invalid_endpoint_response",
+    detail: expect.stringContaining("CDP Target.getTargets"),
+  });
+});
+
+it("retains an explicitly empty browser-socket target inventory", async () => {
+  await expect(
+    discoverCdpBrowserSocket(
+      socketDiscoveryConnection({ targetInfos: [] }),
+      "ws://127.0.0.1:9222/devtools/browser/fixture",
+      "list_browser_targets",
+    ),
+  ).resolves.toMatchObject({ targets: [], limitations: [] });
 });
 
 it("preserves an independent typed cancellation when the discovery deadline also expires", async () => {
