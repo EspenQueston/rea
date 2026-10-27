@@ -242,6 +242,7 @@ class Differ {
     at: {
       readonly key?: string;
       readonly own?: boolean;
+      readonly idList?: boolean;
       readonly clockKey?: string | undefined;
     } = {},
     generation?: Generation,
@@ -276,6 +277,7 @@ class Differ {
       (typeof env === "string" || typeof env === "number")
     ) {
       const mapsAsId =
+        at.idList === true ||
         (field !== undefined && ID_FIELD.test(field)) ||
         this.#inCollection(pointer, at) ||
         (typeof live === "string" &&
@@ -347,7 +349,15 @@ class Differ {
           );
       return;
     }
-    const pairs = pairElements(live, env);
+    // An id list pairs its survivors by the environment identity they map to,
+    // so a survivor that shifted position pairs with its match instead of the
+    // item now at its index; other arrays pair by position.
+    const field = pointer.slice(pointer.lastIndexOf("/") + 1);
+    const idList =
+      live.length > 0 && live.every((item) => this.#isIdListItem(item, field));
+    const pairs = idList
+      ? this.#idListPairs(this.#translateIdList(live, field), env)
+      : pairElements(live, env);
     if (live.length !== env.length || pairs.length !== live.length)
       this.add({
         category: "length",
@@ -361,18 +371,64 @@ class Differ {
     )
       this.add({ category: "order", pointer });
     for (const [left, right] of pairs)
+      // scalar maps the original live id and reports its original value on a
+      // genuine change, while a renamed survivor matches and is normalised.
       this.value(
         live[left]!,
         env[right]!,
         `${pointer}/${String(left)}`,
         {
           own,
+          idList: this.#isIdListItem(live[left]!, field),
           clockKey,
         },
         generation === undefined
           ? undefined
           : { ...generation, pointer: `${generation.pointer}/*` },
       );
+  }
+
+  /** Whether an element of the named field compares as an id, as sameItems translates one: a learned string reference, or any scalar of an id-list field. */
+  #isIdListItem(item: JsonValue, field: string): boolean {
+    return (
+      (typeof item === "string" && this.map.isStateReference(item, field)) ||
+      ((typeof item === "number" || typeof item === "string") &&
+        ID_LIST_FIELD.test(field))
+    );
+  }
+
+  /** Each scalar id-list element replaced by the environment identity it maps to; other items stay literal. One owner for sameItems and array. */
+  #translateIdList(items: JsonValue[], field: string): JsonValue[] {
+    return items.map((item) =>
+      this.#isIdListItem(item, field) ? translateValue(item, this.map) : item,
+    );
+  }
+
+  /** Pair translated id-list survivors to their environment match, then any remaining live and environment items by position, as [live index, environment index] in live order. */
+  #idListPairs(
+    translated: JsonValue[],
+    env: JsonValue[],
+  ): Array<readonly [number, number]> {
+    const available = new Map<string, number[]>();
+    env.forEach((item, index) => {
+      const key = JSON.stringify(item);
+      const indices = available.get(key);
+      if (indices === undefined) available.set(key, [index]);
+      else indices.push(index);
+    });
+    const pairs: Array<readonly [number, number]> = [];
+    const unpairedLive: number[] = [];
+    translated.forEach((item, index) => {
+      const indices = available.get(JSON.stringify(item));
+      if (indices !== undefined && indices.length > 0)
+        pairs.push([index, indices.shift()!]);
+      else unpairedLive.push(index);
+    });
+    const unpairedEnv = [...available.values()].flat().sort((a, b) => a - b);
+    const positional = Math.min(unpairedLive.length, unpairedEnv.length);
+    for (let index = 0; index < positional; index += 1)
+      pairs.push([unpairedLive[index]!, unpairedEnv[index]!]);
+    return pairs.sort(([a], [b]) => a - b);
   }
 
   /** Arrays of scalars holding the same items in another order differ only in order, as sets an application returns unordered do. */
@@ -383,15 +439,7 @@ class Differ {
       return false;
     // Only identifier lists or known string identifiers are translated; numeric measurements stay literal.
     const field = pointer.slice(pointer.lastIndexOf("/") + 1);
-    const mapped = live.map((item) => {
-      if (
-        (typeof item === "string" && this.map.isStateReference(item, field)) ||
-        ((typeof item === "number" || typeof item === "string") &&
-          ID_LIST_FIELD.test(field))
-      )
-        return translateValue(item, this.map);
-      return item;
-    });
+    const mapped = this.#translateIdList(live, field);
     const key = (items: JsonValue[]): string =>
       JSON.stringify(items.map((item) => JSON.stringify(item)).sort());
     if (key(mapped) !== key(env)) return false;
@@ -511,6 +559,7 @@ class Differ {
       readonly key?: string;
       readonly own?: boolean;
       readonly keyed?: boolean;
+      readonly idList?: boolean;
       readonly clockKey?: string | undefined;
     } = {},
     generation?: Generation,
