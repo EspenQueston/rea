@@ -15,6 +15,7 @@ import type { Page, Request, Route } from "playwright-core";
 import {
   HEADER_FIELD_VALUE,
   SAVED_PLACEHOLDER,
+  validBasicCredentialUsername,
   type BrowserScenarioAction,
   type BrowserScenarioCredentialPart,
   type BrowserScenarioRequestHeader,
@@ -150,7 +151,7 @@ const headerValue = async (
   if (value.source === "basic_credentials") {
     const [username, password] = value.parts;
     const user = await credentialPart(step, username!, `${label}.username`);
-    if (user.includes(":"))
+    if (!validBasicCredentialUsername(user))
       throw new ScenarioRequestError(
         `Request step ${stepId} has a Basic username with a colon, which the server would read as the end of the username.`,
       );
@@ -422,32 +423,46 @@ export const performScenarioRequest = async (input: {
   };
   await page.route(matches, gate);
   if (protectResponse !== undefined) page.on("request", watch);
+  let primaryFailure: { readonly cause: unknown } | undefined;
   let response: PageResponse;
   try {
     response = await sendFromPage(page, request);
+    if ("error" in response)
+      throw new ScenarioRequestError(
+        `Request step ${action.step_id} failed in the page: ${response.error}`,
+      );
+    if ("left" in response)
+      throw new ScenarioRequestError(
+        `Request step ${action.step_id} runs from a page on the start origin ${startOrigin}; the page moved before the request was sent.`,
+      );
+    if ("redirected" in response)
+      throw new ScenarioRequestError(
+        `Request step ${action.step_id} was answered with a redirect, which request steps do not follow; a write may already have been applied. The capture records the redirect and, with header values selected, its Location.`,
+      );
+    if (
+      action.expected_status !== undefined &&
+      !action.expected_status.includes(response.status)
+    )
+      throw new ScenarioRequestError(
+        `Request step ${action.step_id} answered ${String(response.status)}; expected ${action.expected_status.join(" or ")}.`,
+      );
+  } catch (cause: unknown) {
+    primaryFailure = { cause };
+    throw cause;
   } finally {
     if (protectResponse !== undefined) page.off("request", watch);
-    await page.unroute(matches, gate);
+    try {
+      await page.unroute(matches, gate);
+    } catch (cause: unknown) {
+      if (primaryFailure !== undefined)
+        throw new AggregateError(
+          [primaryFailure.cause, cause],
+          `Scenario request failed: ${primaryFailure.cause instanceof Error ? primaryFailure.cause.message : String(primaryFailure.cause)}; route cleanup failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+          { cause: primaryFailure.cause },
+        );
+      throw cause;
+    }
   }
-  if ("error" in response)
-    throw new ScenarioRequestError(
-      `Request step ${action.step_id} failed in the page: ${response.error}`,
-    );
-  if ("left" in response)
-    throw new ScenarioRequestError(
-      `Request step ${action.step_id} runs from a page on the start origin ${startOrigin}; the page moved before the request was sent.`,
-    );
-  if ("redirected" in response)
-    throw new ScenarioRequestError(
-      `Request step ${action.step_id} was answered with a redirect, which request steps do not follow; a write may already have been applied. The capture records the redirect and, with header values selected, its Location.`,
-    );
-  if (
-    action.expected_status !== undefined &&
-    !action.expected_status.includes(response.status)
-  )
-    throw new ScenarioRequestError(
-      `Request step ${action.step_id} answered ${String(response.status)}; expected ${action.expected_status.join(" or ")}.`,
-    );
   if (action.save.length > 0) {
     saveValues(action.step_id, response.body, action.save, secrets);
     if (observedRequest !== undefined && !ambiguousRequest)
