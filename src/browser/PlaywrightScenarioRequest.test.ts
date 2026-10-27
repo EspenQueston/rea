@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { browserScenarioSchema } from "../domain/browserScenario.js";
 import type { BrowserScenarioAction } from "../domain/browserScenarioValues.js";
 import { BrowserScenarioSecrets } from "./BrowserScenarioSecrets.js";
+import { responsePointerValue } from "./BrowserScenarioResponseValues.js";
 import { performPlaywrightScenarioAction } from "./PlaywrightScenarioActions.js";
 
 const ORIGIN = "https://app.example.test";
@@ -382,6 +383,75 @@ describe("request dispatch boundary", () => {
     expect(sent).not.toHaveBeenCalled();
     expect(unroute).toHaveBeenCalledOnce();
   });
+});
+
+describe("request route cleanup", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("preserves the primary request failure when removing its route also fails", async () => {
+    const parsed = scenario([requestStep({})]);
+    const page = fakePage({});
+    const primary = new Error("page.evaluate: Target page has been closed");
+    const cleanup = new Error("page.unroute: Target page has been closed");
+    vi.spyOn(page, "evaluate").mockRejectedValue(primary);
+    const unroute = vi.spyOn(page, "unroute").mockRejectedValue(cleanup);
+    const failure = await perform(
+      page,
+      parsed.actions[0]!,
+      resolved(parsed),
+    ).catch((cause: unknown) => cause);
+    expect(failure).toBeInstanceOf(AggregateError);
+    expect((failure as AggregateError).cause).toBe(primary);
+    expect((failure as AggregateError).errors).toEqual([primary, cleanup]);
+    expect(unroute).toHaveBeenCalledOnce();
+  });
+
+  it("preserves an unsuccessful page response when removing its route fails", async () => {
+    stubFetch(503);
+    const parsed = scenario([requestStep({ expected_status: [200] })]);
+    const page = fakePage({});
+    const cleanup = new Error("route cleanup failed");
+    vi.spyOn(page, "unroute").mockRejectedValue(cleanup);
+    const failure = await perform(
+      page,
+      parsed.actions[0]!,
+      resolved(parsed),
+    ).catch((cause: unknown) => cause);
+    expect(failure).toBeInstanceOf(AggregateError);
+    expect((failure as AggregateError).errors[0].message).toContain(
+      "answered 503",
+    );
+    expect((failure as AggregateError).errors[1]).toBe(cleanup);
+    expect((failure as AggregateError).cause).toBe(
+      (failure as AggregateError).errors[0],
+    );
+  });
+
+  it("publishes no saved values if route cleanup fails after a successful response", async () => {
+    stubFetch(200, [JSON.stringify({ id: "created" })]);
+    const parsed = scenario([
+      requestStep({ save: [{ name: "id", json_pointer: "/id" }] }),
+    ]);
+    const page = fakePage({});
+    const secrets = resolved(parsed);
+    const save = vi.spyOn(secrets, "save");
+    const ready = vi.spyOn(secrets, "markResponseSecretsReady");
+    const cleanup = new Error("route cleanup failed");
+    vi.spyOn(page, "unroute").mockRejectedValue(cleanup);
+    await expect(perform(page, parsed.actions[0]!, secrets)).rejects.toBe(
+      cleanup,
+    );
+    expect(save).not.toHaveBeenCalled();
+    expect(ready).not.toHaveBeenCalled();
+  });
+});
+
+describe("request page boundaries", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
 
   it("refuses foreign-origin storage before reading its value", async () => {
     const calls = stubFetch(200);
@@ -512,6 +582,54 @@ describe("request step confinement", () => {
       ]);
       await perform(fakePage({}), edge.actions[0]!, resolved(edge));
       expect(calls.at(-1)!.url, path).toBe(`${ORIGIN}${sent}`);
+    }
+  });
+});
+
+describe("request page value admission", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("preserves exact local storage pointer values and refuses lossy numbers before dispatch", async () => {
+    const calls = stubFetch(200);
+    const parsed = scenario([
+      requestStep({
+        headers: [
+          {
+            name: "X-Account",
+            value: {
+              source: "local_storage",
+              key: "auth",
+              json_pointer: "/id",
+            },
+          },
+        ],
+      }),
+    ]);
+    for (const literal of ["9007199254740993", "1e400", "-0"]) {
+      await expect(
+        perform(
+          fakePage({ storage: { auth: `{"id":${literal}}` } }),
+          parsed.actions[0]!,
+          resolved(parsed),
+        ),
+      ).rejects.toThrow("cannot be read exactly");
+    }
+    expect(calls).toEqual([]);
+    for (const [literal, expected] of [
+      ["9007199254740991", "9007199254740991"],
+      ['"9007199254740993"', "9007199254740993"],
+      ["42", "42"],
+    ]) {
+      await perform(
+        fakePage({
+          storage: { auth: `{"id":${literal},"unselected":9007199254740993}` },
+        }),
+        parsed.actions[0]!,
+        resolved(parsed),
+      );
+      expect(calls.at(-1)!.init.headers).toEqual([["X-Account", expected]]);
     }
   });
 
@@ -960,6 +1078,52 @@ describe("saved value credentials and limits", () => {
     const redacted = secrets.redact(`${encoded} operator-7 cookie-key-5d1c`);
     for (const value of [encoded, "operator-7", "cookie-key-5d1c"])
       expect(redacted).not.toContain(value);
+  });
+});
+
+describe("saved response JSON pointers", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("does not coerce a terminal newline in an array index", () => {
+    expect(responsePointerValue({ items: ["record-7"] }, "/items/0\n")).toBe(
+      undefined,
+    );
+  });
+
+  it.each(["length", "01", "-"])(
+    "refuses the non-index array token %s",
+    async (token) => {
+      stubFetch(201, ['{"items":["record-7","record-8"]}']);
+      const parsed = scenario([
+        requestStep({
+          save: [{ name: "item", json_pointer: `/items/${token}` }],
+        }),
+      ]);
+      const secrets = resolved(parsed);
+      await expect(
+        perform(fakePage({}), parsed.actions[0]!, secrets),
+      ).rejects.toThrow("has no string or number");
+      expect(() => secrets.savedValue("item")).toThrow("No earlier step saved");
+    },
+  );
+
+  it.each([
+    ["/items/0", "record-7"],
+    ["/length", 12],
+    ["/01", "object-key"],
+    ["/a~1b/~0key", "escaped-key"],
+  ])("preserves JSON member identity at %s", async (pointer, expected) => {
+    stubFetch(201, [
+      '{"items":["record-7"],"length":12,"01":"object-key","a/b":{"~key":"escaped-key"}}',
+    ]);
+    const parsed = scenario([
+      requestStep({ save: [{ name: "item", json_pointer: pointer }] }),
+    ]);
+    const secrets = resolved(parsed);
+    await perform(fakePage({}), parsed.actions[0]!, secrets);
+    expect(secrets.savedValue("item")).toBe(expected);
   });
 });
 
