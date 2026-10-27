@@ -2,7 +2,7 @@
 name: reverse-engineer-anything
 description: Reverse engineer native, managed, Electron/JavaScript, packaged, firmware, and browser targets with REA, and build agent environments (AgentEnv bundles) of web applications from a live instance or a capture. Use shipped-artifact or requested runtime evidence to explain features, compare versions, decompile code, or guide a reconstruction. Skip REA for ordinary source-repository architecture analysis.
 metadata:
-  version: "49"
+  version: "50"
 ---
 
 # REA
@@ -344,6 +344,11 @@ leaves its database open. The modern headless profile creates and closes an
 owned private database without saving. Installation and registration reuse
 [mrexodia/ida-pro-mcp](https://github.com/mrexodia/ida-pro-mcp); see the
 [IDA provider guide](https://github.com/morluto/rea/blob/main/docs/ida-provider.md).
+For migration to the separate native IDA MCP plugin, follow the guide's
+[legacy attached migration](https://github.com/morluto/rea/blob/main/docs/ida-provider.md#migrate-a-legacy-attached-registration).
+Replace the upstream registration explicitly; modern mrexodia tools are not the
+native profile. Native attachment preserves the database but does not provide
+direct callers; check session availability and the guide's verification limits.
 Proceed directly to `analyze_function`, pseudocode, or function/string searches
 after opening; IDA does not supply `binary_overview`. Consult session availability
 when composing broader workflows. Modern direct callers and unsupported dossier
@@ -374,12 +379,16 @@ native target whose analysis tool operates on the active target. Do not call an
 unadvertised tool; inspect `binary_session` with `{}` and its
 `result.tool_availability` for availability reasons and remediation. Expand each
 group's `names` into entries, inheriting the inventory-level client requirements
-unless the group overrides them. In its closed effect and annotation vocabularies,
-listed flags are true and omitted known flags are false. The grouped name union
-is the complete tool inventory; use `tools/list` for canonical tool schemas.
-Provider candidate facts describe possible providers, while top-level session
-capabilities describe the current route and `analysis_provider_binding` names the
-selected provider. Do not treat those scopes as interchangeable.
+unless the group overrides them. The grouped name union is the complete tool
+inventory; use `tools/list` for canonical tool schemas. The default summary keeps
+each provider candidate's availability and target-support status, code and
+reason; `omitted_fields` lists what it leaves out. Request `{"detail": "complete"}`
+only when you need provider diagnostics, candidate capability sets, or tool
+surface, effect and annotation flags; in those closed flag vocabularies, listed
+flags are true and omitted known flags are false. Provider candidate facts
+describe possible providers, while top-level session capabilities describe the
+current route and `analysis_provider_binding` names the selected provider. Do
+not treat those scopes as interchangeable.
 
 For a Ghidra startup timeout on a large native target, follow
 [deadline recovery](references/native-and-artifacts.md#ghidra-startup-deadline-recovery)
