@@ -9,6 +9,7 @@ import {
   rm,
   access,
   readdir,
+  realpath,
   symlink,
 } from "node:fs/promises";
 import { createRequire } from "node:module";
@@ -23,7 +24,10 @@ import type {
 
 import { DEFAULT_CDP_COMMAND_TIMEOUT_MS } from "../domain/browserDeadline.js";
 import { browserScenarioSchema } from "../domain/browserScenario.js";
-import { absoluteCallerPath } from "../filesystem/callerPath.js";
+import {
+  absoluteCallerPath,
+  appendCallerPath,
+} from "../filesystem/callerPath.js";
 import {
   attachedScenarioLeaseKey,
   failBrowserScenarioOperation,
@@ -182,7 +186,7 @@ it("keeps Termux execution support when launching Chromium on Android", async ()
     LANG: "selected-language",
     LD_PRELOAD: `${prefix}/lib/libtermux-exec.so`,
     TERMUX_EXEC__PROC_SELF_EXE: process.execPath,
-    TMPDIR: join(prefix, "tmp"),
+    TMPDIR: appendCallerPath(prefix, "tmp"),
   });
 });
 
@@ -287,7 +291,7 @@ it.each([
     const paths = {
       explicit: join(root, "explicit-tmp"),
       other: join(root, "other-tmp"),
-      prefix: join(prefix, "tmp"),
+      prefix: appendCallerPath(prefix, "tmp", "android"),
     };
     const resolvePath = (
       token: "" | "explicit" | "other" | "prefix",
@@ -321,6 +325,39 @@ it.each([
         ]),
       ),
     });
+  },
+);
+
+it.skipIf(process.platform === "win32")(
+  "keeps the Termux prefix temp through a symlink parent",
+  async () => {
+    const root = await createTestTempDirectory("rea-termux-prefix-link-");
+    const physicalPrefix = join(root, "termux", "usr");
+    const decoyTemp = join(root, "work", "tmp");
+    await mkdir(join(physicalPrefix, "inner"), { recursive: true });
+    await mkdir(decoyTemp, { recursive: true });
+    await symlink(join(physicalPrefix, "inner"), join(root, "work", "link"));
+    const prefix = `${root}/work/link/..`;
+    const selectedTemp = appendCallerPath(prefix, "tmp", "android");
+    const { launchedProfile, launchOptions } = await captureAndroidLaunch({
+      PREFIX: prefix,
+      TMPDIR: "",
+      TMP: "",
+      TEMP: "",
+    });
+    expect(join(prefix, "tmp")).toBe(decoyTemp);
+    expect(selectedTemp).toBe(`${root}/work/link/../tmp`);
+    expect(launchedProfile?.startsWith(selectedTemp)).toBe(true);
+    expect(launchedProfile?.startsWith(decoyTemp)).toBe(false);
+    expect(launchOptions?.env?.TMPDIR).toBe(selectedTemp);
+    expect(await realpath(join(launchedProfile!, ".."))).toBe(
+      await realpath(join(physicalPrefix, "tmp")),
+    );
+    expect(
+      (await readdir(decoyTemp)).some((name) =>
+        name.startsWith("rea-browser-scenario-"),
+      ),
+    ).toBe(false);
   },
 );
 
@@ -372,9 +409,9 @@ it("does not let a stuck Android launch block later launches", async () => {
     releaseFirst.resolve(undefined);
   }
   await expect(first).rejects.toThrow("launch boundary reached");
-  expect(firstLookup).toBe(join(firstRoot, "tmp"));
-  expect(firstLookupAfterWait).toBe(join(firstRoot, "tmp"));
-  expect(secondLookup).toBe(join(secondRoot, "tmp"));
+  expect(firstLookup).toBe(appendCallerPath(firstRoot, "tmp"));
+  expect(firstLookupAfterWait).toBe(appendCallerPath(firstRoot, "tmp"));
+  expect(secondLookup).toBe(appendCallerPath(secondRoot, "tmp"));
   expect(process.env.TMPDIR).toBe("");
   expect(process.env.TMP).toBe("");
   expect(process.env.TEMP).toBe("");
@@ -414,7 +451,7 @@ it("publishes a writable Playwright browsers path before an Android launch", asy
     ),
   ).rejects.toThrow(/executable doesn't exist/);
   expect(process.env.PLAYWRIGHT_BROWSERS_PATH).toBe(
-    join(prefix, "tmp", "ms-playwright"),
+    appendCallerPath(appendCallerPath(prefix, "tmp"), "ms-playwright"),
   );
 });
 

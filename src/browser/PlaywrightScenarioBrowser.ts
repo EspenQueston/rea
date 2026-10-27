@@ -25,6 +25,7 @@ import type { BrowserScenario } from "../domain/browserScenario.js";
 import { AnalysisError } from "../domain/analysisErrorBase.js";
 import { isLiteralLoopbackHostname } from "../domain/browserObservation.js";
 import { BrowserObservationError } from "../domain/browserObservationError.js";
+import { appendCallerPath } from "../filesystem/callerPath.js";
 import {
   withPlaywrightExecutionBoundary,
   PLAYWRIGHT_CLEANUP_CONFIRMATION_TIMEOUT_MS,
@@ -363,7 +364,7 @@ const androidScenarioTempDirectory = (
     .find((value) => value !== undefined);
   if (explicit !== undefined) return explicit;
   const prefix = nonemptyEnvironmentValue(environment, "PREFIX");
-  return prefix === undefined ? undefined : join(prefix, "tmp");
+  return prefix === undefined ? undefined : appendCallerPath(prefix, "tmp");
 };
 
 /**
@@ -382,7 +383,7 @@ const publishAndroidPlaywrightBrowsersPath = async (
       undefined
   )
     return;
-  const browsersPath = join(directory, "ms-playwright");
+  const browsersPath = appendCallerPath(directory, "ms-playwright");
   await mkdir(browsersPath, { recursive: true });
   process.env.PLAYWRIGHT_BROWSERS_PATH = browsersPath;
 };
@@ -982,7 +983,7 @@ export const openPlaywrightScenarioBrowser = async (
   if (preferredTemp !== undefined)
     await mkdir(preferredTemp, { recursive: true });
   const profilePath = await mkdtemp(
-    join(preferredTemp ?? tmpdir(), "rea-browser-scenario-"),
+    appendCallerPath(preferredTemp ?? tmpdir(), "rea-browser-scenario-"),
   );
   let context: BrowserContext;
   const executablePath = await resolveAndroidChromiumExecutable(
