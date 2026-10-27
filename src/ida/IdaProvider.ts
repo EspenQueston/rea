@@ -50,10 +50,8 @@ import {
   ArtifactResourceScope,
   ArtifactResourceRetryFailure,
 } from "../artifacts/ArtifactResourceScope.js";
-import {
-  AnalysisCleanupLease,
-  AnalysisCleanupLeaseGroup,
-} from "../artifacts/AnalysisCleanupLease.js";
+import { AnalysisCleanupLease } from "../artifacts/AnalysisCleanupLease.js";
+import { AnalysisCleanupLeaseGroup } from "../artifacts/AnalysisCleanupLease.js";
 import { ProviderCleanupError } from "../domain/providerCleanupError.js";
 import type { ProviderInspectionScope } from "../providers/ProviderInspectionScope.js";
 
