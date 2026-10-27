@@ -1638,6 +1638,7 @@ describe("whitespace-only function symbols", () => {
           signature: "int helper(void)",
           locals: [],
         },
+        callees: [procedure(base === "0x1000" ? "0x1010" : "0x2010", name)],
       });
     const result = compareFunctions(
       functionSnapshotFixture(observe("f", blankNamed("0x1000"))),
@@ -1646,6 +1647,9 @@ describe("whitespace-only function symbols", () => {
     expect(result.function_match.status).toBe("ambiguous");
     expect(
       result.dimensions.find(({ dimension }) => dimension === "identity"),
+    ).toMatchObject({ status: "unknown" });
+    expect(
+      result.dimensions.find(({ dimension }) => dimension === "calls"),
     ).toMatchObject({ status: "unknown" });
   });
 });
