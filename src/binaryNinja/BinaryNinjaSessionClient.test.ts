@@ -750,3 +750,56 @@ describe("Binary Ninja page coverage", () => {
     },
   );
 });
+
+it.each(["list_procedures", "health"] as const)(
+  "reports cancellation arriving with the final successful reply: %s",
+  async (operation) => {
+    const { client, producer } = await fixture();
+    await value(client, "list_procedures");
+    const controller = new AbortController();
+    const reason = { caller: "cancel at finalization" };
+    const original = producer.call.bind(producer);
+    let readInventory = false;
+    producer.call = async (name, args) => {
+      const reply = await original(name, args);
+      if (name === "bn_function_list") readInventory = true;
+      if (
+        (operation === "list_procedures" &&
+          readInventory &&
+          name === "bn_binary_view_set_active" &&
+          args.binaryView === "view_1") ||
+        (operation === "health" && name === "bn_analysis_status")
+      )
+        controller.abort(reason);
+      return reply;
+    };
+    try {
+      const result = await client.execute(
+        operation,
+        {},
+        { signal: controller.signal },
+      );
+      expect(result).toMatchObject({
+        ok: false,
+        error: { _tag: "AnalysisCancelledError" },
+      });
+      if (!result.ok) {
+        expect(result.error.cause).toBe(reason);
+        if (operation === "list_procedures") {
+          expect(result.error.partialObservation).toMatchObject({
+            normalized_result: {
+              status: "partial",
+              target_binding: { status: "verified" },
+              observations: expect.arrayContaining([
+                expect.objectContaining({ tool: "bn_function_list" }),
+              ]),
+            },
+          });
+        }
+      }
+      expect(producer.active).toBe("view_1");
+    } finally {
+      expect((await client.close()).ok).toBe(true);
+    }
+  },
+);

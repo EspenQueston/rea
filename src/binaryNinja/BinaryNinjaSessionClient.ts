@@ -172,6 +172,10 @@ export class BinaryNinjaSessionClient implements AnalysisClient {
       await this.#start(operation, options);
       const before = await this.#select(options);
       context.before = before;
+      if (wasCancelled(options))
+        throw new AnalysisCancelledError(operation, {
+          cause: options?.signal?.reason,
+        });
       if (operation === "health") return ok(this.#health(before));
       if (!isBinaryNinjaOperation(operation))
         throw new AnalysisProtocolError(
@@ -182,6 +186,10 @@ export class BinaryNinjaSessionClient implements AnalysisClient {
       const result = await runner.run(operation, parameters);
       const after = await this.#verifyStillSelected(options);
       context.after = after;
+      if (wasCancelled(options))
+        throw new AnalysisCancelledError(operation, {
+          cause: options?.signal?.reason,
+        });
       return ok(
         createAnalysisExecution(result, BINARY_NINJA_PROVIDER_IDENTITY, {
           rawResult: {
