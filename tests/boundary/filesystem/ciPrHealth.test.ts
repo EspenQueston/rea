@@ -409,13 +409,7 @@ it("public CLI uses only GET and produces a report from fixture GitHub responses
   await writeFile(
     ghResponse,
     JSON.stringify([
-      // The CLI scans from Date.now(); a fixed date would leave its window.
-      [
-        rawPull(51, {
-          mergeable: true,
-          created_at: new Date(Date.now() - 24 * 60 * 60 * 1_000).toISOString(),
-        }),
-      ],
+      [rawPull(51, { mergeable: true })],
       { total_count: 0, workflow_runs: [] },
     ]),
   );
@@ -434,6 +428,7 @@ it("public CLI uses only GET and produces a report from fixture GitHub responses
       CI_REPOSITORY_ID: "11",
       CI_DEFAULT_BRANCH: "main",
       CI_PR_HEALTH_DIRECTORY: outputDirectory,
+      CI_PR_HEALTH_NOW: new Date(observedAt).toISOString(),
       CI_GH_CALLS: ghCalls,
       CI_GH_RESPONSE: ghResponse,
     },

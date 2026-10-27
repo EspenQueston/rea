@@ -1,5 +1,4 @@
 import { chmod, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
-import { existsSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { expect } from "vitest";
@@ -10,13 +9,6 @@ import {
   observeOwnedProcessGroups,
   systemProcessOwnershipHost,
 } from "../../../src/process/ProcessOwnershipObservation.js";
-
-/** Directory of the host's `ps`, which Linux process ownership requires. */
-const processToolsDirectory = (): string => {
-  for (const directory of (process.env.PATH ?? "").split(delimiter))
-    if (directory !== "" && existsSync(join(directory, "ps"))) return directory;
-  throw new Error("ps is not on PATH");
-};
 
 cliTest.skipIf(!["darwin", "linux"].includes(process.platform)).for([
   ["missing", "missing_dependency", "runtime_missing"],
@@ -256,14 +248,18 @@ cliTest.skipIf(!["darwin", "linux"].includes(process.platform))(
     for (const name of ["ghidraRun", "support/analyzeHeadless"])
       await writeFile(join(install, name), launcher, { mode: 0o700 });
     await symlink(join(install, "ghidraRun"), join(root, "ghidra"));
+    const restrictedPath = join(root, "restricted-bin");
+    await mkdir(restrictedPath);
+    // Linux process ownership requires procps; nothing else is exposed, and
+    // the empty leading component still selects the current directory first.
+    if (process.platform === "linux")
+      await symlink("/bin/ps", join(restrictedPath, "ps"));
 
     const result = await cli.run({
       arguments: ["doctor", "--provider", "ghidra", "--json"],
       cwd: root,
       environment: {
-        // The empty leading component selects the current directory first;
-        // the Linux owned-process host still needs ps on PATH.
-        PATH: `${delimiter}${processToolsDirectory()}`,
+        PATH: `${delimiter}${restrictedPath}`,
         JAVA_HOME: join(root, "missing-jdk"),
         REA_LOG_LEVEL: "silent",
       },

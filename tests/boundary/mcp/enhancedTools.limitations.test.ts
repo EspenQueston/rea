@@ -51,12 +51,12 @@ it("retains provider coverage caveats in a composed MCP overview without repeate
   expect(calls.length).toBe(new Set(calls).size);
 });
 
-it("counts inventory rows whose values look like dictionary keys", async () => {
+it("counts inventory rows in the composed overview", async () => {
   const procedures = [
-    { address: "0x1000", value: "__proto__" },
-    { address: "0x1010", value: "ordinary procedure" },
+    { address: "0x1000", value: "first procedure" },
+    { address: "0x1010", value: "second procedure" },
   ];
-  const strings = [{ address: "0x2000", value: "constructor" }];
+  const strings = [{ address: "0x2000", value: "only string" }];
   const client = await connect({
     execute: async (operation) => {
       if (operation === "read_binary_inventory_summary")

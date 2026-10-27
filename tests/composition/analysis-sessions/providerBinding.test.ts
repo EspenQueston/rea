@@ -1,10 +1,10 @@
-import { createHash } from "node:crypto";
-import { writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 
+import { thinMach } from "../../../src/domain/binaryTarget.fixture.js";
 import { createTestTempDirectory } from "../../fixtures/temporaryDirectory.js";
 
 import {
@@ -128,28 +128,6 @@ describe("target-bound provider routing", () => {
     expect(beta.clients[0]?.closed).toBe(true);
   });
 
-  it("preserves bundle-root identity for artifact inventory operations", async () => {
-    const target = await databaseTarget();
-    const analysis = deepProvider("alpha");
-    const artifact = auxiliaryProvider("artifact", "inventory_artifact");
-    const session = selectableSession([analysis.provider], artifact);
-
-    expect((await session.open(target, { providerId: "alpha" })).ok).toBe(true);
-    const result = await session.execute("inventory_artifact", {});
-    if (!result.ok) throw result.error;
-
-    expect(result).toMatchObject({
-      ok: true,
-      value: {
-        subject: {
-          path: target,
-          sha256: createHash("sha256").update("fixture").digest("hex"),
-          format: "directory",
-        },
-      },
-    });
-  });
-
   it("preserves the active client when a provider switch is cancelled while draining", async () => {
     const target = await databaseTarget();
     const alpha = deepProvider("alpha");
@@ -192,25 +170,56 @@ describe("target-bound provider routing", () => {
   });
 });
 
-it("refuses an inventory subject whose digest differs from the admitted file", async () => {
-  const target = await databaseTarget();
-  const analysis = deepProvider("alpha");
-  const artifact = auxiliaryProvider(
-    "artifact",
-    "inventory_artifact",
-    "f".repeat(64),
-  );
-  const session = selectableSession([analysis.provider], artifact);
+describe("artifact inventory subjects", () => {
+  it("preserves bundle-root identity for artifact inventory operations", async () => {
+    const target = await bundleTarget();
+    const analysis = deepProvider("alpha");
+    const artifact = auxiliaryProvider(
+      "artifact",
+      "inventory_artifact",
+      "f".repeat(64),
+    );
+    const session = selectableSession([analysis.provider], artifact);
 
-  expect((await session.open(target, { providerId: "alpha" })).ok).toBe(true);
-  const result = await session.execute("inventory_artifact", {});
-  expect(result.ok).toBe(false);
-  if (result.ok) throw new Error("expected the forged subject to be refused");
-  expect(result.error).toMatchObject({
-    _tag: "ProviderAdapterError",
-    operation: "inventory_artifact:subject",
+    expect((await session.open(target, { providerId: "alpha" })).ok).toBe(true);
+    const result = await session.execute("inventory_artifact", {});
+    if (!result.ok) throw result.error;
+
+    // A bundle inventory describes the bundle root, whose digest is not the
+    // admitted executable's; the bundle facts make that subject acceptable.
+    expect(result).toMatchObject({
+      ok: true,
+      value: {
+        subject: {
+          path: target,
+          sha256: "f".repeat(64),
+          format: "directory",
+        },
+      },
+    });
+    await session.close();
   });
-  await session.close();
+
+  it("refuses an inventory subject whose digest differs from the admitted file", async () => {
+    const target = await databaseTarget();
+    const analysis = deepProvider("alpha");
+    const artifact = auxiliaryProvider(
+      "artifact",
+      "inventory_artifact",
+      "f".repeat(64),
+    );
+    const session = selectableSession([analysis.provider], artifact);
+
+    expect((await session.open(target, { providerId: "alpha" })).ok).toBe(true);
+    const result = await session.execute("inventory_artifact", {});
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected the forged subject to be refused");
+    expect(result.error).toMatchObject({
+      _tag: "ProviderAdapterError",
+      operation: "inventory_artifact:subject",
+    });
+    await session.close();
+  });
 });
 
 describe("selected provider capability provenance", () => {
@@ -406,6 +415,18 @@ const capability = (
   },
   limitations: [],
 });
+
+const bundleTarget = async (): Promise<string> => {
+  const directory = await createTestTempDirectory("rea-provider-binding-");
+  const bundle = join(directory, "Fixture.app");
+  await mkdir(bundle);
+  await writeFile(
+    join(bundle, "Info.plist"),
+    "<plist><dict><key>CFBundleExecutable</key><string>main</string></dict></plist>",
+  );
+  await writeFile(join(bundle, "main"), thinMach(0xfeedfacf, 0x0100000c));
+  return bundle;
+};
 
 const databaseTarget = async (): Promise<string> => {
   const directory = await createTestTempDirectory("rea-provider-binding-");

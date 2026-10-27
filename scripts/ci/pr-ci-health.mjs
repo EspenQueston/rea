@@ -695,6 +695,11 @@ if (
       repository: process.env.CI_REPOSITORY,
       repositoryId: process.env.CI_REPOSITORY_ID,
       defaultBranch: process.env.CI_DEFAULT_BRANCH,
+      // An explicit observation time keeps a report reproducible; validation
+      // rejects an unparseable value as a non-finite timestamp.
+      ...(process.env.CI_PR_HEALTH_NOW === undefined
+        ? {}
+        : { now: Date.parse(process.env.CI_PR_HEALTH_NOW) }),
     });
     const paths = await writePrCiHealthReport(
       report,
