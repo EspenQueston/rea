@@ -1,7 +1,11 @@
-import { boundedViewMessages } from "./analysisViewCoverage.js";
+import {
+  boundedViewMessages,
+  completeWithinViewCoverage,
+  pageViewCoverage,
+} from "./analysisViewCoverage.js";
 import { expect, it } from "vitest";
 
-import { functionDossierSchema } from "../hopperValues.js";
+import { functionDossierSchema } from "../native/functionDossier.js";
 import { ghidraFunctionDossier } from "../ghidraValues.fixture.js";
 import { JAVASCRIPT_APPLICATION_EVIDENCE_EXAMPLE } from "../../contracts/javascript/javascriptRuntimeReconciliationExample.js";
 import { ARTIFACT_COMPARISON_EXAMPLE } from "../../contracts/artifactComparisonExample.js";
@@ -21,10 +25,6 @@ import {
   createJavaScriptSemanticGraph,
   createImmutableJavaScriptSemanticGraphSteps,
 } from "../javascript/javascriptSemanticGraph.js";
-import {
-  completeWithinViewCoverage,
-  pageViewCoverage,
-} from "./analysisViewCoverage.js";
 import { sourceMapReference } from "../javascript/javascriptApplicationGraph.fixture.js";
 import { createArtifactInspection } from "../artifactInspection.js";
 import { javascriptModulePaths } from "./javascriptApplicationView.js";

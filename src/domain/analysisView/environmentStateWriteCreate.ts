@@ -1,6 +1,7 @@
 import { jsonTextCodeUnits } from "../jsonSerialization.js";
 import type { JsonValue } from "../jsonValue.js";
 import {
+  ownMember,
   collectionPathOf,
   isObject,
   isParam,
@@ -61,6 +62,8 @@ import {
 import {
   laterObservation,
   newEntityIn,
+  respelledInstant,
+  withRead,
   type Observed,
 } from "./environmentStateWriteObserve.js";
 import {
@@ -98,6 +101,57 @@ const respondedId = (
 };
 
 /**
+ * A create's answer with the first read of its entity before the next write over it, when that read shows fields the
+ * answer lacks or spells its clocks to another precision: the state holds what reads show. An item read that agrees
+ * with the answer otherwise lends it its fields and then observes rather than checks; one that disagrees still checks
+ * the create. A list read, which may show fewer keys of an object, only adds fields the answer lacks and still checks.
+ */
+const withReadBack = (
+  context: EffectContext,
+  step: WriteStep,
+  target: {
+    readonly type: string;
+    readonly collection: string;
+    readonly idField: string;
+  },
+  own: Observed,
+): Observed => {
+  const later = laterObservation(searchFrom(context, step), {
+    type: target.type,
+    collection: target.collection,
+    idField: target.idField,
+    id: own.id,
+    held: () => false,
+    isWrite: context.isWrite,
+  });
+  if (later === undefined) return own;
+  const view = context.viewOf(later.ordinal);
+  if (
+    view?.shape === "item" &&
+    (view.fields.some(
+      (field) =>
+        Object.hasOwn(own.object, field) && !Object.hasOwn(later.object, field),
+    ) ||
+      Object.entries(later.object).some(
+        ([field, value]) =>
+          Object.hasOwn(own.object, field) &&
+          !same(own.object[field], value) &&
+          !respelledInstant(own.object[field], value),
+      ))
+  )
+    return own;
+  const shape = view?.shape === "item" ? "item" : "list";
+  const object = withRead(own.object, later.object, shape);
+  if (same(object, own.object)) return own;
+  if (shape === "item") context.observed(later.ordinal);
+  return {
+    ...own,
+    object,
+    read: { ordinal: later.ordinal, pointer: later.pointer, shape },
+  };
+};
+
+/**
  * The written entity a create's response or a later read shows. A linked create's read must name an
  * id its response returned, as the read that linked it did, envelopes included.
  */
@@ -116,7 +170,7 @@ const createdObservation = (
   const own = context.io.withBody(step.record.ordinal, (body) =>
     newEntityIn(step.record.ordinal, body, target.idField, held),
   );
-  if (own !== undefined) return own;
+  if (own !== undefined) return withReadBack(context, step, target, own);
   const { id, ids } = context.io.withBody(step.record.ordinal, (body) => {
     const returned = target.linked ? respondedIds(body) : [];
     // A response that names the created id alone ties the later read to that id.
@@ -170,7 +224,7 @@ const strandedInteger = (
   rules.some((rule) => {
     const digits =
       rule.rule === "unique"
-        ? generatedIntegerDigits(entity[rule.field])
+        ? generatedIntegerDigits(ownMember(entity, rule.field))
         : undefined;
     return (
       digits !== undefined &&
@@ -293,7 +347,7 @@ const buildCreate = (
   // Identity and clock orders first, then any other scalar field the collection may be sorted by.
   const scalars = Object.keys(members[0] ?? {}).filter((field) =>
     members.every((member) =>
-      ["string", "number"].includes(typeof member[field]),
+      ["string", "number"].includes(typeof ownMember(member, field)),
     ),
   );
   const generated = explained.rules.some(
@@ -320,6 +374,9 @@ const buildCreate = (
     observation: {
       ordinal: evidence.observed.ordinal,
       pointer: evidence.observed.pointer,
+      ...(evidence.observed.read === undefined
+        ? {}
+        : { read: evidence.observed.read }),
     },
     response: context.io.withBody(step.record.ordinal, (body) =>
       responseShapeOf(
@@ -381,12 +438,16 @@ const followsSequences = (
         rule.scope === "type" || entity.collection === created.collection,
     );
     const next = nextSequence(
-      nextInteger(fieldsOf(scope), rule.field, draft.observed?.[rule.field]),
+      nextInteger(
+        fieldsOf(scope),
+        rule.field,
+        ownMember(draft.observed, rule.field),
+      ),
       draft.sequences.get(key),
     );
     return (
-      created.fields[rule.field] ===
-      spelledLike(draft.observed?.[rule.field] ?? "", next)
+      ownMember(created.fields, rule.field) ===
+      spelledLike(ownMember(draft.observed, rule.field) ?? "", next)
     );
   });
 
@@ -411,7 +472,7 @@ const contradictsDefault = (
       rule.rule === "echo" &&
       !Object.hasOwn(call.body, rule.field) &&
       Object.hasOwn(call.observed, rule.field) &&
-      !same(call.observed[rule.field], written[rule.field]),
+      !same(call.observed[rule.field], ownMember(written, rule.field)),
   );
 
 /** Whether a later create preserves generation shapes and its derived fields reproduce the captured observation. */
@@ -423,13 +484,14 @@ const followsCreateRules = (
   },
 ): boolean =>
   draft.plan.rules.every((rule) => {
-    const value = created.fields[rule.field];
-    const exemplar = draft.observed?.[rule.field];
+    const value = ownMember(created.fields, rule.field);
+    const exemplar = ownMember(draft.observed, rule.field);
     if (rule.rule === "composed" || rule.rule === "reference")
       return (
         !Object.hasOwn(created.observed, rule.field) ||
-        value === created.observed[rule.field] ||
-        (rule.rule === "reference" && same(value, created.observed[rule.field]))
+        value === ownMember(created.observed, rule.field) ||
+        (rule.rule === "reference" &&
+          same(value, ownMember(created.observed, rule.field)))
       );
     if (rule.rule === "clock")
       return (
@@ -448,7 +510,7 @@ const followsCreateRules = (
             : isOpaqueToken(value, exemplar)) &&
         !context.state
           .ofType(created.type)
-          .some((held) => held.fields[rule.field] === value)
+          .some((held) => ownMember(held.fields, rule.field) === value)
       );
     return (
       rule.rule !== "identity" || rule.generator !== "uuid" || isUuid(value)
@@ -461,7 +523,7 @@ const fitClocks = (draft: WriteDraft, fields: JsonObject): void => {
     if (rule.rule !== "clock") return rule;
     const format = fittedClockFormat(
       rule.format,
-      fields[rule.field],
+      ownMember(fields, rule.field),
       clockEvidence(draft, rule.field),
     );
     return format === undefined || format === rule.format
@@ -484,8 +546,8 @@ const takeSequences = (
 ): void => {
   for (const { rule, key } of sequencesOf(draft, created.collection)) {
     const value = sequenceNumber(
-      created.fields[rule.field],
-      draft.observed?.[rule.field],
+      ownMember(created.fields, rule.field),
+      ownMember(draft.observed, rule.field),
     );
     if (value !== undefined) draft.sequences.set(key, value);
   }
@@ -680,8 +742,8 @@ export const applyCreate = (
       (rule) =>
         recordedGeneratedValue(
           rule,
-          draft.observed![rule.field],
-          observed.object[rule.field] ?? null,
+          ownMember(draft.observed!, rule.field),
+          ownMember(observed.object, rule.field) ?? null,
         ),
       referencedIn(context),
     );
@@ -695,7 +757,9 @@ export const applyCreate = (
       envelope: request?.envelope,
     });
   const fields = fieldsOfCall();
-  const id = fields.ok ? scalarText(fields.value[idField]) : undefined;
+  const id = fields.ok
+    ? scalarText(ownMember(fields.value, idField))
+    : undefined;
   if (
     !fields.ok ||
     id === undefined ||

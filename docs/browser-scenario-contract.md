@@ -173,6 +173,12 @@ distinction: it closes and deletes provider-owned profiles, but only disconnects
 from an external CDP browser. Real-browser verification checks both outcomes and
 confirms that an attached external browser remains alive.
 
+CDP connections leave Playwright's default-context overrides disabled. The
+selected page receives the declared scenario environment and temporary focus
+emulation, so actions can complete while that page is in the background.
+Its environment owner clears these overrides before disconnecting; other pages
+keep their media settings. Connecting does not create a bootstrap page.
+
 That cleanup requires REA to remain running. Abrupt termination, including
 Windows process-tree termination or POSIX `SIGKILL`, can leave the launch
 profile and Playwright artifacts behind. A profile can retain cookies, history,
@@ -472,8 +478,9 @@ the browser's wall-clock start, and `elapsed_ms`, its time from that start to
 the end of the response, when the browser reports them. The environment views
 time scenario records from these, as HAR entries are timed: the browser's start
 where it reported one, else `observed_at`, which trails it by up to tens of
-milliseconds while REA reads other responses, and a duration of 0 where the
-browser reported none. Captures made before these fields existed lack them and
+milliseconds while REA reads other responses. A duration is retained only from a
+unique terminal event that reports it; missing or ambiguous durations stay
+omitted, while an explicitly reported zero remains zero. Captures made before these fields existed lack them and
 are read in record order. REA versions before them refuse captures that carry
 them. Scenario comparisons ignore all three (`ignore_network_request_timing`).
 Requests sharing a URL remain distinct. Redirects link to the preceding
@@ -621,3 +628,58 @@ rules and preserve the same missing fact.
 Network normalization also commits the removal of capture-local transaction IDs,
 attribution to the requesting step, and unordered transaction comparison. These
 built-in rule identities participate in the normalization digest.
+
+## Summary delivery and retained views
+
+`capture_browser_scenario` accepts `detail: "summary"` to retain the complete
+capture in the MCP session and return its summary. The default remains
+`complete`. Delivery detail does not change scenario parameters or identity.
+
+The summary reports each step's status, error, URL and captured/missing/truncated
+section names. It omits `not_requested` sections and repeated `before_url` values.
+The accessibility tree comes from the first unsuccessful step, or the final
+step on success; when that step captured no tree, its nearest earlier captured
+tree is identified explicitly. Event and network counts cover retained records,
+with capture omissions reported separately.
+
+For the one-shot CLI, save the complete Evidence before selecting a summary:
+
+```bash
+rea capture-browser-scenario scenario.json --detail summary --evidence_output /absolute/path/scenario-evidence.json --json
+```
+
+Use the returned `normalized_result.parent_evidence_id` with
+`inspect_analysis_view` source `{kind: "retained-evidence", evidence_id: "..."}`.
+For a CLI bundle, use an `evidence-file` source with its absolute path and the
+parent Evidence ID. Views read the recorded capture; they never replay actions.
+
+- `{kind: "summary"}` returns the same overview.
+- `{kind: "browser-scenario", collection: "steps", step_indices: [2], artifacts: ["accessibility"], offset: 0, limit: 1}` returns selected recorded steps and artifacts.
+- `{kind: "browser-scenario", collection: "events", event_kinds: ["response"], transaction_ids: ["request-2"], offset: 0, limit: 20}` pages selected events with original item indices.
+
+Omitted filters select all; empty arrays select none. Pagination counts matching
+retained rows. Exhausting a page does not establish capture completeness or
+current application state.
+
+Transaction pages use `{kind: "browser-scenario", collection: "transactions", limit: 20}`.
+Their stable identity is the parent Evidence ID plus `transaction_id`; each row
+keeps original event indices. Metadata events are returned by default. Select
+`event_kinds: ["network-content"]` for recorded bodies and header values, or
+`event_kinds: []` for identity and indices alone. A `step_indices` filter selects
+a whole transaction when any retained event belongs to a selected step; this
+is receipt attribution, not proof that the action caused the request.
+
+For a large retained tree, request `{kind: "browser-scenario", collection: "text",
+step_index: 10, artifact: "accessibility", offset: 0, limit: 2048}`. `dom` is also
+supported. Offsets and limits count UTF-16 code units. The full artifact digest
+and byte size remain attached to each page. Missing, truncated and unrequested
+text stay explicit; source truncation counts are preserved without treating an
+exhausted page as a complete capture.
+
+Network summary counts include every retained transaction identity, including
+those whose request event was dropped. Missing request events, conflicting
+metadata and observed request failures have separate counts. `transactions` is
+`null` when network observation was unrequested or its legacy selection is
+unknown and there are no retained transactions; an observed empty inventory is
+`0`. Full capture omissions remain available and each page carries source
+completeness, dropped-event counts and omitted-transaction accounting.

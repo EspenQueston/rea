@@ -475,6 +475,19 @@ pass that definition through the SDK's `toolDefinition` call option. This keeps
 the selected output-schema validation without eagerly compiling unrelated
 catalog schemas. Re-read definitions if the server advertises a changed list.
 
+For exact nested input constraints, select the full profile explicitly or use
+the full-SDK conformance suite that owns the field. Compact workflow tests
+should assert canonical failure categories and provider-call controls where
+rejection before provider work matters. Do not make today's omission of a
+constraint a compact-profile invariant.
+
+When a file repeatedly validates the same MCP schemas, use
+`createMcpSchemaValidation` for file-owned preparation and clear it in
+`afterAll`. Its content keys include the complete schema, and the SDK provider
+keeps dialect and format validation. Keep sessions and connections scoped to
+each test; share immutable schema preparation through the fixture's validator
+dependency.
+
 Artifact verification uses `artifactMcpCall` for both lifecycle and analysis
 calls. A fresh SDK client has no held tool listing, so a bare `callTool` can
 skip output-schema validation. The helper discovers actual advertised
@@ -976,7 +989,7 @@ commands. Check prerequisites before starting expensive work and name the
 missing command, target, and lane in any failure message. A lane must not imply
 that a host or target is covered when it was skipped.
 
-Provider admission accepts Ghidra 12.1.x and the JDK range declared by that
+Provider admission accepts Ghidra 12.x (>=12.1) and the JDK range declared by that
 installation (`application.java.min` through `application.java.max`). Current
 12.1 releases require JDK 21 or newer and set no maximum. The lanes below still
 prove behavior on the verified Ghidra 12.1.4 and JDK 21 build.
@@ -1995,12 +2008,16 @@ coverage limits.
 
 ### Offline binary layout
 
-`npm run verify:binary:layout` requires Linux x64, GCC/binutils, absolute
+`npm run verify:binary:layout` requires Linux x64, GCC/binutils, the
+`i686-linux-gnu`, `arm-linux-gnueabi`, `mips-linux-gnu` and `mipsel-linux-gnu`
+cross `gcc`/`readelf` toolchains, absolute
 `REA_PWNTOOLS_PYTHON` with pwntools 4.15.0/pyelftools 0.33/Unicorn 2.1.2 and
 absolute `REA_VERIFY_STRACE_COMMAND`. It compiles ephemeral source-owned ELF
 fixtures and checks public CLI/MCP, lossless addresses/names, file ranges,
 mitigation inferences, malformed/unsupported input, original file hashes and
-released process ownership. Exec syscall tracing must identify only the declared
+released process ownership. Cross-compiled ELF32 executables and relocatable
+objects check the reported class, machine and byte order, and every section
+name, address, offset and size against GNU `readelf`. Exec syscall tracing must identify only the declared
 Node/Python launchers; no target binary is executed. Core/debugger claims need
 separate verification lanes. Pass an installed package entrypoint as the script's
 first argument to verify packaging independently of the checkout.
