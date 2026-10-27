@@ -1630,6 +1630,7 @@ describe("function comparison unnamed reference endpoints", () => {
 
 describe("whitespace-only function symbols", () => {
   it.each([" ", "\t", " \t "])("remain ambiguous (%j)", (name) => {
+    const calleeName = name === "\t" ? " " : "\t";
     const blankNamed = (base: "0x1000" | "0x2000") =>
       functionDossierSchema.parse({
         ...dossier("return 0;", base),
@@ -1638,7 +1639,9 @@ describe("whitespace-only function symbols", () => {
           signature: "int helper(void)",
           locals: [],
         },
-        callees: [procedure(base === "0x1000" ? "0x1010" : "0x2010", name)],
+        callees: [
+          procedure(base === "0x1000" ? "0x1010" : "0x2010", calleeName),
+        ],
       });
     const result = compareFunctions(
       functionSnapshotFixture(observe("f", blankNamed("0x1000"))),
