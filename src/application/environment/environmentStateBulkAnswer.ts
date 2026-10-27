@@ -4,6 +4,8 @@ import {
 } from "../../domain/analysisView/environmentStateWriteAddress.js";
 import {
   bodyProblem,
+  laterItemFields,
+  optionalFields,
   updatedEntity,
   updatedFields,
   writtenBulkResponse,
@@ -21,6 +23,7 @@ import { callSegments } from "./environmentStateCallLines.js";
 import {
   namedEntity,
   refused,
+  softDeleteFlag,
   type StateAnswer,
   type StateServing,
 } from "./environmentStateAnswer.js";
@@ -32,6 +35,7 @@ import {
   generator,
   observedEntity,
   pathValues,
+  sortedOrder,
   unloadable,
   heldEntity,
   updateTarget,
@@ -171,7 +175,21 @@ export const answerBulk = (
   const answer = writeAnswer(
     serving,
     request,
-    (recorded) => writtenBulkResponse(plan.response!, recorded, written.value),
+    (recorded) =>
+      writtenBulkResponse(
+        plan.response!,
+        recorded,
+        written.value.map((entity, index) => ({
+          ...entity,
+          sent: Object.keys(targets.value[index]!.body ?? {}),
+        })),
+        optionalFields(plan),
+        laterItemFields(
+          serving.store.state.views.values(),
+          serving.store.state.entities,
+          plan.target,
+        ),
+      ),
     {
       source: "state",
       view: update ? "update" : "delete",
@@ -183,9 +201,23 @@ export const answerBulk = (
   );
   if (!answer.ok) return answer;
   if (update) {
-    const updated = serving.store.updateAll(written.value);
+    const updated = serving.store.updateAll(
+      written.value,
+      sortedOrder(
+        serving,
+        plan,
+        written.value.map((after, index) => ({
+          before: targets.value[index]!.entity,
+          after,
+        })),
+      ),
+    );
     if (!updated.ok) return updated;
-  } else serving.store.removeAll(written.value);
+  } else
+    serving.store.removeAll(
+      written.value,
+      softDeleteFlag(serving, first!.entity.type) !== undefined,
+    );
   serving.store.commitWrite(values.taken);
   return answer;
 };
