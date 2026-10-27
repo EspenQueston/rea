@@ -29,9 +29,7 @@ const cannedCompleteEvidence = () =>
   );
 
 const harness = () => {
-  const runDirectAnalysis = vi.fn(
-    async () => ok(cannedCompleteEvidence()),
-  );
+  const runDirectAnalysis = vi.fn(async () => ok(cannedCompleteEvidence()));
   const cli = Cli.create("rea-fn-detail-test", { version: "1", sync: false });
   registerCoreBinaryCommands(
     cli as unknown as CliInstance,
