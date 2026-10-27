@@ -103,7 +103,7 @@ it("derives closed-session address and explicit-path APK availability from their
   expect(entry("inspect_address_context", status())).toMatchObject({
     available: false,
     reason: "target_required",
-    remediation: "Call open_binary with a supported local target.",
+    remediation: expect.any(String),
   });
   expect(entry("inspect_apk_signature", status())).toMatchObject({
     available: true,

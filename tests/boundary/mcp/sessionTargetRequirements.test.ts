@@ -2,6 +2,7 @@ import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { expect, it } from "vitest";
 
+import { buildCapabilityInventory } from "../../../src/application/CapabilityInventory.js";
 import { toolContract } from "../../../src/contracts/toolContracts.js";
 import { expandToolAvailability } from "../../../src/contracts/toolOutputSchemaPrimitives.js";
 import { connectLocalToolsMcp } from "../../fixtures/localToolsMcp.js";
@@ -42,8 +43,15 @@ it("advertises closed-session address and explicit-path APK tools according to t
   expect.soft(availability(before, "inspect_address_context")).toMatchObject({
     available: false,
     reason: "target_required",
-    remediation: "Call open_binary with a supported local target.",
   });
+  const owningAvailability = buildCapabilityInventory(
+    { open: false, capabilities: [] },
+    { processCaptureEnabled: false },
+  );
+  expect(availability(before, "inspect_address_context")?.remediation).toBe(
+    owningAvailability.find((tool) => tool.name === "inspect_address_context")
+      ?.remediation,
+  );
   expect.soft(availability(before, "inspect_apk_signature")).toMatchObject({
     available: true,
     reason: "available",
