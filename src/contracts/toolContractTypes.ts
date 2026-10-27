@@ -55,6 +55,12 @@ export interface ToolContract<
   readonly title: string;
   readonly description: string;
   readonly kind: ToolKind;
+  /** This handler dispatches through the active binary-analysis session. */
+  readonly requiresActiveTarget?: boolean;
+  /** Adapter delivery of a retained summary; detail never reaches analysis. */
+  readonly retainedSummary?: {
+    readonly evidenceParameters: "omit-detail" | "preserve-detail";
+  };
   readonly inputSchema: InputSchema;
   readonly outputSchema: OutputSchema;
   readonly effects: ToolEffects;

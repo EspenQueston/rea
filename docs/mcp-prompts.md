@@ -15,6 +15,13 @@ invoke tools by themselves.
 | `audit_residual_unknowns`         | Audit current residual-unknown heads and evidence-qualified resolution.              |
 | `prepare_bounded_process_capture` | Design a bounded controlled process experiment before execution.                     |
 
+A `REA_MCP_TOOL_FAMILIES` scope advertises a workflow only when every tool in
+its suggested steps belongs to a selected family. Partially available
+workflows are omitted from `prompts/list` — `prompts/get` reports them as not
+found — so a rendered prompt never directs the agent to a disabled call. The
+server identity digest and `rea mcp doctor` prompt inventory follow the same
+scope.
+
 Every rendered prompt provides optional starting points using current REA tool
 names. Agents can call tools directly, skip irrelevant suggestions, and inspect
 provider or target state only when it helps answer the request or a tool
@@ -60,6 +67,11 @@ Use standard MCP discovery and retrieval:
 The server advertises `listChanged: true`. Updating a registered guided prompt
 emits `notifications/prompts/list_changed`, allowing clients to refresh their
 cached prompt catalog.
+
+Schema-invalid parameters to `prompts/get`, `prompts/list`,
+`completion/complete`, and `tools/list` return JSON-RPC `-32602` with field
+diagnostics. Correct the named fields and retry on the same connection.
+Unexpected handler failures retain JSON-RPC `-32603`.
 
 ## Session-aware completion
 

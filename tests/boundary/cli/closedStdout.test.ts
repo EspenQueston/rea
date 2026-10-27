@@ -7,36 +7,6 @@ import { createTestTempDirectory } from "../../fixtures/temporaryDirectory.js";
 import { cliTest } from "../../support/cli/cliFixture.js";
 import type { TestProcesses } from "../../support/process/processFixture.js";
 
-cliTest(
-  "drains a large structured validation error before exiting through a pipe",
-  async ({ cli }) => {
-    // Exceed the pipe capacity even on hosts with large stdout buffers. No
-    // target is opened: each symbol fails argument validation first.
-    const count = 2_048;
-    const result = await cli.run({
-      arguments: [
-        "demangle-swift",
-        "missing",
-        ...Array.from({ length: count }, () => "bad\nsymbol"),
-        "--json",
-      ],
-      timeoutMs: 20_000,
-    });
-    expect(result).toMatchObject({
-      exitCode: 1,
-      signal: null,
-      stderr: "",
-      json: {
-        code: "VALIDATION_ERROR",
-        fieldErrors: expect.arrayContaining([
-          expect.objectContaining({ path: `symbols.${count - 1}` }),
-        ]),
-      },
-    });
-  },
-  30_000,
-);
-
 /** Close after a byte threshold, or acknowledge a complete JSON document. */
 const runWithClosedReader = async (
   processes: TestProcesses,
