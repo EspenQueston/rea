@@ -142,7 +142,7 @@ it("preserves keyed archive identities and rejects inconsistent inventory carrie
             {
               path: ["path"],
               reason: "invalid_value",
-              expected: ["archive.plist"],
+              expected: "archive.plist",
             },
           ],
         },
