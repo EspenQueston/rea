@@ -81,10 +81,9 @@ export const registerCaptureCommands = (
     options: z
       .object({
         ...packetCaptureOptionsSchema.shape,
-        match_offset:
-          packetCaptureOptionsSchema.shape.match_offset.describe(
-            "Skip this many matching packets after filtering",
-          ),
+        match_offset: packetCaptureOptionsSchema.shape.match_offset.describe(
+          "Skip this many matching packets after filtering",
+        ),
         match_limit: z
           .number()
           .int()
