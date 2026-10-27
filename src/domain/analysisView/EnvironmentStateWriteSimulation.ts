@@ -173,8 +173,8 @@ export class EnvironmentStateWriteSimulation {
   }[] = [];
   /** Entities a create inserted, by target, with the create's tool. */
   readonly #inserted = new Map<string, string>();
-  /** The targets each write tool changed, which serving moves when their collection is kept sorted. */
-  readonly #wrote = new Map<string, Set<string>>();
+  /** Targets a write changed or placed since a passing list read last showed them, whose position no read has confirmed. */
+  readonly #moved = new Set<string>();
   /** Creates whose insert rule a passing list check relied on, so it is no longer changed. */
   readonly #placed = new Set<string>();
   /** The order a read showed a type's collections sorted in after an update, when no create of it showed one. */
@@ -225,8 +225,11 @@ export class EnvironmentStateWriteSimulation {
     this.#state.keepSorted((type) => this.#sortOf(type));
   }
 
-  /** The sorted order a type's creates insert by, when they agree on one and nothing contradicted them. */
-  #sortOf(type: string): InsertRule | undefined {
+  /**
+   * The sorted order a type's creates insert by, when they agree on one and nothing contradicted them; with `placed`,
+   * only creates a list read showed placed, as replay may try a guessed order that no recording established.
+   */
+  #sortOf(type: string, placed = false): InsertRule | undefined {
     const rules = new Map<string, InsertRule>();
     for (const { plan, observed, contradictedBy } of this.#drafts.values())
       if (
@@ -235,7 +238,8 @@ export class EnvironmentStateWriteSimulation {
         observed !== undefined &&
         plan.reason === null &&
         contradictedBy === undefined &&
-        plan.insert?.rule === "sorted"
+        plan.insert?.rule === "sorted" &&
+        (!placed || this.#placed.has(plan.tool))
       )
         rules.set(JSON.stringify(plan.insert), plan.insert);
     if (rules.size === 0) return this.#learnedSorts.get(type);
@@ -310,7 +314,7 @@ export class EnvironmentStateWriteSimulation {
       ]),
     );
     const sorts = new Map(
-      [...this.#types.keys()].map((type) => [type, this.#sortOf(type)]),
+      [...this.#types.keys()].map((type) => [type, this.#sortOf(type, true)]),
     );
     return [...this.#drafts.values()].map((draft) => {
       // A view that became recorded cannot supply proof for a served write.
@@ -484,10 +488,8 @@ export class EnvironmentStateWriteSimulation {
       return;
     }
     this.#effects.supersede(this.#touched, write.tool, result);
-    const wrote = this.#wrote.get(write.tool) ?? new Set<string>();
-    this.#wrote.set(write.tool, wrote);
     for (const target of result.targets) {
-      wrote.add(target);
+      this.#moved.add(target);
       touchTarget(this.#touched, this.#touchedSince, target, {
         ...write,
         fields: result.fields,
@@ -718,6 +720,8 @@ export class EnvironmentStateWriteSimulation {
     const unseen = outcome.pass
       ? this.#confirm(view, record, outcome, exercised)
       : undefined;
+    if (outcome.pass && view.shape === "list")
+      for (const target of outcome.targets) this.#moved.delete(target);
     if (!outcome.pass) {
       const interfered = new Set([...exercised].filter(interferes));
       if (interfered.size === 0)
@@ -969,15 +973,16 @@ export class EnvironmentStateWriteSimulation {
           ),
         ),
       ) ?? [];
-    // Serving moves only the entities an update writes, so the others must already be in the order tried.
+    // Serving moves only the entities writes changed since a list last showed them, so the others, including one an
+    // earlier write moved that a list then showed in place, must already be in the order tried.
     const kept = this.#state
       .members(view.type, line.collection)
-      .filter((entity) => {
-        const target = entityTarget(entity.type, entity.collection, entity.id);
-        return ![...exercised].some((name) =>
-          this.#wrote.get(name)?.has(target),
-        );
-      })
+      .filter(
+        (entity) =>
+          !this.#moved.has(
+            entityTarget(entity.type, entity.collection, entity.id),
+          ),
+      )
       .map((entity) => entity.fields);
     for (const rule of rules.filter(
       (candidate) =>

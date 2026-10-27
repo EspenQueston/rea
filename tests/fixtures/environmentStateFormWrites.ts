@@ -440,6 +440,46 @@ export const UNSORTED_SEED_ROWS: readonly TimedCaptureRow[] = (() => {
   ];
 })();
 
+/** Labels listed by name but not by id, a create no list shows placed, then a rename read back by id only. */
+export const UNPLACED_CREATE_ROWS: readonly TimedCaptureRow[] = (() => {
+  const [alpha, bravo, delta] = [
+    label(3, "Alpha"),
+    label(1, "Bravo"),
+    label(2, "Delta"),
+  ];
+  const charlie = label(4, "Charlie");
+  const zulu = label(1, "Zulu");
+  return [
+    ["GET", "/api/labels", [alpha, bravo, delta]],
+    ["GET", "/api/labels/1", bravo],
+    ["POST", "/api/labels", charlie, 201, formBody(charlie)],
+    ["GET", "/api/labels/4", charlie],
+    ["PATCH", "/api/labels/1", zulu, 200, { name: "Zulu" }],
+    ["GET", "/api/labels/1", zulu],
+  ];
+})();
+
+/** A rename confirmed in place by an unsorted list, then a second rename whose list is sorted by title: serving would move only the second. */
+export const CONFIRMED_RENAME_ROWS: readonly TimedCaptureRow[] = (() => {
+  const [delta, bravo, alpha] = [
+    folder(1, "Delta"),
+    folder(2, "Bravo"),
+    folder(3, "Alpha"),
+  ];
+  const aardvark = folder(3, "Aardvark", 2);
+  const echo = folder(2, "Echo", 2);
+  return [
+    ["GET", "/api/folders", [delta, bravo, alpha]],
+    ["GET", "/api/folders/1", delta],
+    ["PUT", "/api/folders/3", aardvark, 200, { title: "Aardvark", version: 1 }],
+    ["GET", "/api/folders/3", aardvark],
+    ["GET", "/api/folders", [delta, bravo, aardvark]],
+    ["PUT", "/api/folders/2", echo, 200, { title: "Echo", version: 1 }],
+    ["GET", "/api/folders/2", echo],
+    ["GET", "/api/folders", [aardvark, delta, echo]],
+  ];
+})();
+
 /** Books kept in id order, which a `?sort=shelf` read breaks ties of by name, then a rename that read shows reordered. */
 export const SHELF_TIE_ROWS: readonly TimedCaptureRow[] = (() => {
   const shelved = (id: number, name: string): Entity => ({
