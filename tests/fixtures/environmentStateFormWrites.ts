@@ -501,6 +501,55 @@ export const SHELF_TIE_ROWS: readonly TimedCaptureRow[] = (() => {
   ];
 })();
 
+/** Books listed by name but not by id, a create no read shows placed, then a rename only a read sorted by shelf shows moved. */
+export const SHELF_GUESS_ROWS: readonly TimedCaptureRow[] = (() => {
+  const shelved = (id: number, name: string, shelf: string): Entity => ({
+    id,
+    name,
+    shelf,
+  });
+  const [alpha, bravo, delta] = [
+    shelved(3, "Alpha", "b"),
+    shelved(1, "Bravo", "a"),
+    shelved(2, "Delta", "a"),
+  ];
+  const charlie = shelved(4, "Charlie", "c");
+  const zulu = shelved(1, "Zulu", "a");
+  return [
+    ["GET", "/api/books", [alpha, bravo, delta]],
+    ["GET", "/api/books?sort=-id", [alpha, delta, bravo]],
+    ["GET", "/api/books/1", bravo],
+    ["POST", "/api/books", charlie, 201, { name: "Charlie", shelf: "c" }],
+    ["GET", "/api/books/4", charlie],
+    ["PUT", "/api/books/1", zulu, 200, { name: "Zulu", shelf: "a" }],
+    ["GET", "/api/books/1", zulu],
+    ["GET", "/api/books?sort=shelf", [delta, zulu, alpha, charlie]],
+  ];
+})();
+
+/** Two renames a list sorted by name shows moved, the first read back between them only by a list its query sorts by id. */
+export const ID_SORTED_READ_ROWS: readonly TimedCaptureRow[] = (() => {
+  const book = (id: number, name: string): Entity => ({ id, name });
+  const [charlie, bravo, alpha] = [
+    book(1, "Charlie"),
+    book(2, "Bravo"),
+    book(3, "Alpha"),
+  ];
+  const zulu = book(1, "Zulu");
+  const yankee = book(2, "Yankee");
+  return [
+    ["GET", "/api/books", [charlie, bravo, alpha]],
+    ["GET", "/api/books?sort=-id", [alpha, bravo, charlie]],
+    ["GET", "/api/books/1", charlie],
+    ["PUT", "/api/books/1", zulu, 200, { name: "Zulu" }],
+    ["GET", "/api/books/1", zulu],
+    ["GET", "/api/books?sort=id", [zulu, bravo, alpha]],
+    ["PUT", "/api/books/2", yankee, 200, { name: "Yankee" }],
+    ["GET", "/api/books/2", yankee],
+    ["GET", "/api/books", [alpha, yankee, zulu]],
+  ];
+})();
+
 /** A user create that sends `active: false` and is answered so, whose read shows the account active. */
 export const ACTIVE_ON_READ_ROWS: readonly TimedCaptureRow[] = (() => {
   const user = (id: number, name: string, active: boolean): Entity => ({
