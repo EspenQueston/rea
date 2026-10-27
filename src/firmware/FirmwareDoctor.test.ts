@@ -9,6 +9,7 @@ import {
 import { OwnedCommandFailure } from "../process/OwnedCommand.js";
 import { AnalysisCancelledError } from "../domain/analysisErrorCore.js";
 import type { FirmwareDoctorHost } from "./FirmwareDoctor.js";
+import * as commandPath from "../process/ArtifactCommandPath.js";
 import { createTestTempDirectory } from "../../tests/fixtures/temporaryDirectory.js";
 import { runDoctor } from "../application/Doctor.js";
 import { createDoctorHostFixture } from "../application/Doctor.fixture.js";
@@ -67,6 +68,46 @@ it("does not launch host probes for unconfigured optional firmware tools", async
   expect(runCommand).not.toHaveBeenCalled();
   expect(await doctor.close()).toBeUndefined();
 });
+
+linuxIt.each(["limiter", "engine"] as const)(
+  "preserves caller cancellation during %s executable path admission",
+  async (phase) => {
+    const { environment, host } = await fixture();
+    const controller = new AbortController();
+    const reason = { request: `cancel ${phase} path admission` };
+    const selectedPath =
+      phase === "limiter"
+        ? "/usr/bin/prlimit"
+        : environment.REA_BINWALK_COMMAND;
+    const select = commandPath.selectArtifactCommandPath;
+    const selection = vi
+      .spyOn(commandPath, "selectArtifactCommandPath")
+      .mockImplementation((path, signal) => {
+        const pending = select(path, signal);
+        if (path === selectedPath) controller.abort(reason);
+        return pending;
+      });
+    const doctor = new FirmwareDoctor(
+      environment,
+      "linux",
+      host,
+      controller.signal,
+    );
+    try {
+      await expect(doctor.inspect()).rejects.toMatchObject({
+        _tag: "AnalysisCancelledError",
+        operation: "doctor",
+        cause: reason,
+      });
+      expect(host.runCommand).toHaveBeenCalledTimes(
+        phase === "limiter" ? 0 : 1,
+      );
+    } finally {
+      selection.mockRestore();
+      await doctor.close();
+    }
+  },
+);
 
 linuxIt(
   "exposes configured firmware readiness independently of absent native engines",

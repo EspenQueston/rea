@@ -27,10 +27,11 @@ checks the tool's `--version` banner when executing a request. Binwalk must
 print `binwalk <version>` and Unblob must print the version alone. Inspection and
 extraction have independent prerequisites; one does not require the other.
 Both require util-linux `prlimit`, normally `/usr/bin/prlimit`; override its
-absolute path with `REA_FIRMWARE_PRLIMIT_COMMAND` if needed. `rea doctor` does
-not currently inspect firmware readiness. Engine selection/version checks run
-when the firmware operation is requested; successful general doctor checks do
-not establish firmware tool or external-extractor availability.
+absolute path with `REA_FIRMWARE_PRLIMIT_COMMAND` if needed. Use
+`rea doctor --provider binwalk --json` or `rea doctor --provider unblob --json`
+for the readiness diagnostics described below. Firmware requests also validate
+engine selection and version; readiness does not establish that a particular
+target or selected format can be analyzed.
 
 REA retains at most 8 MiB of combined stdout and stderr per command. Exceeding
 that diagnostic budget stops analysis with an explicit truncated-output error;

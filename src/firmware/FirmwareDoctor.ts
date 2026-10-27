@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { ArtifactReaderFailure } from "../artifacts/ArtifactReader.js";
 import type {
   DoctorProviderCheck,
   DoctorProviderInspection,
@@ -58,6 +59,19 @@ export class FirmwareDoctor {
 
   /** Inspect each optional tool independently and share host prerequisite probes. */
   async inspect(): Promise<readonly DoctorProviderInspection[]> {
+    try {
+      return await this.#inspectProviders();
+    } catch (cause: unknown) {
+      if (
+        cause instanceof ArtifactReaderFailure &&
+        cause.reason === "cancelled"
+      )
+        throw new AnalysisCancelledError("doctor", { cause: cause.cause });
+      throw cause;
+    }
+  }
+
+  async #inspectProviders(): Promise<readonly DoctorProviderInspection[]> {
     this.#throwIfCancelled();
     const platform = diagnostic(
       "platform",

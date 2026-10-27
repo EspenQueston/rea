@@ -11,6 +11,7 @@ import { createTestTempDirectory } from "../tests/fixtures/temporaryDirectory.js
 import { writeJadxJarInventory } from "../tests/fixtures/android/jadxJar.js";
 import * as privateDisplay from "./hopper/LinuxPrivateDisplayProbe.js";
 import * as pythonRuntime from "./application/LinuxHopperPython.js";
+import * as kunaDoctor from "./kuna/KunaDoctor.js";
 import { err, ok } from "./domain/result.js";
 import { AnalysisError } from "./domain/analysisErrorBase.js";
 import { AnalysisCancelledError } from "./domain/analysisErrorCore.js";
@@ -568,6 +569,59 @@ test.each([false, true])(
       inspect.mockRestore();
       pending.mockRestore();
       close.mockRestore();
+    }
+  },
+);
+
+test.each([false, true])(
+  "admits firmware only after earlier provider cleanup succeeds: %s",
+  async (cleanupSucceeds) => {
+    let denied = !cleanupSucceeds;
+    const events: string[] = [];
+    const close = vi.fn(async () => {
+      events.push("kuna-cleanup");
+      if (denied) throw new Error("controlled Kuna cleanup refusal");
+    });
+    const kuna = vi
+      .spyOn(kunaDoctor, "inspectKunaProvider")
+      .mockImplementation(
+        async (_environment, _platform, { resourceScope }) => {
+          resourceScope.retain({ close }, "kuna-retained-child");
+          return {
+            id: "kuna",
+            configured: true,
+            available: false,
+            providerVersion: null,
+            registrationEnvironment: {},
+            checks: [],
+          };
+        },
+      );
+    const firmware = vi
+      .spyOn(FirmwareDoctor.prototype, "inspect")
+      .mockImplementation(async () => {
+        events.push("firmware-inspect");
+        return [];
+      });
+    const host = createSystemDoctorHost({});
+    try {
+      if (cleanupSucceeds) {
+        await host.providerInspections?.();
+        expect(events).toEqual(["kuna-cleanup", "firmware-inspect"]);
+      } else {
+        await expect(host.providerInspections?.()).rejects.toMatchObject({
+          cleanupIncomplete: true,
+          cleanupResources: ["kuna-retained-child"],
+        });
+        expect(firmware).not.toHaveBeenCalled();
+        expect(events).toEqual(["kuna-cleanup"]);
+      }
+      expect(close).toHaveBeenCalledTimes(1);
+    } finally {
+      denied = false;
+      await host.close?.();
+      kuna.mockRestore();
+      firmware.mockRestore();
     }
   },
 );

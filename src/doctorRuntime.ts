@@ -75,13 +75,15 @@ export const createSystemDoctorHost = (
       // parser-owned error when IDA itself was explicitly selected.
       return analysisProvider === "ida" ? registration : ok(undefined);
     },
-    providerInspections: async (resourceScope, inspectionSignal) => {
-      const inspections = [
+    providerInspections: [
+      async (resourceScope, inspectionSignal) => [
         await inspectSystemGhidraProvider(
           environment,
           resourceScope,
           inspectionSignal,
         ),
+      ],
+      async (resourceScope, inspectionSignal) => [
         await inspectIdaRegistration(
           environment.REA_IDA_MCP_CONFIG,
           resourceScope,
@@ -94,42 +96,52 @@ export const createSystemDoctorHost = (
                 inspectionSignal,
               ),
         ),
+      ],
+      async (resourceScope, inspectionSignal) => [
         await inspectJadxProvider(environment, resourceScope, inspectionSignal),
+      ],
+      async (resourceScope, inspectionSignal) => [
         await inspectKunaProvider(environment, process.platform, {
           resourceScope,
           signal: inspectionSignal,
         }),
-      ];
-      if (options.firmware === false) return inspections;
-      const firmware = new FirmwareDoctor(
-        environment,
-        process.platform,
-        {},
-        inspectionSignal,
-      );
-      try {
-        return [...inspections, ...(await firmware.inspect())];
-      } finally {
-        // Retain only failed cleanup after inspection: an ordinary pending
-        // owner would make nested provider work wait on this active scope.
-        if (firmware.hasPendingCleanup)
-          resourceScope.retain(
-            {
-              async close() {
-                const reason = await firmware.close();
-                if (reason !== undefined)
-                  throw new ProviderCleanupError(
-                    "firmware",
-                    ["firmware-doctor"],
-                    { reason },
-                    { operation: "doctor" },
+      ],
+      ...(options.firmware === false
+        ? []
+        : [
+            async (
+              resourceScope: RetainedResourceScope,
+              inspectionSignal: AbortSignal,
+            ) => {
+              const firmware = new FirmwareDoctor(
+                environment,
+                process.platform,
+                {},
+                inspectionSignal,
+              );
+              try {
+                return await firmware.inspect();
+              } finally {
+                if (firmware.hasPendingCleanup)
+                  resourceScope.retain(
+                    {
+                      async close() {
+                        const reason = await firmware.close();
+                        if (reason !== undefined)
+                          throw new ProviderCleanupError(
+                            "firmware",
+                            ["firmware-doctor"],
+                            { reason },
+                            { operation: "doctor" },
+                          );
+                      },
+                    },
+                    "firmware-doctor",
                   );
-              },
+              }
             },
-            "firmware-doctor",
-          );
-      }
-    },
+          ]),
+    ],
     linuxDemoRuntimeCheck: (resourceScope, inspectionSignal) =>
       inspectLinuxHopperDemoRuntime(
         environment,
