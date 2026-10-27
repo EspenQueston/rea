@@ -154,3 +154,33 @@ it.skipIf(process.platform === "win32")(
     });
   },
 );
+
+it.skipIf(process.platform === "win32")(
+  "keeps the bundle facts when the executable is a script stub with a trailing archive",
+  async () => {
+    const root = await createTestTempDirectory("rea-artifact-bundle-zip-");
+    const bundle = join(root, "Fixture.app");
+    await mkdir(bundle);
+    const infoPlist = join(bundle, "Info.plist");
+    await writeFile(
+      infoPlist,
+      "<plist><dict><key>CFBundleExecutable</key><string>main</string></dict></plist>",
+    );
+    const writer = new ZipWriter(new Uint8ArrayWriter());
+    await writer.add("payload.txt", new TextReader("appended archive"));
+    const executable = join(bundle, "main");
+    await writeFile(
+      executable,
+      Buffer.concat([Buffer.from("#!/bin/sh\nexit 0\n"), await writer.close()]),
+    );
+    const admitted = await parseBinaryTarget(bundle);
+    if (!admitted.ok) throw admitted.error;
+    expect(admitted.value).toMatchObject({
+      path: executable,
+      kind: "archive",
+      format: "zip",
+      bundleInfoPlist: infoPlist,
+      artifactSelectedPath: bundle,
+    });
+  },
+);

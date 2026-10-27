@@ -386,6 +386,15 @@ const readOpenedBinaryTarget = async (
     targetKind === "database"
       ? undefined
       : await detectArtifactFormat(classificationPath, source, signal);
+  // Every artifact route shares one identity: canonical path, caller spelling
+  // and the bundle facts the digest check binds to.
+  const artifactIdentity = async () => ({
+    path,
+    sourcePath,
+    ...bundle,
+    artifactSelectedPath: selectedPath,
+    sha256: await sha256Handle(handle, path, metadata, signal),
+  });
   if (
     targetKind === "database" ||
     (targetKind === undefined && path.toLowerCase().endsWith(".hop"))
@@ -399,13 +408,7 @@ const readOpenedBinaryTarget = async (
       format: "analysis-database",
     });
   if (artifactFormat !== undefined) {
-    const identity = {
-      path,
-      sourcePath,
-      ...bundle,
-      artifactSelectedPath: selectedPath,
-      sha256: await sha256Handle(handle, path, metadata, signal),
-    };
+    const identity = await artifactIdentity();
     return isArchiveFormat(artifactFormat)
       ? ok({ ...identity, kind: "archive", format: artifactFormat })
       : ok({ ...identity, kind: "artifact", format: artifactFormat });
@@ -425,12 +428,9 @@ const readOpenedBinaryTarget = async (
       )) !== undefined
     )
       return ok({
-        path,
-        sourcePath,
-        sha256: await sha256Handle(handle, path, metadata, signal),
+        ...(await artifactIdentity()),
         kind: "archive",
         format: zipRootPackageFormat(classificationPath),
-        artifactSelectedPath: selectedPath,
       });
     const reason =
       typeof detected.error === "string"
