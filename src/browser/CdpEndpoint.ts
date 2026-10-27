@@ -16,6 +16,7 @@ import { urlDeclaresQueryOrFragment } from "../domain/urlComponents.js";
 import { safeParseJson } from "../domain/safeJson.js";
 import { WEB_RUNTIME_LIMITS } from "../domain/webRuntime.js";
 import type { CdpConnection } from "./CdpConnection.js";
+import { recordValue } from "./CdpCaptureValues.js";
 import {
   parseCdpDiscoveryTargets,
   type CdpDiscoveryTarget,
@@ -71,18 +72,6 @@ const browserSocketVersionSchema = z.object({
   revision: z.string(),
   userAgent: z.string(),
   jsVersion: z.string(),
-});
-
-const browserSocketTargetsSchema = z.object({
-  targetInfos: z.array(
-    z.object({
-      targetId: z.string().min(1),
-      type: z.string().min(1),
-      title: z.string().default(""),
-      url: z.string(),
-      attached: z.boolean().optional(),
-    }),
-  ),
 });
 
 /** Validated direct CDP WebSocket bound to one discovered page target. */
@@ -253,12 +242,13 @@ export const discoverCdpBrowserSocket = async (
     versionInput,
     operation,
   );
-  const targets = parseCdpEndpointValue(
-    browserSocketTargetsSchema,
-    targetsInput,
+  const { targets, limitations } = parseCdpDiscoveryTargets(
+    recordValue(targetsInput)?.targetInfos,
     operation,
+    "browser-socket",
   );
   return {
+    limitations,
     webSocket: { scope: "browser", url },
     version: {
       product: version.product,
@@ -267,12 +257,12 @@ export const discoverCdpBrowserSocket = async (
       user_agent: version.userAgent,
       js_version: version.jsVersion,
     },
-    targets: targets.targetInfos.map((target) => ({
-      id: target.targetId,
+    targets: targets.map((target) => ({
+      id: target.id,
       type: target.type,
       title: sanitizeTargetTitle(target.title, target.url),
       url: target.url,
-      attached: target.attached ?? null,
+      attached: target.attached,
     })),
   };
 };
