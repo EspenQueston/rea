@@ -23,6 +23,10 @@ import { PACKAGE_METADATA } from "../../../src/generatedPackageMetadata.js";
 import { PRODUCT_IDENTITY, SDK_IDENTITY } from "../../../src/identity.js";
 import { TOOL_CONTRACTS } from "../../../src/contracts/toolContracts.js";
 import {
+  annotationsFromEffects,
+  toolSessionEffects,
+} from "../../../src/contracts/toolEffects.js";
+import {
   expandToolAvailability,
   sessionProvider,
 } from "../../../src/contracts/toolOutputSchemaPrimitives.js";
@@ -95,6 +99,24 @@ const statusCapability = (
     },
   ],
 });
+
+const unconfiguredHostTool = {
+  inspectAvailability: async () => ({
+    status: "unavailable" as const,
+    code: "not_configured" as const,
+    reason: "Host tools are outside the server identity fixture.",
+    diagnostics: { source: "test_fixture" },
+  }),
+  close: async () => {},
+  execute: async (): Promise<never> => {
+    throw new Error("Host-tool execution is outside the identity fixture");
+  },
+};
+const hostToolOptions = {
+  androidAnalysis: unconfiguredHostTool,
+  adbDeviceAnalysis: unconfiguredHostTool,
+  apktoolAnalysis: unconfiguredHostTool,
+};
 
 describe("server and catalog identity", () => {
   it("derives package and SDK versions from canonical package metadata", async () => {
@@ -332,7 +354,7 @@ describe("guided prompt catalog identity", () => {
 describe("live server identity over MCP", () => {
   it("exposes live identity, a stable catalog, and changing availability", async () => {
     const session = createTestBinarySession(availabilityProvider());
-    const server = createServer({ kind: "session", session });
+    const server = createServer({ kind: "session", session }, hostToolOptions);
     const client = new Client(
       { name: "identity-test", version: "9" },
       {
@@ -376,7 +398,10 @@ describe("live server identity over MCP", () => {
     const session = createTestBinarySession(availabilityProvider());
     const server = createServer(
       { kind: "session", session },
-      { environment: { REA_MCP_INPUT_SCHEMA_PROFILE: "compact" } },
+      {
+        ...hostToolOptions,
+        environment: { REA_MCP_INPUT_SCHEMA_PROFILE: "compact" },
+      },
     );
     const client = new Client({ name: "compact-identity-test", version: "1" });
     const [clientTransport, serverTransport] =
@@ -423,7 +448,10 @@ describe("active-target availability over MCP", () => {
     // Availability does not depend on compiling every advertised output schema.
     const server = createServer(
       { kind: "session", session },
-      { environment: { REA_MCP_OUTPUT_SCHEMA_PROFILE: "off" } },
+      {
+        ...hostToolOptions,
+        environment: { REA_MCP_OUTPUT_SCHEMA_PROFILE: "off" },
+      },
     );
     const client = new Client({ name: "availability-test", version: "1" });
     const [clientTransport, serverTransport] =
@@ -526,16 +554,18 @@ const assertLiveIdentity = async (client: Client): Promise<void> => {
     TOOL_CONTRACTS.map(({ name }) => name).sort(),
   );
   for (const contract of TOOL_CONTRACTS) {
+    const effects = toolSessionEffects(contract.name);
+    const annotations = annotationsFromEffects(effects);
     expect(availability).toContainEqual(
       expect.objectContaining({
         name: contract.name,
         surface: contract.kind,
-        effects: contract.effects,
+        effects,
         annotations: {
-          read_only: contract.annotations.readOnlyHint ?? false,
-          destructive: contract.annotations.destructiveHint ?? false,
-          idempotent: contract.annotations.idempotentHint ?? false,
-          open_world: contract.annotations.openWorldHint ?? true,
+          read_only: annotations.readOnlyHint,
+          destructive: annotations.destructiveHint,
+          idempotent: annotations.idempotentHint,
+          open_world: annotations.openWorldHint,
         },
       }),
     );

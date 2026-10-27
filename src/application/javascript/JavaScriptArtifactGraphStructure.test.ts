@@ -16,7 +16,10 @@ import {
   createJavaScriptArtifactRootNode,
 } from "./JavaScriptArtifactGraphStructure.js";
 import { addJavaScriptStaticFindingsSteps } from "./JavaScriptArtifactGraphFindings.js";
-import { applicationContainerIdentity } from "./JavaScriptArtifactGraphContext.js";
+import {
+  applicationContainerIdentity,
+  applicationRootPath,
+} from "./JavaScriptArtifactGraphContext.js";
 import { JavaScriptJsonDocuments } from "./JavaScriptJsonDocuments.js";
 
 const SHA256 = "a".repeat(64);
@@ -123,6 +126,54 @@ const fileObservation = (context: JavaScriptArtifactGraphContext) => {
   if (observation === undefined) throw new Error("Expected a file observation");
   return observation.properties;
 };
+
+it("accepts a possible entry owner proven by an ancestor package", () => {
+  const source: JavaScriptArtifactFile = {
+    ...skippedFile(),
+    path: "renderer/renderer.js",
+  };
+  const packageFile: JavaScriptArtifactFile = {
+    ...skippedFile(),
+    path: "package.json",
+    kind: "package-json",
+    text: { included: true, value: '{"main":"main.js"}' },
+  };
+  const analysis: JavaScriptArtifactAnalysis = {
+    ...analysisFor([skippedEntry(source)]),
+    packages: [
+      {
+        path: packageFile.path,
+        sha256: packageFile.sha256,
+        status: "included",
+        name: null,
+        version: null,
+        main: "main.js",
+        main_status: "declared",
+        main_entrypoint: "main.js",
+        renderer_declarations: {},
+        renderer_entrypoint: null,
+        limitation: null,
+      },
+    ],
+  };
+  const base = contextFor(source, analysis);
+  const context: JavaScriptArtifactGraphContext = {
+    ...base,
+    fileSet: { ...base.fileSet, files: [source, packageFile] },
+    filesByPath: new Map([
+      [source.path, source],
+      [packageFile.path, packageFile],
+    ]),
+  };
+  const container = applicationContainerIdentity(context.fileSet, source);
+  context.applicationPossibleRootsByContainer.set(container, new Set([""]));
+  expect(applicationRootPath(context, source)).toBe("");
+  context.applicationPossibleRootsByContainer.set(
+    container,
+    new Set(["other"]),
+  );
+  expect(applicationRootPath(context, source)).toBeNull();
+});
 
 describe("skipped JavaScript parse reporting", () => {
   it("marks parse_status skipped for a JavaScript file whose worker analysis failed", () => {

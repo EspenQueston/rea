@@ -4,6 +4,7 @@ import { TOOL_CONTRACTS } from "./toolContracts.js";
 import {
   TOOL_EFFECTS,
   annotationsFromEffects,
+  toolSessionEffects,
   type ToolEffects,
 } from "./toolEffects.js";
 
@@ -249,6 +250,49 @@ describe("tool effects", () => {
         annotationsFromEffects(contract.effects),
       );
   });
+});
+
+it("advertises IDA provider effects while retaining session bases", () => {
+  for (const name of [
+    "procedure_pseudo_code",
+    "procedure_assembly",
+    "read_function_instructions",
+    "analyze_function",
+  ]) {
+    expect(TOOL_EFFECTS[name], name).toMatchObject({
+      mutatesSession: true,
+      changesUiState: true,
+      accessesNetwork: true,
+    });
+    expect(toolSessionEffects(name), name).toMatchObject({
+      mutatesSession: true,
+      changesUiState: false,
+      accessesNetwork: false,
+    });
+    const contract = TOOL_CONTRACTS.find(
+      (candidate) => candidate.name === name,
+    );
+    expect(contract?.annotations, name).toMatchObject({
+      readOnlyHint: false,
+      destructiveHint: false,
+      openWorldHint: true,
+    });
+  }
+  for (const name of [
+    "batch_decompile",
+    "decompile_all",
+    "trace_native_values",
+    "inspect_native_api",
+  ]) {
+    expect(TOOL_EFFECTS[name], name).toMatchObject({
+      changesUiState: true,
+      accessesNetwork: true,
+    });
+    expect(toolSessionEffects(name), name).toMatchObject({
+      changesUiState: false,
+      accessesNetwork: false,
+    });
+  }
 });
 
 it("advertises signature inspection's temporary snapshot filesystem writes", () => {

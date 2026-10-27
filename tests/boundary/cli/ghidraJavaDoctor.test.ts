@@ -253,7 +253,7 @@ cliTest.skipIf(!["darwin", "linux"].includes(process.platform))(
       arguments: ["doctor", "--provider", "ghidra", "--json"],
       cwd: root,
       environment: {
-        PATH: "",
+        PATH: ":/usr/bin:/bin",
         JAVA_HOME: join(root, "missing-jdk"),
         REA_LOG_LEVEL: "silent",
       },

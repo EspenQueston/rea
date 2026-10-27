@@ -1,10 +1,11 @@
-import { writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 
 import { createTestTempDirectory } from "../../fixtures/temporaryDirectory.js";
+import { thinMach } from "../../../src/domain/binaryTarget.fixture.js";
 
 import {
   createAnalysisExecution,
@@ -128,7 +129,7 @@ describe("target-bound provider routing", () => {
   });
 
   it("preserves bundle-root identity for artifact inventory operations", async () => {
-    const target = await databaseTarget();
+    const target = await appBundleTarget();
     const analysis = deepProvider("alpha");
     const artifact = auxiliaryProvider("artifact", "inventory_artifact");
     const session = selectableSession([analysis.provider], artifact);
@@ -388,6 +389,18 @@ const databaseTarget = async (): Promise<string> => {
   const directory = await createTestTempDirectory("rea-provider-binding-");
   const path = join(directory, "fixture.hop");
   await writeFile(path, "fixture");
+  return path;
+};
+
+const appBundleTarget = async (): Promise<string> => {
+  const directory = await createTestTempDirectory("rea-provider-binding-app-");
+  const path = join(directory, "Fixture.app");
+  await mkdir(path);
+  await writeFile(
+    join(path, "Info.plist"),
+    "<plist><dict><key>CFBundleExecutable</key><string>Fixture</string></dict></plist>",
+  );
+  await writeFile(join(path, "Fixture"), thinMach(0xfeedfacf, 0x0100000c));
   return path;
 };
 
