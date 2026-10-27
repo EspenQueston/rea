@@ -142,6 +142,23 @@ const stripLocations = (row) => {
     ),
   };
 };
+const assertOracleFacts = (row, expected, source) => {
+  assert.equal(row.declaration_coverage, "complete");
+  const cleaned = stripLocations(row);
+  for (const [key, value] of Object.entries(expected))
+    assert.deepEqual(
+      cleaned[key],
+      value,
+      `Independent oracle: ${expected.source_index}.${key}`,
+    );
+  assert.equal(
+    source.slice(
+      row.location.offset,
+      row.location.offset + row.kind.length + 1,
+    ),
+    "<" + row.kind,
+  );
+};
 try {
   await client.connect(transport);
   catalog = await client.listTools();
@@ -196,6 +213,26 @@ try {
       oracle.components.length > 0,
       "The completed task must exercise a real positive action match",
     );
+    const complete = parent.normalized_result;
+    assert.equal(complete.components.items.length, oracle.inventory.length);
+    assert.equal(oracle.inventory.length, oracle.source_components);
+    for (const [index, expected] of oracle.inventory.entries()) {
+      const row = complete.components.items[index];
+      if (values.mode === "after")
+        assertOracleFacts(
+          { ...row, source_index: index },
+          expected,
+          complete.manifest.text,
+        );
+      else {
+        for (const key of ["kind", "declared_name", "name", "permission"])
+          assert.deepEqual(
+            row[key],
+            expected[key],
+            `Legacy inventory: ${index}.${key}`,
+          );
+      }
+    }
     if (values.mode === "after") {
       assert.equal(normalized.facet, "components");
       assert.equal(normalized.source_status, "complete");
@@ -206,18 +243,7 @@ try {
       for (let i = 0; i < oracle.components.length; i++) {
         const row = normalized.items[i],
           expected = oracle.components[i];
-        assert.equal(row.declaration_coverage, "complete");
-        const cleaned = stripLocations(row);
-        for (const [key, value] of Object.entries(expected))
-          assert.deepEqual(cleaned[key], value, `Independent oracle: ${key}`);
-        const source = parent.normalized_result.manifest.text;
-        assert.equal(
-          source.slice(
-            row.location.offset,
-            row.location.offset + row.kind.length + 1,
-          ),
-          "<" + row.kind,
-        );
+        assertOracleFacts(row, expected, complete.manifest.text);
       }
     } else {
       for (const expected of oracle.components) {
@@ -234,6 +260,11 @@ try {
       source_components: oracle.source_components,
       parent_evidence_id: parentId,
       answer_verified: true,
+      inventory_verified: oracle.inventory.length,
+      inventory_scope:
+        values.mode === "after"
+          ? "declared-structured-facets"
+          : "legacy-identity-permission",
     });
   }
 } finally {

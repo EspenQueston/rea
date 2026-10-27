@@ -35,7 +35,7 @@ def main():
     package = root.get("package")
     application = root.find("application")
     assert application is not None and package, "Verification corpus requires a known package/application"
-    items = []
+    inventory = []
     ordinal = 0
     for component in application:
         if component.tag not in KINDS:
@@ -44,24 +44,25 @@ def main():
         if declared is None:
             continue
         filters = [filter_facts(value) for value in component.findall("intent-filter")]
-        if any(sys.argv[3] in value["actions"] for value in filters):
-            enabled = component.get(ANDROID + "enabled")
-            permission = component.get(ANDROID + "permission")
-            if permission is None and component.tag != "activity-alias":
-                permission = application.get(ANDROID + "permission")
-            name = (package + declared if declared.startswith(".") else
-                    package + "." + declared if "." not in declared else declared)
-            items.append({
-                "source_index": ordinal, "kind": component.tag,
-                "declared_name": declared, "name": name,
-                "enabled": True if enabled == "true" else False if enabled == "false" else None,
-                "enabled_declaration": enabled, "process": component.get(ANDROID + "process"),
-                "permission": permission or None, "intent_filters": filters,
-                "meta_data": [{"name": value.get(ANDROID + "name")}
-                              for value in component.findall("meta-data")],
-            })
+        enabled = component.get(ANDROID + "enabled")
+        permission = component.get(ANDROID + "permission")
+        if permission is None and component.tag != "activity-alias":
+            permission = application.get(ANDROID + "permission")
+        name = (package + declared if declared.startswith(".") else
+                package + "." + declared if "." not in declared else declared)
+        inventory.append({
+            "source_index": ordinal, "kind": component.tag,
+            "declared_name": declared, "name": name,
+            "enabled": True if enabled == "true" else False if enabled == "false" else None,
+            "enabled_declaration": enabled, "process": component.get(ANDROID + "process"),
+            "permission": permission or None, "intent_filters": filters,
+            "meta_data": [{"name": value.get(ANDROID + "name")}
+                          for value in component.findall("meta-data")],
+        })
         ordinal += 1
-    print(json.dumps({"components": items, "source_components": ordinal},
+    selected = [row for row in inventory
+                if any(sys.argv[3] in value["actions"] for value in row["intent_filters"])]
+    print(json.dumps({"components": selected, "inventory": inventory, "source_components": ordinal},
                      ensure_ascii=False, separators=(",", ":")))
 
 

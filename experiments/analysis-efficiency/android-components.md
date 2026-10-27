@@ -68,7 +68,7 @@ its identity, permission, enabled/process declarations, per-filter priority and
 source position. The old runtime needs complete manifest delivery for the new
 facets. The selected candidate returns the matching row directly. Both treatments
 make one inspection plus one complete Evidence export per capture; the oracle
-verifies one positive match and all 355 source declarations. An additional capture
+verifies one positive match and the total count of 355 source declarations. An additional capture
 uses the same server/engine session. First capture is a fresh process/session,
 not a flushed OS page cache. Export costs and the extra call are included.
 
@@ -171,6 +171,20 @@ A fresh real ApiDemos SDK qualification also passed the independent oracle:
 first/warm RPCs 11.291/0.290 seconds, whole two-capture elapsed 17.008 seconds,
 CPU 26.425 seconds and peak sampled family RSS 1,166,245,888 bytes. This is latest-main
 integration evidence; it is not paired with a new baseline performance cohort.
+
+Review follow-up: Greptile correctly identified that the original oracle filtered
+before comparison, so the timing cohorts above verified selected-receiver facts
+and the inventory count, not every unselected component's facts. The oracle now
+returns an unfiltered inventory and derives the selected list from it. The driver
+checks every retained parent's identity, enabled/raw-enabled/process/permission,
+filter grouping/data/priority, metadata names, declaration coverage and component
+source location before checking the selected page. The receipt records both the
+verified count and scope; historical mode checks the available identity/permission
+facets without inventing the new observations. A fresh real ApiDemos first/warm
+run passed all 355 rows in both captures (16.538 seconds, 24.977 CPU seconds,
+1,176,817,664 sampled peak family RSS bytes). The older receipts remain unchanged. The unfiltered historical-mode run also
+passed all 355 available identity/permission rows in both captures; the compiled
+manifest fixture passed all three current rows plus its selected VIEW page.
 
 Platform coverage is Linux/JDK21/JADX0.7.1 only. Android devices, emulators, actual
 runtime enabling/registration, other JDKs and Windows/macOS are unverified here.
