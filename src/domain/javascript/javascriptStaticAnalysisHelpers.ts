@@ -18,6 +18,7 @@ import {
   unwrapJavaScriptExpression,
 } from "./javascriptAstValues.js";
 import type { JavaScriptOpenReceiverFact } from "./javascriptSemanticAnalysis.js";
+import type { ElectronCallPath } from "./electronStaticAnalysisTypes.js";
 import {
   compareUnicodeCodePoints,
   compositeKey,
@@ -865,6 +866,12 @@ export const registrationKey = (
 /** Hash exact UTF-8 source text. */
 export const sha256Text = (value: string): string =>
   createHash("sha256").update(value).digest("hex");
+
+/** Identify one Electron call path within its source file across graph projections. */
+export const electronCallPathId = (
+  filePath: string,
+  path: ElectronCallPath,
+): string => sha256Text(JSON.stringify([filePath, path]));
 
 /** Recognized route-construction call suffixes. */
 export const STATIC_ROUTE_CALL_NAMES = [

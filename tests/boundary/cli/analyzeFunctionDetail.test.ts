@@ -9,6 +9,7 @@ import { registerCoreBinaryCommands } from "../../../src/cli/coreBinaryCommands.
 import type { CliInstance } from "../../../src/cli/types.js";
 import { CLI_COMMANDS } from "../../../src/cliCommandNames.js";
 import { createEvidence } from "../../../src/domain/evidence.js";
+import { ok } from "../../../src/domain/result.js";
 import { functionDossierSchema } from "../../../src/domain/native/functionDossier.js";
 import { ghidraFunctionDossier } from "../../../src/domain/ghidraValues.fixture.js";
 import { createTestTempDirectory } from "../../fixtures/temporaryDirectory.js";
@@ -28,9 +29,7 @@ const cannedCompleteEvidence = () =>
   );
 
 const harness = () => {
-  const runDirectAnalysis = vi.fn(
-    async () => cannedCompleteEvidence() as unknown,
-  );
+  const runDirectAnalysis = vi.fn(async () => ok(cannedCompleteEvidence()));
   const cli = Cli.create("rea-fn-detail-test", { version: "1", sync: false });
   registerCoreBinaryCommands(
     cli as unknown as CliInstance,
