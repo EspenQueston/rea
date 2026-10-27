@@ -409,7 +409,13 @@ it("public CLI uses only GET and produces a report from fixture GitHub responses
   await writeFile(
     ghResponse,
     JSON.stringify([
-      [rawPull(51, { mergeable: true })],
+      // The CLI scans from Date.now(); a fixed date would leave its window.
+      [
+        rawPull(51, {
+          mergeable: true,
+          created_at: new Date(Date.now() - 24 * 60 * 60 * 1_000).toISOString(),
+        }),
+      ],
       { total_count: 0, workflow_runs: [] },
     ]),
   );

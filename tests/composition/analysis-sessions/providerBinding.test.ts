@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -142,7 +143,7 @@ describe("target-bound provider routing", () => {
       value: {
         subject: {
           path: target,
-          sha256: "f".repeat(64),
+          sha256: createHash("sha256").update("fixture").digest("hex"),
           format: "directory",
         },
       },
@@ -189,6 +190,27 @@ describe("target-bound provider routing", () => {
     await session.close();
     expect(alpha.clients[0]?.closed).toBe(true);
   });
+});
+
+it("refuses an inventory subject whose digest differs from the admitted file", async () => {
+  const target = await databaseTarget();
+  const analysis = deepProvider("alpha");
+  const artifact = auxiliaryProvider(
+    "artifact",
+    "inventory_artifact",
+    "f".repeat(64),
+  );
+  const session = selectableSession([analysis.provider], artifact);
+
+  expect((await session.open(target, { providerId: "alpha" })).ok).toBe(true);
+  const result = await session.execute("inventory_artifact", {});
+  expect(result.ok).toBe(false);
+  if (result.ok) throw new Error("expected the forged subject to be refused");
+  expect(result.error).toMatchObject({
+    _tag: "ProviderAdapterError",
+    operation: "inventory_artifact:subject",
+  });
+  await session.close();
 });
 
 describe("selected provider capability provenance", () => {
@@ -321,6 +343,7 @@ const successfulExecution = (
 const auxiliaryProvider = (
   id = "auxiliary",
   operation: DeclaredOperation = "inspect_macho",
+  subjectSha256?: string,
 ): AnalysisProvider => {
   const identity = {
     id,
@@ -342,7 +365,7 @@ const auxiliaryProvider = (
                 ? {
                     subject: {
                       path: target.sourcePath ?? target.path,
-                      sha256: "f".repeat(64),
+                      sha256: subjectSha256 ?? target.sha256,
                       format: "directory",
                     },
                   }

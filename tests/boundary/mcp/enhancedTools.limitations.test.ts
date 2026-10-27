@@ -4,6 +4,7 @@ import { err, ok } from "../../../src/domain/result.js";
 import { AnalysisCapabilityUnavailableError } from "../../../src/domain/analysisErrorCore.js";
 import { parseEvidence } from "../../../src/domain/evidence.js";
 import { connect, closeEnhancedToolResources } from "./enhancedToolsHarness.js";
+import { parseMcpToolError } from "../../fixtures/mcpToolError.js";
 
 afterEach(closeEnhancedToolResources);
 
@@ -50,12 +51,12 @@ it("retains provider coverage caveats in a composed MCP overview without repeate
   expect(calls.length).toBe(new Set(calls).size);
 });
 
-it("counts all own inventory dictionary entries in the composed overview", async () => {
-  const procedures = JSON.parse(
-    '{"__proto__":"observed procedure","0x1000":"ordinary procedure"}',
-  );
-  const strings = JSON.parse('{"__proto__":"observed string"}');
-  const before = [JSON.stringify(procedures), JSON.stringify(strings)];
+it("counts inventory rows whose values look like dictionary keys", async () => {
+  const procedures = [
+    { address: "0x1000", value: "__proto__" },
+    { address: "0x1010", value: "ordinary procedure" },
+  ];
+  const strings = [{ address: "0x2000", value: "constructor" }];
   const client = await connect({
     execute: async (operation) => {
       if (operation === "read_binary_inventory_summary")
@@ -70,7 +71,7 @@ it("counts all own inventory dictionary entries in the composed overview", async
         operation === "current_document"
           ? "fixture"
           : operation === "list_procedures"
-            ? { procedures }
+            ? procedures
             : operation === "list_strings"
               ? strings
               : [];
@@ -91,8 +92,46 @@ it("counts all own inventory dictionary entries in the composed overview", async
   const evidence = parseEvidence(response.structuredContent);
   expect(evidence.normalized_result).toMatchObject({
     document: "fixture",
-    procedure_count: Object.keys(procedures).length,
-    string_count: Object.keys(strings).length,
+    procedure_count: procedures.length,
+    string_count: strings.length,
   });
-  expect([JSON.stringify(procedures), JSON.stringify(strings)]).toEqual(before);
+});
+
+it("reports a dictionary-shaped inventory as unreadable output", async () => {
+  const client = await connect({
+    execute: async (operation) => {
+      if (operation === "read_binary_inventory_summary")
+        return err(
+          new AnalysisCapabilityUnavailableError(
+            "fixture",
+            operation,
+            "No native overview",
+          ),
+        );
+      const value =
+        operation === "current_document"
+          ? "fixture"
+          : operation === "list_procedures"
+            ? { procedures: { "0x1000": "ordinary procedure" } }
+            : [];
+      return ok(
+        createAnalysisExecution(value, {
+          id: "fixture",
+          name: "Fixture",
+          version: "1",
+        }),
+      );
+    },
+  });
+  const response = await client.callTool({
+    name: "binary_overview",
+    arguments: {},
+  });
+  expect(response.isError).toBe(true);
+  expect(parseMcpToolError(response)).toMatchObject({
+    error: {
+      code: "unreadable_output",
+      details: { operation: "list_procedures" },
+    },
+  });
 });

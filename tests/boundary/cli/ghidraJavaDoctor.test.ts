@@ -1,5 +1,6 @@
 import { chmod, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { existsSync } from "node:fs";
+import { delimiter, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { expect } from "vitest";
 import { elf, thinMach } from "../../../src/domain/binaryTarget.fixture.js";
@@ -9,6 +10,13 @@ import {
   observeOwnedProcessGroups,
   systemProcessOwnershipHost,
 } from "../../../src/process/ProcessOwnershipObservation.js";
+
+/** Directory of the host's `ps`, which Linux process ownership requires. */
+const processToolsDirectory = (): string => {
+  for (const directory of (process.env.PATH ?? "").split(delimiter))
+    if (directory !== "" && existsSync(join(directory, "ps"))) return directory;
+  throw new Error("ps is not on PATH");
+};
 
 cliTest.skipIf(!["darwin", "linux"].includes(process.platform)).for([
   ["missing", "missing_dependency", "runtime_missing"],
@@ -253,7 +261,9 @@ cliTest.skipIf(!["darwin", "linux"].includes(process.platform))(
       arguments: ["doctor", "--provider", "ghidra", "--json"],
       cwd: root,
       environment: {
-        PATH: "",
+        // The empty leading component selects the current directory first;
+        // the Linux owned-process host still needs ps on PATH.
+        PATH: `${delimiter}${processToolsDirectory()}`,
         JAVA_HOME: join(root, "missing-jdk"),
         REA_LOG_LEVEL: "silent",
       },
