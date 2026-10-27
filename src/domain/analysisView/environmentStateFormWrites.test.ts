@@ -19,6 +19,8 @@ import {
   TITLE_ORDER_ROWS,
   UNLOADED_ANSWER_ROWS,
   UNSORTED_SEED_ROWS,
+  CONFIRMED_RENAME_ROWS,
+  UNPLACED_CREATE_ROWS,
 } from "../../../tests/fixtures/environmentStateFormWrites.js";
 import { environmentStateViewOf } from "../../../tests/fixtures/environmentStateWrites.js";
 import { mergedCreatePlan } from "./environmentStateWriteCreateCalls.js";
@@ -166,6 +168,18 @@ describe("collections kept sorted", () => {
 
   it("learns no sort from a rename that moving the renamed entity alone cannot reach", () => {
     const plan = planOf(UNSORTED_SEED_ROWS, "put_folders_by_id");
+    expect(plan.served).toBe(false);
+    expect(plan.insert).toBeNull();
+  });
+
+  it("gives a rename no sort that only an unplaced create's guess shows", () => {
+    expect(
+      planOf(UNPLACED_CREATE_ROWS, "patch_labels_by_id").insert,
+    ).toBeNull();
+  });
+
+  it("learns no sort from a rename when an earlier confirmed rename left its entity out of that order", () => {
+    const plan = planOf(CONFIRMED_RENAME_ROWS, "put_folders_by_id");
     expect(plan.served).toBe(false);
     expect(plan.insert).toBeNull();
   });
