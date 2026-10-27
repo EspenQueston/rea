@@ -625,7 +625,8 @@ refused for them, as the manifest is not.
 
 Each `GET` tool whose template ends in a parameter is an item tool, and its
 type's `collection_template` is the template without that parameter; any other
-`GET` tool is a list tool of its own template. Empty segments are ignored, so a
+`GET` tool is a list tool of its own template. Interior empty segments remain
+meaningful: `/api/books` and `/api//books` name distinct collections. A single
 trailing slash names the same collection. An item tool proves its type's
 `id_field` when every initial response carries the requested path value in the
 same field of one entity object (`id_basis: "path-parameter"`). The object is
@@ -696,8 +697,9 @@ more than one query) and `rendered-oversize` (a document value whose JSON
 renders to more than 256 KiB). A document holds the value of its one `path`, so for such
 a template it says nothing about the template's other paths. A body is usable
 when its content type is
-JSON-like, it is UTF-8 text of at most 256 KiB, every number survives native
-conversion exactly, and no member is named `__proto__`.
+JSON-like, it is UTF-8 text of at most 256 KiB, and every number survives native
+conversion exactly. JSON member names, including `__proto__`, remain ordinary
+own data members through extraction and serving.
 
 A list view also learns, from its checked lines that do not list the whole
 collection, what each query parameter does, and names the result in `query`.
@@ -746,7 +748,16 @@ integer of 10 or more digits that no entity of the type holds (where every one
 holds a distinct integer of the same length, as time-based ids do), a
 `nested-clock` object whose clocks the request stamped, a `template` around
 a generated value, a `reference` to an entity, or a `composed` string; other
-fields keep the observed value. A `reference` is an object holding fields of the
+fields keep the observed value. When the first read of a created entity before
+the next write shows fields the create's answer lacks, or its clocks to another
+precision, the observed entity takes them (`observation.read`). An item read
+that agrees with the answer otherwise lends its fields and clock spellings and
+no longer confirms the create; one that disagrees or omits an answer field its
+item view renders still checks it. Clock agreement uses the coarser recorded
+precision, including microseconds. A list read
+only adds fields the answer lacks and still checks it. Serving answers a create
+in its answer's shape and clock precision and stores the fields of both with
+the item read-back's clock precision. A `reference` is an object holding fields of the
 entity a sent member names, as the state holds it (a parent beside `parentId`):
 the member is accepted with any value, serving looks the entity up and refuses a
 call naming one the environment does not hold or holds in more than one
@@ -778,7 +789,14 @@ with them. Other clocks the plan stamps take that spelling too unless their own
 value shows a fixed width. A body that wraps one
 object in a one-element array is that object, wrapped so on every call
 (`body.envelope`). An update's members
-echo when stored as sent; a member stored differently is accepted only with its
+echo when stored as sent. A clock sent back as the entity held it and stored as
+a fresh clock near the call is a `clock`, and a member stored as the slug of
+another member stored as sent is a `slug`, both accepted with any value, as a
+whole-object write that sends what it read shows. A save that echoes an
+already-derived slug or holds a clock in its own second remains compatible
+with that derivation in either call order; earlier saves must also reproduce
+a newly learned slug. Any other member stored
+differently is accepted only with its
 recorded value (`body.fixed`) and stores the value the call that showed it
 recorded (the `value` of its `constant` rule), and a field it changed without
 sending must be a clock, a nested clock, an increment, a slug, a fresh `unique`
@@ -815,10 +833,11 @@ checked only on the members they sent; a mismatch no write explains marks the re
 `side-effect`. A plan is `served` when a read confirmed it and none
 contradicted it; otherwise its `reason` is the first of its build reason
 (`no-call`, `body-unusable`, `no-observation`, `unexplained-change`),
-`contradicted` (with `contradicted_by`), `side-effect`, `unconfirmed` and `incomplete-entities` (an update or delete that answers with the entity, when no initial entity holds every field its recorded answer shows, counting for an update the fields its rules write, so it could answer only for entities the environment created).
+`contradicted` (with `contradicted_by`), `side-effect`, `unconfirmed` and `incomplete-entities` (an update or delete that answers with the entity, when no initial entity holds every field its recorded answer shows, counting for an update the fields its rules write, so it could answer only for entities the environment created). An otherwise served plan whose learned rules generate clock values is withheld with `unknown-clock` when no global clock start is established; its learned rules and confirming reads remain retained.
 `checked_record_ordinals` lists the confirming reads, `insert` places created
 entities (sorted by a field the collection's recorded order shows, else last),
-and `write_clock` is the end of the last timed record, to the next second.
+and `write_clock` is the end of the last timed record, to the next second, when
+all request completions are known; otherwise it is null.
 
 Values in the state are recorded data, so the view refuses the same parents as
 the manifest, including those inspected with `sensitive_values`, and a

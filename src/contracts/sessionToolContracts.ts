@@ -1,3 +1,4 @@
+import { requireOutputSchema } from "./toolOutputSchemaPrimitives.js";
 import { matchNativeFunctionsInputSchema } from "./native/functionMatchingContracts.js";
 import { z } from "zod";
 
@@ -14,7 +15,6 @@ import {
 import { reconstructionVerificationInputSchema } from "../domain/reconstructionVerificationSchemas.js";
 import { staticRuntimeCorrelationInputSchema } from "../domain/staticRuntimeCorrelation.js";
 import { sessionOutputSchemas } from "./toolOutputSchemaGroups.js";
-import { requireOutputSchema } from "./toolOutputSchemaPrimitives.js";
 import {
   closeBinaryInputSchema,
   openBundleResourcesInputSchema,
@@ -80,7 +80,7 @@ export const SESSION_TOOL_CONTRACTS = [
   ),
   session(
     "binary_session",
-    "Report the active binary target or resource-only app root, provider and capability availability when applicable, client-feature, analysis, and server-identity status without starting analysis.",
+    'Report the active binary target or resource-only app root, provider and capability availability when applicable, client-feature, analysis, and server-identity status without starting analysis. The default summary lists omitted_fields; detail: "complete" adds provider diagnostics, candidate capabilities and static tool flags.',
     binarySessionInputSchema,
   ),
   session(

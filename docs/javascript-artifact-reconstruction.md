@@ -72,6 +72,15 @@ code-point order. Dependency manifests remain package observations but do not
 declare Electron main or renderer entries. If only dependency manifests are
 present, the inventory artifact remains the graph root.
 
+Package observations keep the legacy `renderer` property as a derived entrypoint
+candidate: the first nonempty string from `renderer`, `browser`, then `module`.
+It does not assert that the source declares a literal `renderer` field.
+`renderer_declarations` records the actual present fields: strings, including
+empty strings, remain exact; non-string values use `{ "status": "non-string" }`
+without copying nested browser mappings. An empty record means no such fields
+were present; `null` means package metadata was invalid or unavailable. Renderer
+role mechanisms and package load edges name the field that supplied the candidate.
+
 ## Select sources before analysis
 
 For a question about known entry sources, supply exact artifact-relative file
@@ -239,10 +248,12 @@ An unpacked entry whose companion bytes were not supplied remains
 `unavailable`. REA continues analyzing embedded JavaScript and records the
 missing native/resource bytes as unknown. The occurrence keeps
 `hash_status: unavailable`; no content-addressed child artifact is created for
-those missing bytes. New inventories preserve an ASAR companion declaration as
-`unpacked: true`; an omitted flag in an older inventory does not establish that
-unavailable bytes belonged to a companion. See [MCP integrity handling](mcp-contracts.md#integrity-record-and-continue)
-for the tool-result contract.
+those missing bytes. New ASAR file occurrences record `unpacked: true` for
+companion files and `unpacked: false` for packed entries, including when the
+file bytes are unavailable. An omitted flag in an older inventory remains
+unknown; it does not establish either storage mode. See
+[MCP integrity handling](mcp-contracts.md#integrity-record-and-continue) for the
+tool-result contract.
 
 JavaScript whose syntax cannot be parsed retains unavailable semantic coverage
 with `incomplete-module` unknowns for each semantic family and unknown omitted
@@ -426,8 +437,17 @@ and links whose callee was renamed by a minifier are not recognized.
 Bundler adapters own callback roles: Webpack supplies module, exports, then
 loader; esbuild CommonJS supplies exports, then module. Export extraction uses
 those binding identities for assignments and declarations, so renaming either
-parameter does not change the recovered names. Global property-definition
-intrinsics require lexical and visible-write proof. Factory export declarations
+parameter does not change the recovered names. The convention always supplies
+every role argument, so a role parameter's default never runs: a defaulted
+module or exports parameter keeps its role, and the default expression yields
+no exports, references or chunk keys. `{exports: alias}` in the module position
+binds `alias` to `module.exports`.
+Other role patterns, such as rest, array, nested or computed-key patterns or a
+non-identifier loader, receive no role and count as unknown findings, so the
+file's analysis is partial rather than an exact empty export list. An
+export-shaped write through a role binding whose value at that read cannot be
+ordered against a replacement is also an unknown finding. Global
+property-definition intrinsics require lexical and visible-write proof. Factory export declarations
 also require the loader's `d` member to have no prior or unordered visible
 replacement, including writes through lexical aliases. Unrelated loader members
 do not invalidate declarations. Ordering describes declarations within one factory

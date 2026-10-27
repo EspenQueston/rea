@@ -1,3 +1,7 @@
+import {
+  IDA_COMPATIBILITY_PROFILES,
+  readIdaConfiguration,
+} from "./IdaConfiguration.js";
 import { rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -10,7 +14,6 @@ import {
   AnalysisInputError,
   AnalysisProtocolError,
 } from "../domain/analysisErrorCore.js";
-import { readIdaConfiguration } from "./IdaConfiguration.js";
 import {
   decodeIdaToolResult,
   type IdaMcpConnection,
@@ -19,9 +22,11 @@ import { parseConfig } from "../config/parseConfig.js";
 import { IdaProvider } from "./IdaProvider.js";
 import { idaCapabilities } from "./IdaProviderCapabilities.js";
 import { IdaSessionClient } from "./IdaSessionClient.js";
-import type { RetainedResourceScope } from "../application/AnalysisProvider.js";
+import type {
+  RetainedResourceScope,
+  AnalysisProfileResolution,
+} from "../application/AnalysisProvider.js";
 import { ProviderInspectionScope } from "../providers/ProviderInspectionScope.js";
-import type { AnalysisProfileResolution } from "../application/AnalysisProvider.js";
 import type { AnalysisProfileCommitment } from "../domain/analysisProfile.js";
 
 const resourceScope: RetainedResourceScope = {
@@ -477,18 +482,17 @@ describe("native IDA provider observations", () => {
     expect(producer.calls.some(({ name }) => name.startsWith("idb_"))).toBe(
       false,
     );
-    const capabilities = idaCapabilities("attached", false, true);
+    const declared = idaCapabilities(IDA_COMPATIBILITY_PROFILES.native, false);
     expect(
-      capabilities.find(({ operation }) => operation === "procedure_callers")
+      declared.find(({ operation }) => operation === "procedure_callers")
         ?.available,
     ).toBe(false);
     expect(
-      capabilities.find(
-        ({ operation }) => operation === "procedure_pseudo_code",
-      )?.effects,
+      declared.find(({ operation }) => operation === "procedure_pseudo_code")
+        ?.effects,
     ).toMatchObject({ mayShowUi: true, mayAccessNetwork: true });
     expect(
-      idaCapabilities("attached", false).find(
+      idaCapabilities(IDA_COMPATIBILITY_PROFILES.legacy, false).find(
         ({ operation }) => operation === "procedure_callers",
       )?.available,
     ).toBe(true);
