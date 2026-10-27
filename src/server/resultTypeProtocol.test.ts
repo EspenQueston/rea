@@ -28,9 +28,7 @@ const markModernEra = (server: McpServer): void => {
 
 describe("tools/call results carry resultType on revision 2026-07-28", () => {
   const collectResults = (
-    clientTransport: ReturnType<
-      typeof InMemoryTransport.createLinkedPair
-    >[0],
+    clientTransport: ReturnType<typeof InMemoryTransport.createLinkedPair>[0],
   ): Record<string, unknown>[] => {
     const results: Record<string, unknown>[] = [];
     const original = clientTransport.onmessage;
@@ -122,9 +120,7 @@ describe("tools/call results carry resultType on revision 2026-07-28", () => {
         arguments: { required: "present", [oversizedKey]: true },
       });
       expect(oversized.isError).toBe(true);
-      expect(
-        Buffer.byteLength(JSON.stringify(oversized)),
-      ).toBeLessThan(4096);
+      expect(Buffer.byteLength(JSON.stringify(oversized))).toBeLessThan(4096);
 
       expect(results.length).toBeGreaterThanOrEqual(1);
       for (const result of results) {
