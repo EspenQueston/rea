@@ -643,7 +643,7 @@ const makeProvider = (
                 : operation === "list_documents"
                   ? ["fixture"]
                   : operation === "list_procedures"
-                    ? ["0x1000"]
+                    ? [{ address: "0x1000", value: "fixture" }]
                     : [{ address: "0x1000", value: "fixture" }];
           return ok(createAnalysisExecution(result, identity));
         },

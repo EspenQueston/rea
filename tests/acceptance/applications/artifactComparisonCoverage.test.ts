@@ -9,6 +9,7 @@ import {
   type ArtifactInventoryResult,
 } from "../../../src/domain/artifactGraph.js";
 import { artifactInspectionResultSchema } from "../../../src/domain/artifactInspection.js";
+import { thinMach } from "../../../src/domain/binaryTarget.fixture.js";
 import {
   createEvidence,
   parseEvidence,
@@ -294,9 +295,9 @@ cliTest.skipIf(process.platform === "win32")(
       [leftPath, rightPath].flatMap((path) => [
         writeFile(
           join(path, "Info.plist"),
-          "<plist><dict><key>CFBundleExecutable</key><string>main.js</string></dict></plist>",
+          "<plist><dict><key>CFBundleExecutable</key><string>main</string></dict></plist>",
         ),
-        writeFile(join(path, "main.js"), "export const value = 1;"),
+        writeFile(join(path, "main"), thinMach(0xfeedfacf, 0x0100000c)),
       ]),
     );
     const fifo = await processes.run("mkfifo", [join(leftPath, "p")]);
