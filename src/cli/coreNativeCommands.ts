@@ -27,6 +27,9 @@ import {
 import { projectAnalysisError } from "../domain/analysisErrorProjection.js";
 import { analysisInputErrorFromIssues } from "../domain/inputIssueProjection.js";
 
+/** Data type selectors stay optional in the options schema; exactly one is required. */
+const dataTypeSelectorGuidance = "Supply exactly one of --type or --address.";
+
 /** Register native load-image, memory, and annotation CLI commands. */
 export const registerCoreNativeCommands = (
   cli: CliInstance,
@@ -227,13 +230,21 @@ export const registerCoreNativeCommands = (
       ),
   });
   cli.command(CLI_COMMANDS.inspectNativeDataType, {
-    description: "Inspect one recovered database type or typed data object",
+    description: `Inspect one recovered database type or typed data object. ${dataTypeSelectorGuidance}`,
     args: z.object({
       path: z.string().describe("Local native executable or app path"),
     }),
     options: z.object({
-      type: z.string().optional().describe("Exact database type category path"),
-      address: z.string().optional().describe("Exact native address"),
+      type: z
+        .string()
+        .optional()
+        .describe(
+          `Exact database type category path. ${dataTypeSelectorGuidance}`,
+        ),
+      address: z
+        .string()
+        .optional()
+        .describe(`Exact native address. ${dataTypeSelectorGuidance}`),
       ...nativeOpenOptionFields,
     }),
     run: ({ args, options }) =>
