@@ -264,7 +264,7 @@ export const existingProjectCapabilities = (
       };
     return { ...capability, limitations };
   });
-/** Capabilities advertised for the experimental Windows x64 P0 boundary. */
+/** Capabilities advertised for the experimental Windows x64/arm64 P0 boundary. */
 export const windowsP0Capabilities = (
   readiness: WindowsNativeReadiness = inspectWindowsNativeReadiness("win32"),
 ): readonly CapabilityDescriptor[] => {

@@ -7,8 +7,10 @@ import { z } from "zod";
 import { PACKAGE_METADATA } from "../generatedPackageMetadata.js";
 import {
   WINDOWS_NATIVE_ARTIFACT,
+  WINDOWS_NATIVE_TARGETS,
   parseWindowsNativeManifest,
   validateWindowsNativeArtifact,
+  type WindowsNativeArchitecture,
 } from "../domain/windowsNativeArtifact.js";
 
 /** A native resource remains opaque until the addon validates its object tag. */
@@ -31,7 +33,7 @@ export const windowsFileIdentitySchema = z.strictObject({
 const inspectionSchema = z.strictObject({
   abiVersion: z.literal(WINDOWS_NATIVE_ARTIFACT.abiVersion),
   nodeApiVersion: z.literal(WINDOWS_NATIVE_ARTIFACT.nodeApiVersion),
-  architecture: z.literal(WINDOWS_NATIVE_ARTIFACT.architecture),
+  architecture: z.enum(["x64", "arm64"]),
   filesystem: windowsFileIdentitySchema,
   privateDacl: z.literal(true),
   privateBridgeDescriptorAccess: z.literal(true),
@@ -147,13 +149,17 @@ export const loadWindowsNativeAuthority = (
     };
   try {
     const manifest = parseWindowsNativeManifest(
-      readPackagedWindowsNativeFile("manifest.json", () => host.readManifest()),
+      readPackagedWindowsNativeFile("manifest.json", target.artifact, () =>
+        host.readManifest(),
+      ),
       host.packageVersion,
+      architecture,
     );
     if (!manifest.ok) throw manifest.error;
     const artifact = readPackagedWindowsNativeFile(
-      WINDOWS_NATIVE_ARTIFACT.artifact,
-      () => host.readArtifact(),
+      target.artifact,
+      target.artifact,
+      () => host.readArtifact(target.artifact),
     );
     const valid = validateWindowsNativeArtifact(manifest.value, artifact);
     if (!valid.ok) throw valid.error;

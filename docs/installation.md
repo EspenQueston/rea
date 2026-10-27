@@ -981,7 +981,7 @@ copying license secrets into logs, or killing unrelated Hopper processes.
 ## Ghidra
 
 REA connects to an existing Ghidra installation on Linux x64/arm64, macOS x64/arm64,
-or experimental Windows x64 P0.
+or experimental Windows x64/arm64 P0.
 It accepts Ghidra 12.x (>=12.1) and the 64-bit full JDK declared by that installation's
 `application.java.min` and `application.java.max`. The JDK's reported platform must also
 map to the same native decompiler directory as the host: a JDK running under

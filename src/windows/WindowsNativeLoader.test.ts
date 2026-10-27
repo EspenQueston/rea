@@ -310,8 +310,8 @@ describe("packaged Windows native architecture binding", () => {
       ).toMatchObject({
         available: false,
         failureStage: "artifact",
-        reason: expect.stringContaining(
-          "this arm64 host requires rea-windows-arm64.node",
+        reason: expect.stringMatching(
+          /Windows native artifact manifest has an invalid (?:architecture|artifact)/u,
         ),
       });
       expect(value.requested).toEqual([]);
