@@ -23,6 +23,38 @@ const files = new Map(
 );
 const jsonDocuments = new JavaScriptJsonDocuments();
 
+it.each(["exports", "imports"] as const)(
+  "retains above-root traversal assembled by a package %s pattern",
+  (mapKind) => {
+    const packageFiles = new Map<string, JavaScriptArtifactFile>(files);
+    packageFiles.set("package.json", {
+      ...files.get("app/main.mjs")!,
+      path: "package.json",
+      kind: "package-json",
+      text: {
+        included: true,
+        value: JSON.stringify({
+          name: "fixture",
+          [mapKind]: {
+            [mapKind === "exports" ? "./*" : "#*"]:
+              "./.%*/rea-artifact/shared/window.cjs",
+          },
+        }),
+      },
+    });
+    expect(
+      resolveArtifactPathByContext({
+        declaredPath: mapKind === "exports" ? "fixture/2e" : "#2e",
+        sourcePath: "app/main.mjs",
+        context: "module-specifier",
+        moduleKind: "import",
+        files: packageFiles,
+        jsonDocuments: new JavaScriptJsonDocuments(),
+      }),
+    ).toMatchObject({ resolution_status: "rejected", resolved_path: null });
+  },
+);
+
 it.each([
   "../../rea-artifact/shared/window.cjs",
   "../%2e%2e/rea-artifact/shared/window.cjs",

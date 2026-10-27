@@ -1,20 +1,21 @@
-import { packageSubpathPatternMatches } from "./javascriptPackageSubpathPatterns.js";
-
 /**
- * Exact package-private import-alias lookup. Node resolves `#` specifiers
- * against the importer's enclosing package `imports` map; this module owns the
- * specifier and exact-key rules. Condition, array, and null target selection
- * stay with the shared package-target machinery. Wildcard keys, recursive
- * `#` targets, and external-package targets remain explicit unknowns.
+ * Exact and pattern package-private import-alias lookup. Node resolves `#`
+ * specifiers against the importer's enclosing package `imports` map; this
+ * module owns the specifier and key rules. Exact keys win over pattern keys;
+ * pattern keys containing exactly one `*` match concrete specifiers and
+ * capture their enclosed substring for target substitution. Condition, array,
+ * and null target selection stay with the shared package-target machinery.
+ * Recursive `#` targets and external-package targets remain explicit unknowns.
  */
 
-/** How one `#` specifier participates in exact import-alias lookup. */
+import { selectPackageSubpathPattern } from "./javascriptPackageSubpathPatterns.js";
+
+/** How one `#` specifier participates in import-alias lookup. */
 export type PackageImportSpecifierClassification =
   | { readonly kind: "invalid" }
-  | { readonly kind: "pattern" }
   | { readonly kind: "exact"; readonly key: string };
 
-/** Outcome of looking up one exact `#` key in a package `imports` object. */
+/** Outcome of looking up one `#` key in a package `imports` object. */
 export type PackageImportExactLookup =
   | { readonly kind: "undefined-map" }
   | {
@@ -22,7 +23,9 @@ export type PackageImportExactLookup =
       readonly declared: readonly string[];
     }
   | {
-      readonly kind: "pattern-unresolved";
+      readonly kind: "pattern-found";
+      readonly target: unknown;
+      readonly capture: string;
       readonly declared: readonly string[];
     }
   | {
@@ -40,14 +43,14 @@ export type PackageImportTargetClassification =
 
 /**
  * Classify a `#` module specifier before any package-scope walk.
- * `#` and names ending in `/` are invalid. Other literal keys, including
- * `#/…`, participate in exact lookup; wildcard expansion remains unsupported.
+ * `#` and names ending in `/` are invalid. A literal `*` in the specifier
+ * participates as captured text; other keys, including `#/…`, participate in
+ * exact and pattern lookup.
  */
 export const classifyPackageImportSpecifier = (
   specifier: string,
 ): PackageImportSpecifierClassification => {
   if (specifier === "#" || specifier.endsWith("/")) return { kind: "invalid" };
-  if (specifier.includes("*")) return { kind: "pattern" };
   return { kind: "exact", key: specifier };
 };
 
@@ -56,9 +59,13 @@ export const isPackageImportPatternKey = (key: string): boolean =>
   key.includes("*") || key.endsWith("/");
 
 /**
- * Look up one exact `#` key in a package `imports` value.
- * Only a matching wildcard keeps an exact miss unresolved. Unrelated patterns
- * cannot select a target and therefore do not hide an undefined specifier.
+ * Look up one `#` key in a package `imports` value. An exact key hit wins
+ * over pattern keys. Without an exact hit, single-`*` pattern keys are tried
+ * in Node's pattern-key order and a match returns the pattern target with its
+ * captured substring. Keys without a `#` prefix participate too: real Node
+ * 22, 24, and 26 follow `imports: {"*": "./safe.js"}` for `#foo`, so the
+ * prefix is not a precondition for matching. A request no pattern matches is reported as missing, so unrelated
+ * patterns do not create uncertainty about an undefined specifier.
  */
 export const lookupExactPackageImport = (
   imports: unknown,
@@ -73,9 +80,18 @@ export const lookupExactPackageImport = (
       target: Reflect.get(imports, key),
       declared,
     };
-  return declared.some((pattern) => packageSubpathPatternMatches(pattern, key))
-    ? { kind: "pattern-unresolved", declared }
-    : { kind: "missing-key", declared };
+  const pattern = selectPackageSubpathPattern(
+    declared.filter(isPackageImportPatternKey),
+    key,
+  );
+  if (pattern !== null)
+    return {
+      kind: "pattern-found",
+      target: Reflect.get(imports, pattern.key),
+      capture: pattern.capture,
+      declared,
+    };
+  return { kind: "missing-key", declared };
 };
 
 /**

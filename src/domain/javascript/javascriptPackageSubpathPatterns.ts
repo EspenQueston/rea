@@ -1,3 +1,7 @@
+/** A package pattern key contains exactly one star. */
+export const isSingleStarPatternKey = (key: string): boolean =>
+  key.includes("*") && key.indexOf("*") === key.lastIndexOf("*");
+
 /** Node package patterns contain one star matching at least one character. */
 export const packageSubpathPatternMatches = (
   pattern: string,
@@ -5,8 +9,7 @@ export const packageSubpathPatternMatches = (
 ): boolean => {
   const wildcard = pattern.indexOf("*");
   return (
-    wildcard !== -1 &&
-    pattern.lastIndexOf("*") === wildcard &&
+    isSingleStarPatternKey(pattern) &&
     subpath.length >= pattern.length &&
     subpath.startsWith(pattern.slice(0, wildcard)) &&
     subpath.endsWith(pattern.slice(wildcard + 1))
@@ -17,7 +20,7 @@ export const packageSubpathPatternMatches = (
 export const selectPackageSubpathPattern = (
   patterns: readonly string[],
   subpath: string,
-): string | undefined => {
+): { readonly key: string; readonly capture: string } | null => {
   let selected: string | undefined;
   for (const pattern of patterns) {
     if (!packageSubpathPatternMatches(pattern, subpath)) continue;
@@ -29,5 +32,13 @@ export const selectPackageSubpathPattern = (
     )
       selected = pattern;
   }
-  return selected;
+  if (selected === undefined) return null;
+  const wildcard = selected.indexOf("*");
+  return {
+    key: selected,
+    capture: subpath.slice(
+      wildcard,
+      subpath.length - (selected.length - wildcard - 1),
+    ),
+  };
 };

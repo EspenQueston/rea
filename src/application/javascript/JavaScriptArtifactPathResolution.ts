@@ -24,6 +24,7 @@ import {
   classifyPackageImportTargetString,
   lookupExactPackageImport,
 } from "../../domain/javascript/javascriptPackageImportAliases.js";
+import { selectPackageSubpathPattern } from "../../domain/javascript/javascriptPackageSubpathPatterns.js";
 import {
   typescriptEmittedSourceCandidates,
   type TypeScriptEmittedSourceCandidate,
@@ -32,7 +33,6 @@ import {
   isRelativeJavaScriptModuleSpecifier,
   decodeJavaScriptModuleUrlPath,
 } from "../../domain/javascript/javascriptModuleSpecifier.js";
-import { selectPackageSubpathPattern } from "../../domain/javascript/javascriptPackageSubpathPatterns.js";
 import type { JavaScriptModuleResolutionMode } from "../../domain/javascript/javascriptModuleResolutionMode.js";
 import type { JsonValue } from "../../domain/jsonValue.js";
 import { err, ok, type Result } from "../../domain/result.js";
@@ -133,26 +133,30 @@ const encodePackageMetadataUrl = (path: string): URL =>
   );
 // URL identity cannot represent lone UTF-16 surrogates. Use request-local
 // opaque segments only for structural admission, never inventory lookup. A
-// target cannot spell these identities after URL's tab/newline preprocessing.
+// target or capture cannot spell these identities after URL preprocessing.
+interface UnrepresentablePackageMetadataUrl {
+  readonly structuralUrl: URL;
+  readonly structuralSegments: ReadonlySet<string>;
+  readonly limitation: string;
+}
+
 const packageMetadataUrl = (
   path: string,
   relativeTarget: string,
-): Result<
-  URL,
-  {
-    readonly structuralUrl: URL;
-    readonly structuralSegments: ReadonlySet<string>;
-    readonly limitation: string;
-  }
-> => {
+  capture: string | null = null,
+): Result<URL, UnrepresentablePackageMetadataUrl> => {
   try {
     return ok(encodePackageMetadataUrl(path));
   } catch (cause: unknown) {
     if (!(cause instanceof URIError)) throw cause;
+    const expandedTarget =
+      capture === null
+        ? relativeTarget
+        : relativeTarget.replaceAll("*", () => capture);
     const reserved = new Set(
-      `${path}\n${relativeTarget.replace(/[\t\n\r]/gu, "")}`.match(
-        /rea-opaque-\d+/gu,
-      ) ?? [],
+      `${path}\n${relativeTarget}\n${expandedTarget}`
+        .replace(/[\t\n\r]/gu, "")
+        .match(/rea-opaque-\d+/gu) ?? [],
     );
     const structuralSegments = new Set<string>();
     let nextIdentity = 0;
@@ -180,12 +184,33 @@ const packageMetadataUrl = (
   }
 };
 
+// URL normalization can remove an opaque base segment, including after pattern
+// expansion. Only surviving structural identities still prevent file lookup.
+const packageUrlLookupLimitation = (
+  url: URL,
+  unrepresentableBase: UnrepresentablePackageMetadataUrl | undefined,
+): string | undefined =>
+  unrepresentableBase !== undefined &&
+  url.pathname
+    .split("/")
+    .some((segment) => unrepresentableBase.structuralSegments.has(segment))
+    ? unrepresentableBase.limitation
+    : undefined;
+
 interface PackageFileTarget {
+  /** Exact source metadata text; expansion must not replace this evidence. */
   readonly value: string;
+  readonly expanded_value?: string;
   /** Normalized URL retained until loader-specific validation and file lookup. */
   readonly url: URL;
   /** Structural validation remains possible when the inventory base has no URL identity. */
-  readonly lookupLimitation?: string;
+  readonly unrepresentableBase?: UnrepresentablePackageMetadataUrl;
+}
+
+interface PackageTargetContext {
+  readonly packagePath: string;
+  readonly mapKind: "exports" | "imports";
+  readonly capture: string | null;
 }
 
 type CandidateResolution = {
@@ -629,6 +654,10 @@ const contextualCandidate = (
     context === "module-specifier" &&
     input.moduleKind === "require" &&
     declared.includes("\\") &&
+    (isRelativeJavaScriptModuleSpecifier(declared) ||
+      declared.startsWith(".\\") ||
+      declared.startsWith("\\") ||
+      /^[a-z]:/iu.test(declared)) &&
     (!hasScheme(declared) || /^[a-z]:/iu.test(declared))
   ) {
     const windowsPath = unknownWindowsRuntimePath(declared);
@@ -637,10 +666,21 @@ const contextualCandidate = (
   const hasUrlPathSemantics =
     context === "module-specifier" && input.moduleKind === "import";
   if (hasUrlPathSemantics) declared = htmlUrlText(declared);
-  const rejected = rejectDeclaration(
-    declared,
-    declaresLiteralPercent(input) || hasUrlPathSemantics,
-  );
+  // Bare package specifiers carry loader-specific capture rules: exports keys
+  // hold encoded separators and control characters verbatim, and pattern
+  // captures hold raw backslashes, so canonical path-syntax gates wait until
+  // a legacy lookup actually builds a filesystem candidate.
+  const isBareModuleSpecifier =
+    context === "module-specifier" &&
+    !hasScheme(declared) &&
+    !isRelativeJavaScriptModuleSpecifier(declared) &&
+    !declared.startsWith("/");
+  const rejected = isBareModuleSpecifier
+    ? null
+    : rejectDeclaration(
+        declared,
+        declaresLiteralPercent(input) || hasUrlPathSemantics,
+      );
   if (rejected !== null) return rejected;
   if (context === "module-specifier") {
     if (hasScheme(declared))
@@ -843,6 +883,17 @@ const urlRelativeCandidate = (
 const bareModuleCandidate = (
   input: ResolveArtifactPathInput,
 ): CandidateResolution => {
+  if (input.declaredPath.includes("\0"))
+    return unresolvedCandidate("rejected", [
+      "Module requests cannot contain NUL.",
+    ]);
+  if (
+    input.moduleKind === "import" &&
+    input.declaredPath.split("/")[0]?.includes("\\")
+  )
+    return unresolvedCandidate("rejected", [
+      "ES module package names cannot contain backslashes.",
+    ]);
   const request = parseBarePackageRequest(input.declaredPath, input.moduleKind);
   if (request === null || isBuiltin(input.declaredPath))
     return unresolvedCandidate("external", [
@@ -850,13 +901,19 @@ const bareModuleCandidate = (
     ]);
   if (
     input.moduleKind === "import" &&
-    (request.packageName.startsWith(".") || request.packageName.includes("%"))
+    (request.packageName.startsWith(".") ||
+      request.packageName.includes("%") ||
+      request.packageName.includes("\\"))
   )
     return unresolvedCandidate("rejected", [
-      "ES module package names cannot start with a dot or contain percent signs.",
+      "ES module package names cannot start with a dot or contain percent signs or backslashes.",
     ]);
   const self = packageSelfCandidate(input, request);
   if (self !== null) return self;
+  if (input.moduleKind === "require" && request.packageName.includes("\\")) {
+    const windowsPath = unknownWindowsRuntimePath(input.declaredPath);
+    if (windowsPath !== null) return windowsPath;
+  }
   // ESM constructs a package.json URL; its parsed identity is not a literal
   // dependency directory. Self resolution above still uses the exact name.
   let dependencyDirectory = posix.join("node_modules", request.packageName);
@@ -947,9 +1004,12 @@ const enclosingPackageMetadata = (
 };
 
 /**
- * Resolve an exact `#alias` against the importer's enclosing `imports` map.
- * Selected relative targets are exact files; patterns, recursive aliases, and
- * external-package targets stay unresolved without falling through.
+ * Resolve an exact or pattern `#alias` against the importer's enclosing
+ * `imports` map. Exact keys win; single-`*` pattern keys capture their
+ * enclosed substring for substitution into the selected normalized URL, as in
+ * exports patterns. Selected targets are package-local `./` files with no
+ * extension or index fallback; recursive aliases and external-package targets
+ * stay unresolved without falling through.
  */
 const resolvePackageImportAlias = (
   input: ResolveArtifactPathInput,
@@ -976,15 +1036,14 @@ const resolvePackageImportAlias = (
     return unresolvedCandidate("external", [
       `Package metadata ${metadata.path} does not define package import alias ${specifier}; it declares ${lookup.declared.join(", ") || "no imports keys"}.`,
     ]);
-  if (lookup.kind === "pattern-unresolved")
-    return unresolvedCandidate("unavailable", [
-      `Wildcard package import aliases remain unresolved; package metadata ${metadata.path} has no exact imports key ${specifier}.`,
-    ]);
   const selected = selectExportTarget(
     lookup.target,
     packageExportConditions(input.moduleKind),
-    metadata.path,
-    "imports",
+    {
+      packagePath: metadata.path,
+      mapKind: "imports",
+      capture: lookup.kind === "pattern-found" ? lookup.capture : null,
+    },
   );
   if (selected.kind === "invalid" || selected.kind === "invalid-config")
     return unresolvedCandidate("rejected", [
@@ -998,22 +1057,37 @@ const resolvePackageImportAlias = (
     return unresolvedCandidate("external", [
       `Package metadata ${metadata.path} blocks import alias ${specifier} with ${selected.cause === "null" ? "an explicit null imports target" : "an empty imports target array"}.`,
     ]);
-  if (selected.kind === "non-relative") {
-    const target = classifyPackageImportTargetString(selected.value);
-    // Unsupported lookup may still reach a selected module and another launch
-    // owner. Only a known builtin establishes that no local imports follow.
+  // Pattern matches substitute the captured substring into the selected target
+  // string, but a selected non-relative target keeps its class: Node
+  // classifies the declared target before substitution, and reclassifying the
+  // expanded text could launder a bare-package target into a relative one.
+  const final =
+    lookup.kind !== "pattern-found"
+      ? selected
+      : selected.kind === "non-relative"
+        ? ({
+            kind: "non-relative",
+            value: selected.value.replaceAll("*", () => lookup.capture),
+          } as const)
+        : expandPatternString(selected, lookup.capture, "imports");
+  if (final.kind === "invalid")
+    return unresolvedCandidate("rejected", [
+      `Package metadata ${metadata.path}: ${final.limitation}`,
+    ]);
+  if (final.kind === "non-relative") {
+    const target = classifyPackageImportTargetString(final.value);
     return unresolvedCandidate(
-      isBuiltin(selected.value) || ELECTRON_MODULE.test(selected.value)
+      isBuiltin(final.value) || ELECTRON_MODULE.test(final.value)
         ? "external"
         : "unavailable",
       [
         target.kind === "recursive"
-          ? `Recursive package import aliases remain unresolved; package metadata ${metadata.path} maps ${specifier} to ${JSON.stringify(target.target)}.`
-          : `External-package import targets remain unresolved; package metadata ${metadata.path} maps ${specifier} to ${JSON.stringify(target.target)}.`,
+          ? `Recursive package import aliases remain unresolved; package metadata ${metadata.path} maps ${specifier} to ${JSON.stringify(target.target)} (declared target ${JSON.stringify(selected.value)}).`
+          : `External-package import targets remain unresolved; package metadata ${metadata.path} maps ${specifier} to ${JSON.stringify(target.target)} (declared target ${JSON.stringify(selected.value)}).`,
       ],
     );
   }
-  return resolveExportTarget(input, metadata.path, selected, "imports");
+  return resolveExportTarget(input, metadata.path, final, "imports");
 };
 
 /** Self references use the nearest package scope before dependency lookup. */
@@ -1068,6 +1142,12 @@ const resolvePackageDependency = (
       );
     if (input.moduleKind === "import")
       return resolveLegacyEsmSubpath(input, directory, subpath);
+    // Without exports, CommonJS backslashes depend on the runtime host. Retain
+    // that uncertainty instead of normalizing them into logical separators.
+    if (subpath.slice(2).includes("\\"))
+      return unresolvedCandidate("unavailable", [
+        "CommonJS backslash subpaths require the runtime host filesystem semantics.",
+      ]);
     const candidate = confineCandidate(`${directory}/${subpath.slice(2)}`);
     return typeof candidate === "string"
       ? resolveCandidate(input, candidate, new Set())
@@ -1087,19 +1167,19 @@ const resolveLegacyEsmSubpath = (
   directory: string,
   subpath: string,
 ): CandidateResolution => {
-  const subpathPath = stripQueryAndFragment(htmlUrlText(subpath));
-  const declarationRejection = rejectDeclaration(subpathPath, true);
-  if (declarationRejection !== null) return declarationRejection;
-  let depth = directory === "." ? 0 : directory.split("/").length;
-  for (const segment of subpathPath.split("/")) {
-    if (segment === "..") {
-      if (depth === 0)
-        return unresolvedCandidate("rejected", [
-          "The resolved candidate escapes the canonical artifact root.",
-        ]);
-      depth--;
-    } else if (segment !== ".") depth++;
-  }
+  if (
+    applyUrlReference(
+      urlDirectoryState(directory),
+      stripQueryAndFragment(htmlUrlText(subpath)).replaceAll("\\", "/"),
+      true,
+    ).escapes > 0
+  )
+    return unresolvedCandidate("rejected", [
+      "The resolved candidate escapes the canonical artifact root.",
+    ]);
+  // Package resolution constructs a URL before loader finalization. Admit
+  // only its surviving pathname: dot segments can remove encoded separators,
+  // and encoded dots can normalize to another retained artifact file.
   const metadataUrl = packageMetadataUrl(
     posix.join(directory, "package.json"),
     subpath,
@@ -1115,6 +1195,15 @@ const resolveLegacyEsmSubpath = (
   const encodedPath = url.pathname.slice(
     PACKAGE_ARTIFACT_ROOT_URL.pathname.length,
   );
+  // The package URL parser has already normalized whole-segment encoded dots,
+  // so a remaining percent escape sits inside an ordinary filename. Node loads
+  // such names decoded (legacy/foo%2ebar.js reaches foo.bar.js), so encoded
+  // dots stay admitted while encoded separators keep changing path structure
+  // and are refused.
+  if (/%(?:2f|5c)/iu.test(encodedPath))
+    return unresolvedCandidate("rejected", [
+      "The ESM package subpath URL contains encoded separator bytes.",
+    ]);
   const rejected = rejectDeclaration(encodedPath, true);
   if (rejected !== null) return rejected;
   const decoded = decodeModuleUrlPath(encodedPath);
@@ -1125,14 +1214,12 @@ const resolveLegacyEsmSubpath = (
     return unresolvedCandidate("rejected", [
       `ESM package subpath ${JSON.stringify(input.declaredPath)} has URL directory form; directory imports are unsupported and no exact-file, package main or index lookup was attempted.`,
     ]);
-  const unrepresentableBase = metadataUrl.ok ? undefined : metadataUrl.error;
-  if (
-    unrepresentableBase !== undefined &&
-    url.pathname
-      .split("/")
-      .some((segment) => unrepresentableBase.structuralSegments.has(segment))
-  )
-    return unresolvedCandidate("unavailable", [unrepresentableBase.limitation]);
+  const lookupLimitation = packageUrlLookupLimitation(
+    url,
+    metadataUrl.ok ? undefined : metadataUrl.error,
+  );
+  if (lookupLimitation !== undefined)
+    return unresolvedCandidate("unavailable", [lookupLimitation]);
   const file = resolveFileCandidates(input, [candidate]);
   if (file !== null) return file;
   if (hasContainerDirectory(input, candidate))
@@ -1166,10 +1253,6 @@ const resolvePackageExports = (
     return unresolvedCandidate("external", [
       `Directory package metadata ${packagePath} blocks subpath ${subpath} with ${exported.cause === "null" ? "an explicit null exports target" : "an empty exports target array"}.`,
     ]);
-  if (exported.status === "pattern-unresolved")
-    return unresolvedCandidate("unavailable", [
-      `Package metadata ${packagePath} selects wildcard exports key ${JSON.stringify(exported.pattern)} for subpath ${subpath}; wildcard target expansion remains unresolved.`,
-    ]);
   return resolveExportTarget(input, packagePath, exported);
 };
 
@@ -1186,9 +1269,22 @@ const resolveExportTarget = (
     ...outcome,
     limitations: outcome.limitations.map(
       (reason) =>
-        `Package metadata ${packagePath}, ${mapKind} target ${JSON.stringify(target.value)}: ${reason}`,
+        `Package metadata ${packagePath}, ${mapKind} target ${JSON.stringify(target.value)}${target.expanded_value === undefined ? "" : `, expanded as ${JSON.stringify(target.expanded_value)}`}: ${reason}`,
     ),
   });
+  // Node checks package confinement before pattern substitution; a capture
+  // can then assemble a parent segment. Preserve that selected runtime edge,
+  // while the shared finalizer still confines it to the retained artifact.
+  if (
+    target.url.protocol !== PACKAGE_ARTIFACT_ROOT_URL.protocol ||
+    target.url.host !== PACKAGE_ARTIFACT_ROOT_URL.host ||
+    !target.url.pathname.startsWith(PACKAGE_ARTIFACT_ROOT_URL.pathname)
+  )
+    return withTargetSource(
+      unresolvedCandidate("rejected", [
+        "The selected package URL escapes the retained artifact root.",
+      ]),
+    );
   // Node's CommonJS finalizer checks the serialized URL, including suffixes;
   // its ESM finalizer checks only the pathname. Neither error retries arrays.
   if (input.moduleKind === "require" && /%(?:2f|5c)/iu.test(target.url.href))
@@ -1200,16 +1296,36 @@ const resolveExportTarget = (
   const encodedPath = target.url.pathname.slice(
     PACKAGE_ARTIFACT_ROOT_URL.pathname.length,
   );
-  // Package targets are URLs for both loaders, so their percent bytes encode.
-  const rejected = rejectDeclaration(encodedPath, true);
-  if (rejected !== null) return withTargetSource(rejected);
+  // The package URL parser has already normalized dot segments, and export
+  // target selection rejects decoded `.` and `..` segments before expansion.
+  // Encoded separators still change path structure during decoding, so keep
+  // rejecting them while allowing encoded dots inside ordinary filenames.
+  if (/%(?:2f|5c)/iu.test(encodedPath))
+    return withTargetSource(
+      unresolvedCandidate("rejected", [
+        "The selected package URL contains encoded separator bytes.",
+      ]),
+    );
   const decoded = decodeModuleUrlPath(encodedPath);
   if (typeof decoded !== "string") return withTargetSource(decoded);
   const candidate = confineCandidate(decoded);
   if (typeof candidate !== "string") return withTargetSource(candidate);
-  if (target.lookupLimitation !== undefined)
+  const lookupLimitation = packageUrlLookupLimitation(
+    target.url,
+    target.unrepresentableBase,
+  );
+  if (lookupLimitation !== undefined)
     return withTargetSource(
-      unresolvedCandidate("unavailable", [target.lookupLimitation]),
+      unresolvedCandidate("unavailable", [lookupLimitation]),
+    );
+  if (urlPathIsDirectory(target.url.pathname))
+    return withTargetSource(
+      unresolvedCandidate(
+        input.moduleKind === "require" ? "not-found" : "rejected",
+        [
+          "The selected package URL has directory form; package targets are exact files, so no file, extension or directory index lookup was attempted.",
+        ],
+      ),
     );
   return (
     resolveFileCandidates(input, [candidate]) ??
@@ -1804,10 +1920,14 @@ type PackageExportOutcome =
   | ({ readonly status: "value" } & PackageFileTarget)
   | { readonly status: "rejected"; readonly limitation: string }
   | { readonly status: "blocked"; readonly cause: PackageTargetBlockCause }
-  | { readonly status: "pattern-unresolved"; readonly pattern: string }
   | { readonly status: "unmatched"; readonly declared: readonly string[] };
 
-/** Exact keys precede the best matching pattern; pattern expansion remains unknown. */
+/**
+ * Exact keys win over pattern keys. Without an exact hit, keys containing
+ * exactly one `*` are tried in Node's pattern-key order and a match captures
+ * its enclosed substring for substitution into the selected normalized URL.
+ * The declared target and capture are admitted separately before expansion.
+ */
 const selectPackageExport = (
   value: unknown,
   subpath: string,
@@ -1815,8 +1935,8 @@ const selectPackageExport = (
   packagePath: string,
 ): PackageExportOutcome => {
   let target = value;
-  let pattern: string | undefined;
   let declared: string[] = [];
+  let capture: string | null = null;
   if (typeof value === "object" && value !== null && !Array.isArray(value)) {
     const keys = Object.keys(value);
     const hasSubpaths = keys.some((key) => key.startsWith("."));
@@ -1828,20 +1948,24 @@ const selectPackageExport = (
       };
     declared = keys;
     if (hasSubpaths) {
-      if (subpath.endsWith("/")) return { status: "unmatched", declared };
-      if (!subpath.includes("*") && Object.hasOwn(value, subpath))
+      if (
+        !subpath.includes("*") &&
+        !subpath.endsWith("/") &&
+        Object.hasOwn(value, subpath)
+      ) {
         target = Reflect.get(value, subpath);
-      else {
-        pattern = selectPackageSubpathPattern(keys, subpath);
-        if (pattern === undefined) return { status: "unmatched", declared };
-        target = Reflect.get(value, pattern);
+      } else {
+        const pattern = selectPackageSubpathPattern(keys, subpath);
+        if (pattern === null) return { status: "unmatched", declared };
+        target = Reflect.get(value, pattern.key);
+        capture = pattern.capture;
       }
     } else if (subpath !== ".") return { status: "unmatched", declared };
   } else if (subpath !== ".") return { status: "unmatched", declared };
   const selected = selectExportTarget(
     target,
     packageExportConditions(moduleKind),
-    packagePath,
+    { packagePath, mapKind: "exports", capture },
   );
   if (selected.kind === "invalid" || selected.kind === "invalid-config")
     return { status: "rejected", limitation: selected.limitation };
@@ -1857,17 +1981,25 @@ const selectPackageExport = (
       status: "rejected",
       limitation: `The package exports target ${JSON.stringify(selected.value)} must start with "./".`,
     };
-  if (pattern !== undefined) return { status: "pattern-unresolved", pattern };
-  return {
-    status: "value",
-    value: selected.value,
-    url: selected.url,
-    ...(selected.lookupLimitation === undefined
-      ? {}
-      : {
-          lookupLimitation: selected.lookupLimitation,
-        }),
-  };
+  const expanded =
+    capture === null
+      ? selected
+      : expandPatternString(selected, capture, "exports");
+  if (expanded.kind === "value")
+    return {
+      status: "value",
+      value: expanded.value,
+      ...(expanded.expanded_value === undefined
+        ? {}
+        : { expanded_value: expanded.expanded_value }),
+      url: expanded.url,
+      ...(expanded.unrepresentableBase === undefined
+        ? {}
+        : {
+            unrepresentableBase: expanded.unrepresentableBase,
+          }),
+    };
+  return { status: "rejected", limitation: expanded.limitation };
 };
 
 type ExportTargetOutcome =
@@ -1889,25 +2021,32 @@ const invalidExportTarget = (
 
 // Node checks raw target segments before URL normalization. Compare encoded
 // segment names here; full URL decoding follows array target selection.
+const decodedSegmentIsForbidden = (raw: string): boolean => {
+  const segment = raw.replace(/%[0-9a-f]{2}/giu, (encoded) =>
+    String.fromCharCode(Number.parseInt(encoded.slice(1), 16)),
+  );
+  return (
+    segment === "." ||
+    segment === ".." ||
+    segment.toLowerCase() === "node_modules"
+  );
+};
+
 const forbiddenExportSegment = (value: string): string | undefined =>
   value
     .slice(2)
     .split(/[\\/]/u)
-    .find((raw) => {
-      const segment = raw.replace(/%[0-9a-f]{2}/giu, (encoded) =>
-        String.fromCharCode(Number.parseInt(encoded.slice(1), 16)),
-      );
-      return (
-        segment === "." ||
-        segment === ".." ||
-        segment.toLowerCase() === "node_modules"
-      );
-    });
+    .find((raw) => decodedSegmentIsForbidden(raw));
+
+// Node rejects a forbidden segment in the captured subpath itself, whether or
+// not the selected target interpolates the `*`. Backslash separates capture
+// segments the same way it separates target segments.
+const forbiddenCapturedSegment = (capture: string): string | undefined =>
+  capture.split(/[\\/]/u).find((raw) => decodedSegmentIsForbidden(raw));
 
 const selectStringPackageTarget = (
   value: string,
-  packagePath: string,
-  mapKind: "exports" | "imports",
+  { packagePath, mapKind, capture }: PackageTargetContext,
 ): ExportTargetOutcome => {
   if (mapKind === "imports") {
     const target = classifyPackageImportTargetString(value);
@@ -1927,7 +2066,7 @@ const selectStringPackageTarget = (
       `contains forbidden path segment ${JSON.stringify(forbidden)} before URL normalization`,
       mapKind,
     );
-  const metadataUrl = packageMetadataUrl(packagePath, value);
+  const metadataUrl = packageMetadataUrl(packagePath, value, capture);
   const packageUrl = metadataUrl.ok
     ? metadataUrl.value
     : metadataUrl.error.structuralUrl;
@@ -1948,16 +2087,66 @@ const selectStringPackageTarget = (
     ...(metadataUrl.ok
       ? {}
       : {
-          lookupLimitation: metadataUrl.error.limitation,
+          unrepresentableBase: metadataUrl.error,
         }),
+  };
+};
+
+/**
+ * Substitute a capture into the already-normalized selected URL. The declared
+ * target and capture each own their segment validation; concatenating them
+ * must not trigger another segment check. Node rejects a
+ * forbidden captured segment even when the target never interpolates it, and
+ * the replacer function keeps `$` sequences in the capture literal instead
+ * of interpreting them as replacement patterns.
+ */
+const expandPatternString = (
+  selected: Extract<ExportTargetOutcome, { readonly kind: "value" }>,
+  capture: string,
+  mapKind: "exports" | "imports",
+):
+  | ({
+      readonly kind: "value";
+      readonly expanded_value: string;
+    } & PackageFileTarget)
+  | { readonly kind: "invalid"; readonly limitation: string } => {
+  const forbidden = forbiddenCapturedSegment(capture);
+  if (forbidden !== undefined)
+    return {
+      kind: "invalid",
+      limitation: `The package ${mapKind === "imports" ? "import" : "exports"} pattern capture ${JSON.stringify(capture)} for declared target ${JSON.stringify(selected.value)} contains forbidden path segment ${JSON.stringify(forbidden)} before URL normalization.`,
+    };
+  const expandedValue = selected.value.replaceAll("*", () => capture);
+  const expandedUrlText = selected.url.href.replaceAll("*", () => capture);
+  const expandedPath = expandedUrlText.slice(
+    PACKAGE_ARTIFACT_ROOT_URL.href.length,
+  );
+  if (
+    applyUrlReference(
+      urlDirectoryState(""),
+      stripQueryAndFragment(htmlUrlText(expandedPath)).replaceAll("\\", "/"),
+      true,
+    ).escapes > 0
+  )
+    return {
+      kind: "invalid",
+      limitation: `The declared ${mapKind} target ${JSON.stringify(selected.value)}, expanded as ${JSON.stringify(expandedValue)}, escapes the retained artifact root.`,
+    };
+  return {
+    kind: "value",
+    value: selected.value,
+    expanded_value: expandedValue,
+    url: new URL(expandedUrlText),
+    ...(selected.unrepresentableBase === undefined
+      ? {}
+      : { unrepresentableBase: selected.unrepresentableBase }),
   };
 };
 
 const selectArrayPackageTarget = (
   value: readonly unknown[],
   conditions: ReadonlySet<string>,
-  packagePath: string,
-  mapKind: "exports" | "imports",
+  context: PackageTargetContext,
 ): ExportTargetOutcome => {
   if (value.length === 0) return { kind: "blocked", cause: "empty-array" };
   let lastRefusal:
@@ -1965,7 +2154,7 @@ const selectArrayPackageTarget = (
     | undefined;
   const declared = new Set<string>();
   for (const entry of value) {
-    const nested = selectExportTarget(entry, conditions, packagePath, mapKind);
+    const nested = selectExportTarget(entry, conditions, context);
     // Node's array fallback catches invalid targets, not invalid configuration.
     if (nested.kind === "invalid-config") return nested;
     if (nested.kind === "unmatched") {
@@ -1991,19 +2180,18 @@ const selectArrayPackageTarget = (
 const selectExportTarget = (
   value: unknown,
   conditions: ReadonlySet<string>,
-  packagePath: string,
-  mapKind: "exports" | "imports" = "exports",
+  context: PackageTargetContext,
 ): ExportTargetOutcome => {
   if (typeof value === "string")
-    return selectStringPackageTarget(value, packagePath, mapKind);
+    return selectStringPackageTarget(value, context);
   if (value === null) return { kind: "blocked", cause: "null" };
   if (Array.isArray(value))
-    return selectArrayPackageTarget(value, conditions, packagePath, mapKind);
+    return selectArrayPackageTarget(value, conditions, context);
   if (typeof value !== "object")
     return invalidExportTarget(
       value,
       "must be a relative string, object, array, or null",
-      mapKind,
+      context.mapKind,
     );
   for (const key of Object.keys(value)) {
     const numeric = Number(key);
@@ -2017,7 +2205,7 @@ const selectExportTarget = (
   for (const [condition, target] of Object.entries(value)) {
     declared.add(condition);
     if (!conditions.has(condition)) continue;
-    const nested = selectExportTarget(target, conditions, packagePath, mapKind);
+    const nested = selectExportTarget(target, conditions, context);
     if (nested.kind !== "unmatched") return nested;
     for (const name of nested.declared) declared.add(name);
   }
@@ -2055,7 +2243,7 @@ const notFoundCandidate = (): Extract<
 
 const exactPackageTargetNotFound = (
   path: string,
-  targetKind: "exports" | "imports" | "ESM subpath",
+  targetKind: "exports" | "imports" | "ESM subpath" | "CommonJS subpath",
 ): CandidateResolution => ({
   resolvedPath: null,
   status: "not-found",

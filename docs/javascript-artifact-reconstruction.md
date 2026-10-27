@@ -925,8 +925,12 @@ scope, stopping at a `node_modules` directory so a nested package cannot inherit
 an ancestor's aliases. Selected targets are package-local `./` files with no
 extension or index fallback, using the same condition, array, and null selection
 as exports subpaths. A missing key, explicit null, or out-of-scope alias keeps
-an unresolved edge with that reason. Wildcard keys (`#internal/*`), recursive
-`#` targets, and external-package import targets remain unresolved.
+an unresolved edge with that reason. Single-`*` pattern keys such as
+`#internal/*` resolve concrete specifiers the same way as exports pattern
+keys: exact keys win, the longest matching prefix orders pattern keys, and the
+declared target and capture are validated separately before substitution into the normalized target URL, with forbidden segments
+refused. Recursive `#` targets and external-package import targets remain
+unresolved.
 
 Exact keys such as `#/x` are literal lookup identities. `#` and names ending
 in `/` are invalid. Imports arrays skip invalid parent-relative, absolute, and
@@ -959,8 +963,10 @@ For dependency lookup, ESM constructs a package metadata URL instead of treating
 the parsed package name as a literal directory. A root request such as `legacy?x`
 does not load either `node_modules/legacy?x` or `node_modules/legacy`; an exact
 self-reference with that metadata name can still select its exports first.
-Without an exports map, ESM subpaths select exact files; directory imports and
-extension fallback are refused. CommonJS relative paths and legacy package main
+Without an exports map, ESM subpaths normalize URL dot segments, including
+whole-segment encoded dots, before admitting the surviving pathname. Encoded
+separators that remain in that pathname are rejected. The result selects an
+exact file; directory imports and extension fallback are refused. CommonJS relative paths and legacy package main
 fields retain literal filename punctuation. Exports targets must start with
 `./` and exclude `.`, `..`, and `node_modules` path segments, including their
 encoded forms, before URL normalization. Arrays skip invalid exports targets
@@ -968,9 +974,18 @@ in declared order, including URLs that escape the package root after normalizati
 Selected package targets use the normalized URL path for lookup; tabs and
 newlines in the URL text are removed by the URL parser. CommonJS package targets
 reject encoded separators anywhere in the selected URL; ESM checks its pathname.
-URL decoding and file lookup failures for a selected target do not select a
-later entry. Rejected references retain the package metadata
+A selected URL that retains directory form after pattern expansion never enters
+file, extension, or index lookup. ESM reports a rejected directory import;
+CommonJS reports a missing exact target. URL decoding, directory-form, and file
+lookup failures for a selected target do not select a later array entry. Rejected references retain the package metadata
 path, original target, failed constraint, and importing source location.
+
+Package metadata paths containing unpaired UTF-16 surrogates retain opaque
+segment identities through URL normalization and pattern expansion. File lookup
+remains unavailable only while an opaque base segment survives in the final URL;
+normalization that removes all such segments can select a representable file.
+Opaque identities never stand in for inventory paths and cannot collide with
+literal target or capture text.
 
 HTML script references resolve to exact inventoried files after applying the
 document base and query/fragment rules. As in a browser, the script URL and base

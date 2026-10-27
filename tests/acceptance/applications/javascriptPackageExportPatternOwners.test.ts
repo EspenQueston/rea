@@ -12,7 +12,7 @@ const cases = [
   {
     name: "matching wildcard",
     exports: { "./*": "./*.cjs" },
-    status: "unavailable",
+    status: "resolved",
     possibleOwner: true,
     nodeAllowed: true,
   },

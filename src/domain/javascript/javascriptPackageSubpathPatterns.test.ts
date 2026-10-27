@@ -25,6 +25,9 @@ it.each([
 ] as const)(
   "selects the most specific pattern independently of declaration order: %j",
   (patterns, subpath, expected) => {
-    expect(selectPackageSubpathPattern(patterns, subpath)).toBe(expected);
+    expect(selectPackageSubpathPattern(patterns, subpath)).toEqual({
+      key: expected,
+      capture: "window",
+    });
   },
 );

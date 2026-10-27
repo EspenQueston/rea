@@ -34,10 +34,11 @@ describe("package import specifier classification", () => {
   );
 
   it.each(["#internal/*", "#*"])(
-    "leaves pattern specifier %j unresolved",
+    "keeps the literal star in request %j",
     (specifier) => {
       expect(classifyPackageImportSpecifier(specifier)).toEqual({
-        kind: "pattern",
+        kind: "exact",
+        key: specifier,
       });
     },
   );
@@ -66,11 +67,31 @@ describe("exact package import lookup", () => {
     });
   });
 
-  it("does not claim a miss when the map only has pattern keys", () => {
+  it("matches a pattern key and captures the enclosed substring", () => {
     expect(
       lookupExactPackageImport({ "#internal/*": "./src/*.js" }, "#internal/a"),
     ).toEqual({
-      kind: "pattern-unresolved",
+      kind: "pattern-found",
+      target: "./src/*.js",
+      capture: "a",
+      declared: ["#internal/*"],
+    });
+  });
+
+  it("matches a pattern key that lacks the hash prefix, like Node", () => {
+    expect(lookupExactPackageImport({ "*": "./src/*.js" }, "#foo")).toEqual({
+      kind: "pattern-found",
+      target: "./src/*.js",
+      capture: "#foo",
+      declared: ["*"],
+    });
+  });
+
+  it("reports a miss when no pattern key matches", () => {
+    expect(
+      lookupExactPackageImport({ "#internal/*": "./src/*.js" }, "#other/a"),
+    ).toEqual({
+      kind: "missing-key",
       declared: ["#internal/*"],
     });
   });
@@ -82,9 +103,9 @@ describe("exact package import lookup", () => {
     ["#internal/*end", "#internal/end", "missing-key"],
     ["#internal/*/*", "#internal/a/b", "missing-key"],
     ["#internal/", "#internal/a", "missing-key"],
-    ["#internal/*.js", "#internal/a.js", "pattern-unresolved"],
-    ["#internal/*.js", "#internal/deep/a.js", "pattern-unresolved"],
-    ["#internal/*end", "#internal/aend", "pattern-unresolved"],
+    ["#internal/*.js", "#internal/a.js", "pattern-found"],
+    ["#internal/*.js", "#internal/deep/a.js", "pattern-found"],
+    ["#internal/*end", "#internal/aend", "pattern-found"],
   ] as const)(
     "matches only a single nonempty wildcard between its prefix and suffix: %s, %s",
     (pattern, specifier, kind) => {
@@ -93,7 +114,7 @@ describe("exact package import lookup", () => {
           { [pattern]: "./unsupported/*.js" },
           specifier,
         ),
-      ).toEqual({ kind, declared: [pattern] });
+      ).toMatchObject({ kind, declared: [pattern] });
     },
   );
 
@@ -139,11 +160,13 @@ describe("exact package import lookup", () => {
     },
   );
 
-  it("does not treat a pattern key as an exact match for itself", () => {
+  it("matches a literal star request by pattern capture rather than exact lookup", () => {
     expect(
       lookupExactPackageImport({ "#internal/*": "./src/*.js" }, "#internal/*"),
     ).toEqual({
-      kind: "pattern-unresolved",
+      kind: "pattern-found",
+      target: "./src/*.js",
+      capture: "*",
       declared: ["#internal/*"],
     });
   });
