@@ -5,7 +5,9 @@ import {
   type TimedCaptureRow,
 } from "../../../tests/fixtures/analysisView.js";
 import {
+  GHOST_DELETED_ROWS,
   LATER_FIELD_ROWS,
+  LATER_MIXED_BULK_ROWS,
   MAX_SIZE_ROWS,
   SOFT_DELETED_QUERY_ROWS,
   SOFT_DELETED_ROWS,
@@ -55,6 +57,12 @@ describe("deletes the application answers for afterwards", () => {
     expect(markedDeleted(object)).toBe(expected);
   });
 
+  it("drops a held entity a read shows marked deleted, so a later list without it confirms another delete", () => {
+    expect(planOf(GHOST_DELETED_ROWS, "delete_contacts_by_id")).toMatchObject({
+      served: true,
+    });
+  });
+
   it("checks a list read whose page size is named `maxSize`", () => {
     expect(planOf(MAX_SIZE_ROWS, "delete_contacts_by_id")).toMatchObject({
       served: true,
@@ -79,6 +87,12 @@ describe("fields only later reads show", () => {
     expect(planOf(LATER_FIELD_ROWS, "patch_tasks_by_id")).toMatchObject({
       served: true,
       checked_record_ordinals: [9, 11, 12],
+    });
+  });
+
+  it("replays a bulk update whose answer shows a later-only field on created entities only", () => {
+    expect(planOf(LATER_MIXED_BULK_ROWS, "patch_tasks")).toMatchObject({
+      served: true,
     });
   });
 });

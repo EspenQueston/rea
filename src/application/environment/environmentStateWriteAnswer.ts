@@ -71,6 +71,7 @@ import {
   namedEntity,
   recordedJson,
   refused,
+  deletedFields,
   softDeleteFlag,
   stateAnswer,
   type StateAnswer,
@@ -698,10 +699,14 @@ const answerDelete = (
   const target = targetEntity(serving, request);
   if (!target.ok) return target.error;
   const entity = target.value;
+  // A soft-deleting application answers with the entity already marked deleted.
   const answer = writeAnswer(
     serving,
     request,
-    { fields: entity.fields, id: entity.id },
+    {
+      fields: deletedFields(serving, entity.type, entity.fields),
+      id: entity.id,
+    },
     {
       source: "state",
       view: "delete",

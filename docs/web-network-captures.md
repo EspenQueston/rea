@@ -859,8 +859,11 @@ the entity or list rendered into the envelope of the item view's or the line's
 base recording, with the members the state still holds. A 400, 404 or 410, a
 `null` body, or an object marked deleted (`deleted`, `isDeleted` or `is_deleted`
 `true`, as EspoCRM answers a read of a deleted record) agrees with an entity the
-copy does not hold, and such an object never seeds or adopts one; the item view
-records the flag its reads set as `deleted_flag`, which serving answers by. A match confirms
+copy does not hold; such a read drops a held entity it names and adopts none,
+while an initial read keeps the record it shows held, as its item read answers it.
+The item view records the flag its reads set as `deleted_flag`, a field it shows
+even when only a query read showed it, which serving answers by: a served delete
+answers with the entity marked deleted, as later reads of it are. A match confirms
 the writes that changed its entity or collection since it was last read, less
 those whose entity a read since showed absent, which no longer count for the
 collection; a mismatch contradicts them, or, when an unmodelled write came after them, is
@@ -878,13 +881,15 @@ to where the new value sorts (its own `insert`); a bulk update moves each entity
 it writes in turn, as replay applies them. When a read listing the whole
 collection in its own order, not one its query sorts, fails after an update and the type's creates are not sorted by a field
 that update writes, the view tries the collection sorted by such a field, when
-the entities no write it exercised changed already follow it, as serving moves
-only the entities a write changes, and unless
+the entities no write has changed since a list last showed them already follow
+it, as serving moves only the entities a write changes, and unless
 a create was placed by a sort that excludes it or a read listing the whole
 collection in its own order, not one its query sorts, that placed a create did
 not follow it; on a match, the type's creates
 and updates take that order, as Grafana keeps folders by title though no earlier
 read could tell that from creation order, or from id order where both ascend.
+An update takes its creates' sort only from a create a list read showed placed;
+replay still tries a sort a create guessed from the initial order.
 
 Values in the state are recorded data, so the view refuses the same parents as
 the manifest, including those inspected with `sensitive_values`, and a

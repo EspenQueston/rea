@@ -30,6 +30,36 @@ export const SOFT_DELETED_ROWS: readonly TimedCaptureRow[] = [
   ["GET", "/api/contacts/3", { ...RUI, deleted: true }],
 ];
 
+/** Contacts deleted by calls that answer with the record already marked deleted, read back so too. */
+export const SOFT_DELETED_ANSWER_ROWS: readonly TimedCaptureRow[] = [
+  ["GET", "/api/contacts?maxSize=20&offset=0", page([ADA, MINA, RUI])],
+  ["GET", "/api/contacts/1", ADA],
+  ["GET", "/api/contacts/2", MINA],
+  ["GET", "/api/contacts/3", RUI],
+  ["DELETE", "/api/contacts/2", { ...MINA, deleted: true }],
+  ["GET", "/api/contacts/2", { ...MINA, deleted: true }],
+  ["DELETE", "/api/contacts/3", { ...RUI, deleted: true }],
+  ["GET", "/api/contacts/3", { ...RUI, deleted: true }],
+];
+
+/** Live contacts that omit `deleted`, one deleted and read back only with a query showing it marked, then a list without it. */
+export const OMITTED_FLAG_ROWS: readonly TimedCaptureRow[] = (() => {
+  const live = (entity: Entity): Entity => {
+    const { deleted: _deleted, ...rest } = entity;
+    return rest;
+  };
+  const [ada, mina, rui] = [live(ADA), live(MINA), live(RUI)];
+  return [
+    ["GET", "/api/contacts?maxSize=20&offset=0", page([ada, mina, rui])],
+    ["GET", "/api/contacts?maxSize=2&offset=0", page([ada, mina])],
+    ["GET", "/api/contacts/1", ada],
+    ["GET", "/api/contacts/2", mina],
+    ["DELETE", "/api/contacts/2", true],
+    ["GET", "/api/contacts/2?_=1761520000", { ...mina, deleted: true }],
+    ["GET", "/api/contacts?maxSize=50&offset=0", page([ada, rui])],
+  ];
+})();
+
 /** The same deletes read back only with a query, as a client that adds a cache-busting parameter does. */
 export const SOFT_DELETED_QUERY_ROWS: readonly TimedCaptureRow[] = [
   ["GET", "/api/contacts?maxSize=20&offset=0", page([ADA, MINA, RUI])],
@@ -40,6 +70,18 @@ export const SOFT_DELETED_QUERY_ROWS: readonly TimedCaptureRow[] = [
   ["GET", "/api/contacts/2?_=1761520000", { ...MINA, deleted: true }],
   ["DELETE", "/api/contacts/3", true],
   ["GET", "/api/contacts/3?_=1761520001", { ...RUI, deleted: true }],
+];
+
+/** A held contact read back marked deleted though no delete of it was recorded, then a list without it after another delete. */
+export const GHOST_DELETED_ROWS: readonly TimedCaptureRow[] = [
+  ["GET", "/api/contacts?maxSize=20&offset=0", page([ADA, MINA, RUI])],
+  ["GET", "/api/contacts?maxSize=2&offset=0", page([ADA, MINA])],
+  ["GET", "/api/contacts/1", ADA],
+  ["GET", "/api/contacts/2", MINA],
+  ["GET", "/api/contacts/3", RUI],
+  ["DELETE", "/api/contacts/3", true],
+  ["GET", "/api/contacts/2", { ...MINA, deleted: true }],
+  ["GET", "/api/contacts?maxSize=50&offset=0", page([ADA])],
 ];
 
 /** Contacts deleted, then listed with a page size named `maxSize` other than the initial list's. */
@@ -136,5 +178,34 @@ export const LATER_BULK_ROWS: readonly TimedCaptureRow[] = (() => {
       "/api/tasks",
       [seed, { ...first, done: true }, { ...second, done: true }],
     ],
+  ];
+})();
+
+/** A recorded bulk update of a created task and a seeded one, whose answer shows the subscription on the created task only. */
+export const LATER_MIXED_BULK_ROWS: readonly TimedCaptureRow[] = (() => {
+  const seed = task(1, "Trim the wicks");
+  const first = task(2, "Order lamp oil");
+  const created = { ...first, ...subscribed(2) };
+  const done = { ...created, done: true };
+  const seedDone = { ...seed, done: true };
+  return [
+    ["GET", "/api/tasks", [seed]],
+    ["GET", "/api/tasks/1", seed],
+    ["POST", "/api/tasks", first, 201, { title: "Order lamp oil" }],
+    ["GET", "/api/tasks/2", created],
+    ["GET", "/api/tasks", [seed, first]],
+    [
+      "PATCH",
+      "/api/tasks",
+      [done, seedDone],
+      200,
+      [
+        { id: 2, done: true },
+        { id: 1, done: true },
+      ],
+    ],
+    ["GET", "/api/tasks/2", done],
+    ["GET", "/api/tasks/1", seedDone],
+    ["GET", "/api/tasks", [seedDone, { ...first, done: true }]],
   ];
 })();

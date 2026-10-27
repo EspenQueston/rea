@@ -501,9 +501,10 @@ export class EnvironmentStateExtraction {
           }
       });
     }
-    return flag === undefined
-      ? { laterFields: names }
-      : { laterFields: names, deletedFlag: flag };
+    if (flag === undefined) return { laterFields: names };
+    // The flag is a field the item view shows, even when only a query read showed it.
+    if (!seen.has(flag)) names.push(flag);
+    return { laterFields: names, deletedFlag: flag };
   }
 
   /**
