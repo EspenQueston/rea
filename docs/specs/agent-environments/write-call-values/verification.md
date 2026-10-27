@@ -1,6 +1,6 @@
 # Verification
 
-Executed on macOS with Node v24.22.1 on this branch merged with #7274 at `93821024` (main `8706068b`), and on Ubuntu
+Executed on macOS with Node v24.22.1 on this branch merged with #7274 at `45832406` (main `8706068b`), and on Ubuntu
 24.04 VMs for the task runs.
 
 ## Diagnosis
@@ -21,7 +21,7 @@ The 418 eval runs stored on the comparison VMs, with their agent trajectories:
 - `npm run -s check:fast`, `format:check`, `scan:todos`, `docs:check`, `verify:test-discovery`, `mcp-catalog:check` and
   `jscpd`: passed. `npx knip` reports `staticFileUrlPath` and `ObjcClassImportBindingCoverage`, which main `8706068b`
   added and this branch does not touch.
-- `npx vitest run --project domain --project services`: 11,429 passed, 6 skipped. `--project adapters`: 7,437 passed, 19
+- `npx vitest run --project domain --project services`: 11,430 passed, 6 skipped. `--project adapters`: 7,437 passed, 19
   skipped, 3 failed: the Inspector cancellation test and two AppKit asset-catalog tests, which fail the same way on
   #7274 at `e29e9c74`.
 - `npm run -s test:focused --` the environment build, export and serve CLI boundaries, the analysis-view CLI and MCP
@@ -43,7 +43,7 @@ The 418 eval runs stored on the comparison VMs, with their agent trajectories:
 
 ## Write plans and views over recorded captures
 
-The 130 captures #7274 measured, built by #7274 at `93821024` and by this branch: 615 plans, 332 served and 333.
+The 130 captures #7274 measured, built by #7274 at `45832406` and by this branch: 615 plans, 332 served and 333.
 
 - No write goes from served to withheld. Newly served: Vikunja's bulk task create in #7260's final recording.
 - Vikunja's task create in main's recording is now explained, by its counter, template and made subscription, but
