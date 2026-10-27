@@ -226,10 +226,10 @@ export class EnvironmentStateWriteSimulation {
   }
 
   /**
-   * The sorted order a type's creates insert by, when they agree on one and nothing contradicted them; with `placed`,
-   * only creates a list read showed placed, as replay may try a guessed order that no recording established.
+   * The sorted order a type's placed creates insert by, when they agree on one and nothing contradicted them: updates
+   * move their entity only by an order a list read showed, in replay as in serving.
    */
-  #sortOf(type: string, placed = false): InsertRule | undefined {
+  #sortOf(type: string): InsertRule | undefined {
     const rules = new Map<string, InsertRule>();
     for (const { plan, observed, contradictedBy } of this.#drafts.values())
       if (
@@ -239,7 +239,7 @@ export class EnvironmentStateWriteSimulation {
         plan.reason === null &&
         contradictedBy === undefined &&
         plan.insert?.rule === "sorted" &&
-        (!placed || this.#placed.has(plan.tool))
+        this.#placed.has(plan.tool)
       )
         rules.set(JSON.stringify(plan.insert), plan.insert);
     if (rules.size === 0) return this.#learnedSorts.get(type);
@@ -314,7 +314,7 @@ export class EnvironmentStateWriteSimulation {
       ]),
     );
     const sorts = new Map(
-      [...this.#types.keys()].map((type) => [type, this.#sortOf(type, true)]),
+      [...this.#types.keys()].map((type) => [type, this.#sortOf(type)]),
     );
     return [...this.#drafts.values()].map((draft) => {
       // A view that became recorded cannot supply proof for a served write.
@@ -720,7 +720,12 @@ export class EnvironmentStateWriteSimulation {
     const unseen = outcome.pass
       ? this.#confirm(view, record, outcome, exercised)
       : undefined;
-    if (outcome.pass && view.shape === "list")
+    // Only a read whose order the state decides for every entity it lists shows them in place.
+    if (
+      outcome.pass &&
+      view.shape === "list" &&
+      outcome.positional === undefined
+    )
       for (const target of outcome.targets) this.#moved.delete(target);
     if (!outcome.pass) {
       const interfered = new Set([...exercised].filter(interferes));

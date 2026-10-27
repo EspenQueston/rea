@@ -16,6 +16,8 @@ import {
   RENAMED_LABEL_ROWS,
   SHELF_SORTED_ROWS,
   SHELF_TIE_ROWS,
+  SHELF_GUESS_ROWS,
+  ID_SORTED_READ_ROWS,
   TITLE_ORDER_ROWS,
   UNLOADED_ANSWER_ROWS,
   UNSORTED_SEED_ROWS,
@@ -186,6 +188,17 @@ describe("collections kept sorted", () => {
 
   it("learns no sort from a read its query sorts, whose ties need not follow the collection's order", () => {
     expect(planOf(SHELF_TIE_ROWS, "put_books_by_id").insert).toBeNull();
+  });
+
+  it("withholds a rename whose read only an unplaced create's guessed order explains", () => {
+    expect(planOf(SHELF_GUESS_ROWS, "put_books_by_id").served).toBe(false);
+  });
+
+  it("learns the sort from a rename after a read its query sorts by id showed an earlier rename", () => {
+    expect(planOf(ID_SORTED_READ_ROWS, "put_books_by_id")).toMatchObject({
+      served: true,
+      insert: BY_NAME,
+    });
   });
 
   it("serves a bulk update whose recordings echo the empty values each call sent", () => {
