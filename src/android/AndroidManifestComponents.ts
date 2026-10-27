@@ -112,10 +112,6 @@ const androidAttribute = (
     const node = attributes.item(index);
     if (node === null || node.localName !== localName) continue;
     if (node.namespaceURI === ANDROID_NAMESPACE) return node.nodeValue;
-    // Without namespace information (an undeclared prefix), the conventional
-    // android: prefix is the only remaining signal.
-    if (node.namespaceURI === null && node.prefix === "android")
-      return node.nodeValue;
   }
   return null;
 };
