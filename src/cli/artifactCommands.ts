@@ -1,3 +1,4 @@
+import { projectCliAnalysisResult } from "./projectCliAnalysisResult.js";
 import {
   analysisEvidenceDeliveryOptions,
   cliEvidenceDeliveryInputError,
@@ -5,7 +6,7 @@ import {
 } from "./analysisEvidenceDelivery.js";
 import { withCommandCancellation } from "./commandCancellation.js";
 import { projectAnalysisError } from "../domain/analysisErrorProjection.js";
-import { ARTIFACT_GRAPH_PROVIDER } from "../application/InvestigationProviders.js";
+import { ARTIFACT_GRAPH_PROVIDER } from "../domain/investigationProviders.js";
 import { z } from "incur";
 
 import type { DirectAnalysis } from "../composition/directAnalysis.js";
@@ -63,7 +64,7 @@ export const registerArtifactCommands = (
             ...(options.root === undefined ? {} : { root: options.root }),
           },
           logger,
-        ),
+        ).then(projectCliAnalysisResult),
       ),
   });
 };
@@ -103,7 +104,7 @@ const registerDylibResolutionCommand = (
               : { architecture: options.architecture }),
           },
           logger,
-        ),
+        ).then(projectCliAnalysisResult),
       ),
   });
 };
@@ -138,7 +139,7 @@ const registerAssetCatalogCommand = (
           "inspect_asset_catalog",
           { offset: options.offset, limit: options.limit },
           logger,
-        ),
+        ).then(projectCliAnalysisResult),
       ),
   });
 };
@@ -188,7 +189,7 @@ const registerInterfaceBuilderCommand = (
             max_connections: options.maxConnections,
           },
           logger,
-        ),
+        ).then(projectCliAnalysisResult),
       ),
   });
 };
@@ -199,7 +200,8 @@ const registerExtractionCommand = (
   runProviderAnalysis: DirectAnalysis["runProviderAnalysis"],
 ): void => {
   cli.command(CLI_COMMANDS.extractArtifact, {
-    description: "Extract all regular artifact contents safely",
+    description:
+      "Extract regular contents of supported artifacts; DMG extraction is unavailable",
     args: z.object({
       path: z.string().describe("Application or package path"),
     }),
@@ -219,7 +221,7 @@ const registerExtractionCommand = (
             output_root: createArtifactExtractionDestination(),
           },
           logger,
-        ),
+        ).then(projectCliAnalysisResult),
       ),
   });
 };

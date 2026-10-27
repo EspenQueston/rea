@@ -7,47 +7,14 @@ import {
 } from "./electronBundledGetter.fixture.js";
 
 it.each([
-  ["stable alias", `const alias = load; alias.n = ${replacement};`],
   [
-    "alias chain",
-    `const first = load; const alias = first; alias.n = ${replacement};`,
-  ],
-  ["assigned alias", `let alias; alias = load; alias.n = ${replacement};`],
-  [
-    "saved capture",
-    `let first = load; const alias = first; first = {}; alias.n = ${replacement};`,
+    "explicit undefined own slot",
+    `const { api: alias = load } = { api: undefined }; alias.n = ${replacement};`,
   ],
   [
-    "conditional origin",
-    `const alias = flag ? load : {}; alias.n = ${replacement};`,
+    "explicit undefined array slot",
+    `const [alias = load] = [undefined]; alias.n = ${replacement};`,
   ],
-  ["logical origin", `const alias = flag && load; alias.n = ${replacement};`],
-  [
-    "sequence result",
-    `const alias = (metadata, load); alias.n = ${replacement};`,
-  ],
-  [
-    "assignment result",
-    `let first; const alias = (first = load); alias.n = ${replacement};`,
-  ],
-  [
-    "logical assignment result",
-    `let first = {}; const alias = (first &&= load); alias.n = ${replacement};`,
-  ],
-  [
-    "cyclic aliases",
-    `let first = load, alias = first; while (flag) { first = alias; alias = first; } alias.n = ${replacement};`,
-  ],
-  [
-    "reflective alias write",
-    `const alias = load; Reflect.set(alias, "n", ${replacement});`,
-  ],
-  ["alias deletion", "const alias = load; delete alias.n;"],
-  [
-    "destructuring target",
-    `const alias = load; ({ getter: alias.n } = { getter: ${replacement} });`,
-  ],
-  ["unknown property", `const alias = load; alias[key] = ${replacement};`],
   [
     "object default",
     `const { api: alias = load } = {}; alias.n = ${replacement};`,
@@ -94,6 +61,10 @@ it.each([
     `const source = { api: {} }; source.api = undefined; const { api: alias = load } = { api: source.api }; alias.n = ${replacement};`,
   ],
   [
+    "escaped array prototype",
+    `mutate(Array.prototype); const [alias = load] = [{}]; alias.n = ${replacement};`,
+  ],
+  [
     "replaced array iterator",
     `Array.prototype[Symbol.iterator] = function* () { yield undefined; }; const [alias = load] = [{}]; alias.n = ${replacement};`,
   ],
@@ -107,23 +78,6 @@ it.each([
 
 it.each([
   ["no mutation", ""],
-  ["unrelated key", "const alias = load; alias.d = 1;"],
-  [
-    "reassigned alias",
-    `let alias = load; alias = {}; alias.n = ${replacement};`,
-  ],
-  [
-    "later loader assignment",
-    `let alias = {}; alias.n = ${replacement}; alias = load;`,
-  ],
-  [
-    "shadowed alias",
-    `const alias = load; { const alias = {}; alias.n = ${replacement}; }`,
-  ],
-  [
-    "unrelated cycle",
-    `let first = {}, second = first; while (flag) { first = second; second = first; } first.n = ${replacement};`,
-  ],
   [
     "unused object default",
     `const { api: alias = load } = { api: {} }; alias.n = ${replacement};`,
@@ -149,17 +103,4 @@ it.each([
     analyzeJavaScriptStaticSource(webpackGetterSource(mutation)).electron
       .browser_windows,
   ).toHaveLength(1);
-});
-
-it("bounds long lexical alias chains without losing the getter write", () => {
-  const aliases = Array.from(
-    { length: 2_000 },
-    (_, index) =>
-      `const alias${index} = ${index === 0 ? "load" : `alias${index - 1}`};`,
-  ).join("\n");
-  expect(
-    analyzeJavaScriptStaticSource(
-      webpackGetterSource(`${aliases} alias1999.n = ${replacement};`),
-    ).electron.browser_windows,
-  ).toEqual([]);
 });

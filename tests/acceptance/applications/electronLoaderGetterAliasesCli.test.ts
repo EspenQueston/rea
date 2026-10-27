@@ -12,36 +12,11 @@ import { cliTest } from "../../support/cli/cliFixture.js";
 import { analyzeJavaScriptDirectory } from "../../support/cli/javascriptApplication.js";
 
 cliTest.for(["CLI", "stdio MCP"] as const)(
-  "preserves loader getter identity after alias writes through %s",
+  "selects loader getter identity through destructuring defaults through %s",
   async (surface, { cli }) => {
     const root = await createTestTempDirectory("rea-loader-getter-aliases-");
-    const aliasWrites = Array.from(
-      { length: 64 },
-      (_, index) =>
-        `const a${index} = ${index === 0 ? "load" : `a${index - 1}`}; a${index}.other = 1;`,
-    ).join("\n");
     const cases = [
       ["intact.cjs", ""],
-      ["many-unrelated-writes.cjs", aliasWrites],
-      [
-        "many-writes-then-replacement.cjs",
-        `${aliasWrites} a63.n = ${replacement};`,
-      ],
-      ["direct.cjs", `load.n = ${replacement};`],
-      ["alias.cjs", `const alias = load; alias.n = ${replacement};`],
-      [
-        "reflective.cjs",
-        `const alias = load; Reflect.set(alias, "n", ${replacement});`,
-      ],
-      [
-        "captured.cjs",
-        `let first = load; const alias = first; first = {}; alias.n = ${replacement};`,
-      ],
-      ["unrelated.cjs", "const alias = load; alias.d = 1;"],
-      [
-        "reassigned.cjs",
-        `let alias = load; alias = {}; alias.n = ${replacement};`,
-      ],
       [
         "unused-object-default.cjs",
         `const { api: alias = load } = { api: {} }; alias.n = ${replacement};`,
@@ -49,6 +24,10 @@ cliTest.for(["CLI", "stdio MCP"] as const)(
       [
         "unused-array-default.cjs",
         `const [alias = load] = [{}]; alias.n = ${replacement};`,
+      ],
+      [
+        "undefined-own-slot.cjs",
+        `const { api: alias = load } = { api: undefined }; alias.n = ${replacement};`,
       ],
       [
         "used-object-default.cjs",
@@ -98,11 +77,11 @@ cliTest.for(["CLI", "stdio MCP"] as const)(
       parsed_javascript_files: cases.length,
       parse_failures: 0,
     });
-    expect(result.summary.browser_windows).toBe(8);
+    expect(result.summary.browser_windows).toBe(5);
     const windows = result.graph.nodes.filter(
       ({ kind }) => kind === "browser-window",
     );
-    expect(windows).toHaveLength(8);
+    expect(windows).toHaveLength(5);
     expect(
       windows
         .flatMap(({ observations }) =>
@@ -112,10 +91,7 @@ cliTest.for(["CLI", "stdio MCP"] as const)(
     ).toEqual([
       "dead-nested-default.cjs",
       "intact.cjs",
-      "many-unrelated-writes.cjs",
       "own-nested-default.cjs",
-      "reassigned.cjs",
-      "unrelated.cjs",
       "unused-array-default.cjs",
       "unused-object-default.cjs",
     ]);

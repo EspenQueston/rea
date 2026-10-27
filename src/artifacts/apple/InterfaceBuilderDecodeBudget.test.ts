@@ -6,10 +6,18 @@ import { buildBinary } from "plist";
 import { describe, expect, it } from "vitest";
 
 import { analyzeInterfaceBuilderBundle } from "./InterfaceBuilderAnalysis.js";
-import { preflightPropertyListDecode } from "./InterfaceBuilderDecodeBudget.js";
+import { interfaceBuilderDecodeBudgetFailure } from "./InterfaceBuilderDecodeBudget.js";
+import { preflightPropertyListDecode } from "./PropertyListDecodeBudget.js";
 import { unknownDateLimitation } from "../../domain/apple/plistValue.js";
 import { parseXmlPropertyList } from "../../domain/propertyListKeys.js";
 import { createTestTempDirectory } from "../../../tests/fixtures/temporaryDirectory.js";
+import { scanBinaryPlistScalars } from "./PlistScalars.js";
+import {
+  readBinaryPlistObjectOffset,
+  readBinaryPlistObjectTableLayout,
+  writeBinaryPlistObjectOffset,
+} from "../../../tests/fixtures/binaryPlistObjectTable.js";
+import { embedSubmillisecondDateInWideIntegerPayload } from "../../../tests/fixtures/binaryPlistScalarAlias.js";
 
 const example = "<!DOCTYPE document [ harmless example ]>";
 
@@ -34,8 +42,12 @@ it.each([
       undefined,
       { numberProjection: true },
     ).estimatedBytes;
-    if (_format === "binary")
-      expect(projected).toBeGreaterThanOrEqual(ordinary + bytes.length);
+    if (_format === "binary") {
+      const objectCount = Number(bytes.readBigUInt64BE(bytes.length - 24));
+      expect(projected).toBeGreaterThanOrEqual(
+        ordinary + bytes.length + objectCount * 96,
+      );
+    }
     expect(() =>
       preflightPropertyListDecode(bytes, ordinary, undefined, {
         numberProjection: true,
@@ -70,10 +82,9 @@ describe("inert XML declaration examples in Interface Builder archives", () => {
     ({ xml }) => {
       expect(() => parseXmlPropertyList(xml)).not.toThrow();
       expect(
-        preflightPropertyListDecode(Buffer.from(xml), 16 * 1024 * 1024),
-      ).toMatchObject({
-        binaryPrototypeKeyObserved: false,
-      });
+        preflightPropertyListDecode(Buffer.from(xml), 16 * 1024 * 1024)
+          .estimatedBytes,
+      ).toBeGreaterThan(0);
     },
   );
 
@@ -113,7 +124,15 @@ describe("inert XML declaration examples in Interface Builder archives", () => {
       '<!DOCTYPE plist [<!ENTITY harmless "value">]><plist',
     );
     expect(() =>
-      preflightPropertyListDecode(Buffer.from(xml), 16 * 1024 * 1024),
+      preflightPropertyListDecode(
+        Buffer.from(xml),
+        16 * 1024 * 1024,
+        undefined,
+        {
+          budget: "the aggregate Interface Builder decode budget",
+          fail: interfaceBuilderDecodeBudgetFailure,
+        },
+      ),
     ).toThrow(
       "XML plist internal entity expansion exceeds the aggregate Interface Builder decode budget",
     );
@@ -138,8 +157,116 @@ describe("inert XML declaration examples in Interface Builder archives", () => {
     const xml = archive("Build").replace("<plist", `${declaration}<plist`);
     expect(() => parseXmlPropertyList(xml)).not.toThrow();
     expect(
-      preflightPropertyListDecode(Buffer.from(xml), 16 * 1024 * 1024),
-    ).toMatchObject({ binaryPrototypeKeyObserved: false });
+      preflightPropertyListDecode(Buffer.from(xml), 16 * 1024 * 1024)
+        .estimatedBytes,
+    ).toBeGreaterThan(0);
+  });
+});
+
+it("retains explicit date uncertainty for an overlapping binary plist object", async () => {
+  const root = await createTestTempDirectory("rea-ib-binary-date-overlap-");
+  const bundle = join(root, "Example.app");
+  await mkdir(bundle);
+  const bytes = Buffer.from(
+    buildBinary({
+      "com.apple.ibtool.document.objects": {
+        button: {
+          customClass: "UIButton",
+          date: new Date(0),
+          data: Buffer.alloc(0),
+        },
+      },
+      "com.apple.ibtool.document.connections": {},
+      "com.apple.ibtool.document.hierarchy": [],
+      "com.apple.ibtool.document.classes": {},
+    }),
+  );
+  const date = scanBinaryPlistScalars(bytes).dates[0];
+  if (date === undefined) throw new Error("fixture lost its date");
+  const table = readBinaryPlistObjectTableLayout(bytes);
+  let dataObjectId: number | undefined;
+  for (let objectId = 0; objectId < table.objectCount; objectId += 1) {
+    const offset = readBinaryPlistObjectOffset(bytes, table, objectId);
+    if (bytes[offset] === 0x40) dataObjectId = objectId;
+  }
+  if (dataObjectId === undefined)
+    throw new Error("fixture lost its empty data");
+  // Keep both objects reachable through a recognized archive while sharing source bytes.
+  bytes.writeDoubleBE(0.0005, date.offset + 1);
+  bytes[date.offset + 2] = 0x40;
+  writeBinaryPlistObjectOffset(bytes, table, dataObjectId, date.offset + 2);
+  expect(readBinaryPlistObjectOffset(bytes, table, dataObjectId)).toBe(
+    date.offset + 2,
+  );
+  expect(
+    preflightPropertyListDecode(bytes, 1024 * 1024, undefined, {
+      numberProjection: true,
+    }),
+  ).toMatchObject({
+    datePrecisionOverlapCount: 1,
+    reachableDateOffsets: [date.offset],
+  });
+  await writeFile(join(bundle, "Panel.nib"), bytes);
+
+  const result = await analyzeInterfaceBuilderBundle({
+    bundlePath: bundle,
+    targetSha256: "a".repeat(64),
+  });
+
+  expect(result.documents).toContainEqual(
+    expect.objectContaining({
+      relative_path: "Panel.nib",
+      archive_sha256: createHash("sha256").update(bytes).digest("hex"),
+    }),
+  );
+  expect(
+    result.graph.nodes.find(
+      ({ attributes }) => attributes.interface_builder_object_id === "button",
+    )?.attributes,
+  ).toMatchObject({
+    date: { $plist_type: "date", iso8601: null },
+    data: { $plist_type: "data", base64: "" },
+  });
+  expect(result.limitations).toContainEqual(
+    expect.stringContaining(
+      "Panel.nib: 1 date value(s) are reported with unknown timestamps because their sub-millisecond source records overlap",
+    ),
+  );
+});
+
+it("preserves aliased wide-integer precision and marks the date unknown in bundle output", async () => {
+  const root = await createTestTempDirectory("rea-ib-binary-scalar-alias-");
+  const bundle = join(root, "Example.app");
+  await mkdir(bundle);
+  const source = Buffer.from(
+    buildBinary({
+      "com.apple.ibtool.document.objects": {
+        button: {
+          customClass: "UIButton",
+          wide: Buffer.alloc(16),
+          date: new Date(0),
+        },
+      },
+      "com.apple.ibtool.document.connections": {},
+      "com.apple.ibtool.document.hierarchy": [],
+      "com.apple.ibtool.document.classes": {},
+    }),
+  );
+  const { bytes, integerDecimal } =
+    embedSubmillisecondDateInWideIntegerPayload(source);
+  await writeFile(join(bundle, "Panel.nib"), bytes);
+
+  const result = await analyzeInterfaceBuilderBundle({
+    bundlePath: bundle,
+    targetSha256: "a".repeat(64),
+  });
+
+  const button = result.graph.nodes.find(
+    ({ attributes }) => attributes.interface_builder_object_id === "button",
+  );
+  expect(button?.attributes).toMatchObject({
+    date: { $plist_type: "date", iso8601: null },
+    wide: { $plist_type: "integer", decimal: integerDecimal },
   });
 });
 

@@ -114,3 +114,76 @@ it("charges shared type signatures at every retained occurrence and preserves bo
     32 * 1024 * 1024,
   );
 });
+
+it("keeps collided labels unknown in each index space and preserves numeric and unique identities", () => {
+  const report = parseWabtWat(`(module
+    (type $duplicate (func (param i32)))
+    (type $duplicate (func (param i64)))
+    (import "env" "first" (func $same (type 0)))
+    (func $same (type 1))
+    (func $unique (type $duplicate))
+    (export "collided" (func $same))
+    (export "numeric" (func 1))
+    (export "ambiguous-type" (func $unique))
+    (export "imported" (func 0)))`).interface;
+  expect(report.entries.find((e) => e.name === "collided")).toMatchObject({
+    index: null,
+    signature: null,
+  });
+  expect(report.entries.find((e) => e.name === "numeric")).toMatchObject({
+    index: 1,
+    signature: { kind: "func", params: ["i64"] },
+    issue: null,
+  });
+  expect(report.entries.find((e) => e.name === "ambiguous-type")).toMatchObject(
+    { index: 2, signature: null },
+  );
+  expect(report.entries.find((e) => e.name === "imported")).toMatchObject({
+    index: 0,
+    signature: { params: ["i32"] },
+  });
+  expect(report.issues).toEqual([
+    expect.stringContaining("type index space"),
+    expect.stringContaining("func index space"),
+  ]);
+});
+
+it.each(["\n", "\r", "\r\n"])(
+  "shares comment framing across module and nested interface declarations with %j newlines",
+  (newline) => {
+    const source = `(module
+    (type (func
+      (param (; unmatched ) and quote " (; nested ;) ;) i32)
+      ;; unmatched ( and quote "
+      (result i64)))
+    (import "env" "f" (func (type 0)))
+    (export "f" (func 0))) ;; trailing comment without newline`;
+    const result = parseWabtWat(source.replaceAll("\n", newline));
+    expect(result.imports).toEqual(['(import "env" "f" (func (type 0)))']);
+    expect(result.exports).toEqual(['(export "f" (func 0))']);
+    expect(result.interface.entries).toMatchObject([
+      {
+        name: "f",
+        signature: { kind: "func", params: ["i32"], results: ["i64"] },
+      },
+      {
+        name: "f",
+        signature: { kind: "func", params: ["i32"], results: ["i64"] },
+      },
+    ]);
+  },
+);
+
+it("rejects unfinished nested comments rather than projecting a truncated interface", () => {
+  for (const source of [
+    "(module (type (func (param (; unfinished ) i32))))",
+    "(module) (; outer (; inner ;) still open",
+  ])
+    expect(() => parseWabtWat(source)).toThrow("Incomplete WABT WAT comment");
+});
+
+it("rejects a second module after a CR-terminated line comment", () => {
+  expect(() => parseWabtWat("(module) ;; comment\r(module)")).toThrow(
+    "Unexpected second WABT WAT module",
+  );
+});

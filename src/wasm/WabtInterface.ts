@@ -8,6 +8,7 @@ import type {
   WasmInterfaceValueType,
 } from "../domain/wasm/wasmInterface.js";
 import { watString, watStringEnd } from "./WabtString.js";
+import { watCommentEnd } from "./WabtComment.js";
 
 /** Split direct WAT children only; function instruction bodies are never materialized. */
 const parts = (form: string): string[] => {
@@ -19,23 +20,9 @@ const parts = (form: string): string[] => {
       i++;
       continue;
     }
-    if (form.startsWith("(;", i)) {
-      let depth = 1;
-      i += 2;
-      while (i < form.length && depth > 0) {
-        if (form.startsWith("(;", i)) {
-          depth++;
-          i += 2;
-        } else if (form.startsWith(";)", i)) {
-          depth--;
-          i += 2;
-        } else i++;
-      }
-      continue;
-    }
-    if (form.startsWith(";;", i)) {
-      const end = form.indexOf("\n", i);
-      i = end < 0 ? form.length : end + 1;
+    const commentEnd = watCommentEnd(form, i);
+    if (commentEnd !== undefined) {
+      i = commentEnd;
       continue;
     }
     const start = i;
@@ -45,7 +32,9 @@ const parts = (form: string): string[] => {
       let depth = 1;
       i++;
       while (i < form.length && depth > 0) {
-        if (form[i] === '"') i = watStringEnd(form, i + 1);
+        const commentEnd = watCommentEnd(form, i);
+        if (commentEnd !== undefined) i = commentEnd;
+        else if (form[i] === '"') i = watStringEnd(form, i + 1);
         else {
           if (form[i] === "(") depth++;
           else if (form[i] === ")") depth--;
@@ -119,16 +108,29 @@ const decodeWabtInterface = (
 ): WasmInterface => {
   const budget = new WasmInterfaceBudget();
   const types: (WasmInterfaceSignature | null)[] = [];
-  const typeNames = new Map<string, number>();
+  const typeNames = new Map<string, number | null>();
+  const definitionNames = new Map<string, Map<string, number | null>>();
+  const indexLabel = (
+    labels: Map<string, number | null>,
+    label: string,
+    index: number,
+    space: string,
+  ) => {
+    const issue = `Ambiguous WABT identifiers in the ${space} index space; named references have unknown identity`;
+    if (labels.has(label) && !result.issues.includes(issue))
+      result.issues.push(issue);
+    labels.set(label, labels.has(label) ? null : index);
+  };
   const definitions = new Map<
     string,
-    { signature: WasmInterfaceSignature | null; label: string | undefined }[]
+    { signature: WasmInterfaceSignature | null }[]
   >();
   const typeSpaceUnknown = forms.some((f) => head(f) === "rec");
   for (const form of forms) {
     const p = parts(form);
     if (p[0] !== "type") continue;
-    if (p[1]?.startsWith("$") === true) typeNames.set(p[1], types.length);
+    if (p[1]?.startsWith("$") === true)
+      indexLabel(typeNames, p[1], types.length, "type");
     const body = p.find((item) => item.startsWith("("));
     budget.reserve(256 + (body?.length ?? 0) * 6);
     types.push(
@@ -150,8 +152,7 @@ const decodeWabtInterface = (
           : reference.startsWith("$")
             ? typeNames.get(reference)
             : Number(reference);
-      const type =
-        index === undefined || typeSpaceUnknown ? undefined : types[index];
+      const type = index == null || typeSpaceUnknown ? undefined : types[index];
       return type?.kind === "func" ? { ...type, kind } : null;
     }
     if (kind === "memory" || kind === "table") {
@@ -232,14 +233,18 @@ const decodeWabtInterface = (
       ? (rawKind as WasmInterfaceEntry["kind"])
       : "unknown";
     const space = definitions.get(kind) ?? [];
-    const item = {
-      signature: signature(form),
-      label: p[1]?.startsWith("$") === true ? p[1] : undefined,
-    };
+    const item = { signature: signature(form) };
+    const label = p[1]?.startsWith("$") === true ? p[1] : undefined;
     budget.reserve(256);
     const index = space.length;
     space.push(item);
     definitions.set(kind, space);
+    if (label !== undefined) {
+      const labels =
+        definitionNames.get(kind) ?? new Map<string, number | null>();
+      indexLabel(labels, label, index, kind);
+      definitionNames.set(kind, labels);
+    }
     return { index, kind, signature: item.signature };
   };
   for (const form of forms) {
@@ -286,7 +291,7 @@ const decodeWabtInterface = (
       reference === undefined
         ? -1
         : reference.startsWith("$")
-          ? space.findIndex((d) => d.label === reference)
+          ? (definitionNames.get(kind)?.get(reference) ?? -1)
           : Number(reference);
     const observed =
       Number.isSafeInteger(index) && index >= 0 ? space[index] : undefined;
