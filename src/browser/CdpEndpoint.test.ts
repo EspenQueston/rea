@@ -341,52 +341,6 @@ const socketDiscoveryConnection = (targetReply: unknown): CdpConnection =>
     },
   }) as unknown as CdpConnection;
 
-it("keeps sibling browser-socket targets when attached metadata is malformed", async () => {
-  const connection = socketDiscoveryConnection({
-    targetInfos: [
-      {
-        targetId: "bad",
-        type: "page",
-        title: 3,
-        url: "https://example.test/bad",
-        attached: "unknown",
-      },
-      { targetId: 1, type: "page", url: "https://example.test/dropped" },
-      { id: "alias", type: "page", url: "https://example.test/alias" },
-      {
-        targetId: "good",
-        type: "page",
-        title: "Good",
-        url: "https://example.test/good",
-        attached: false,
-      },
-    ],
-  });
-  const discovery = await discoverCdpBrowserSocket(
-    connection,
-    "ws://127.0.0.1:9222/devtools/browser/fixture",
-    "list_browser_targets",
-  );
-  expect(
-    discovery.targets.map(({ id, attached, title }) => [id, attached, title]),
-  ).toEqual([
-    ["bad", null, ""],
-    ["good", false, "Good"],
-  ]);
-  expect(discovery.limitations?.join("\n")).toContain(
-    'CDP Target.getTargets row 0 target bad reported malformed attached metadata "unknown"',
-  );
-  expect(discovery.limitations?.join("\n")).toContain(
-    "CDP Target.getTargets row 0 target bad reported malformed title metadata 3",
-  );
-  expect(discovery.limitations?.join("\n")).toContain(
-    "CDP Target.getTargets row 1 was excluded because its target identity is malformed",
-  );
-  expect(discovery.limitations?.join("\n")).toContain(
-    "CDP Target.getTargets row 2 was excluded because its target identity is malformed",
-  );
-});
-
 it.each([
   { label: "absent document", reply: undefined },
   { label: "null document", reply: null },

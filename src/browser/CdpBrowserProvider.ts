@@ -166,7 +166,7 @@ export class CdpBrowserProvider implements BrowserObservationPort {
                 ]),
             ...(selected.allowed.some((target) => target.attached === null)
               ? [
-                  "CDP discovery omitted attachment state for one or more targets; attached is reported as unknown.",
+                  "Debugger attachment state is unknown for one or more targets; attached is null.",
                 ]
               : []),
           ],
