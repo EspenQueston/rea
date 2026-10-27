@@ -163,6 +163,8 @@ export interface EffectContext {
   readonly initialDocument: (tool: string) => StateDocument | undefined;
   /** The entities of a type the initial state held, whose values a sequence never reuses. */
   readonly startedWith: (type: string) => readonly StateEntity[];
+  /** Fields the type's item views show that no initial entity holds, which an answer leaves out for an entity without them. */
+  readonly laterFields: (type: string) => ReadonlySet<string>;
   /** Whether another tool's modelled write to the target awaits a check, which a later read must still make. */
   readonly pending: (target: string) => boolean;
 }

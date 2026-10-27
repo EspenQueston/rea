@@ -290,6 +290,16 @@ export const softDeleteFlag = (
   return undefined;
 };
 
+/** Fields as an application that soft-deletes shows them once deleted: with the type's deleted flag set, when it has one. */
+export const deletedFields = (
+  serving: StateServing,
+  type: string,
+  fields: JsonObject,
+): JsonObject => {
+  const flag = softDeleteFlag(serving, type);
+  return flag === undefined ? fields : { ...fields, [flag]: true };
+};
+
 /** An entity a served delete removed, as an application that soft-deletes answers for it by id: with its deleted flag set. */
 const deletedEntity = (
   serving: StateServing,
@@ -306,7 +316,7 @@ const deletedEntity = (
   );
   return entity === undefined
     ? undefined
-    : { ...entity, fields: { ...entity.fields, [flag]: true } };
+    : { ...entity, fields: deletedFields(serving, type, entity.fields) };
 };
 
 /** The answer for an entity the state does not hold: the tool's latest recorded 400, 404 or 410, else a tool error. */

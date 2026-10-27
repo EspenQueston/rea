@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 import {
   LATER_BULK_ROWS,
   LATER_FIELD_ROWS,
+  OMITTED_FLAG_ROWS,
+  SOFT_DELETED_ANSWER_ROWS,
   SOFT_DELETED_QUERY_ROWS,
   SOFT_DELETED_ROWS,
 } from "../../../tests/fixtures/environmentStateLaterReads.js";
@@ -78,5 +80,24 @@ describe("served writes modelled on later reads", () => {
       body: [{ id: 1, done: true }],
     }).body;
     expect(body).toEqual([{ id: 1, title: "Trim the wicks", done: true }]);
+  });
+
+  it("answers a soft delete with the record marked deleted, as the application does", () => {
+    const contacts = servedFrom(SOFT_DELETED_ANSWER_ROWS);
+    expect(contacts.answer("delete_contacts_by_id", { id: "1" }).body).toEqual({
+      id: 1,
+      name: "Ada Finch",
+      deleted: true,
+    });
+  });
+
+  it("reads a soft-deleted record back marked deleted when live records omit the flag", () => {
+    const contacts = servedFrom(OMITTED_FLAG_ROWS);
+    contacts.answer("delete_contacts_by_id", { id: "1" });
+    expect(contacts.answer("get_contacts_by_id", { id: "1" }).body).toEqual({
+      id: 1,
+      name: "Ada Finch",
+      deleted: true,
+    });
   });
 });
