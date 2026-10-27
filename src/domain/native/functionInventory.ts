@@ -9,7 +9,6 @@ import {
   functionBodySchema,
   functionBodyEntryAgrees,
 } from "../native/functionBody.js";
-import { functionDossierSchema } from "../native/functionDossier.js";
 import { hasStableNativeSymbol, nativeSymbolOrigin } from "./nativeSymbol.js";
 import {
   addressedValueSchema,
