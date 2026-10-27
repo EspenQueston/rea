@@ -30,6 +30,14 @@ const pointerTokens = (pointer: string): readonly string[] =>
         .split("/")
         .map((token) => token.replaceAll("~1", "/").replaceAll("~0", "~"));
 
+/** Keep unrelated fields usable while marking numbers that cannot be selected exactly. */
+export const parseScenarioValueJson = (text: string) =>
+  safeParseJson(text, (_key, value, context) =>
+    typeof value === "number" && !isExactJsonNumber(value, context?.source)
+      ? Number.NaN
+      : value,
+  );
+
 /** Exact own-property lookup: an absent pointer remains distinct from a non-scalar value. */
 export const responsePointerValue = (
   value: unknown,
@@ -37,9 +45,10 @@ export const responsePointerValue = (
 ): unknown => {
   let current = value;
   for (const key of pointerTokens(pointer)) {
-    if (Array.isArray(current) && /^(?:0|[1-9][0-9]*)$/u.test(key))
+    if (Array.isArray(current)) {
+      if (!/^(?:0|[1-9][0-9]*)(?![\s\S])/u.test(key)) return undefined;
       current = current[Number(key)];
-    else if (
+    } else if (
       typeof current === "object" &&
       current !== null &&
       Object.hasOwn(current, key)
@@ -81,11 +90,7 @@ export const readResponseValues = (
   }
   if (text.length > MAX_SAVED_RESPONSE_CHARACTERS)
     return err(issue("the response is too large to save values from."));
-  const parsed = safeParseJson(text, (_key, value, context) =>
-    typeof value === "number" && !isExactJsonNumber(value, context?.source)
-      ? Number.NaN
-      : value,
-  );
+  const parsed = parseScenarioValueJson(text);
   if (!parsed.ok)
     return err(
       issue("the response is not JSON, so no value can be saved from it."),
