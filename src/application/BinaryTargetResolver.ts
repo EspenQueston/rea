@@ -375,8 +375,13 @@ const readOpenedBinaryTarget = async (
     });
   }
   // Probe WASM content before suffix-only database routing; an explicit
-  // database selection keeps the caller's chosen interpretation.
-  const classificationPath = artifactNameForClassification(selectedPath, path);
+  // database selection keeps the caller's chosen interpretation. A bundle
+  // directory was selected for its executable, so the executable's own name
+  // classifies it; the directory spelling is not an artifact alias.
+  const classificationPath = artifactNameForClassification(
+    bundleInfoPlist === undefined ? selectedPath : path,
+    path,
+  );
   const artifactFormat =
     targetKind === "database"
       ? undefined
@@ -388,6 +393,7 @@ const readOpenedBinaryTarget = async (
     return ok({
       path,
       sourcePath,
+      ...bundle,
       sha256: await sha256Handle(handle, path, metadata, signal),
       kind: "database",
       format: "analysis-database",
@@ -396,6 +402,7 @@ const readOpenedBinaryTarget = async (
     const identity = {
       path,
       sourcePath,
+      ...bundle,
       artifactSelectedPath: selectedPath,
       sha256: await sha256Handle(handle, path, metadata, signal),
     };
