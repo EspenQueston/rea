@@ -1,5 +1,5 @@
 import { chmod, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { expect } from "vitest";
 import { elf, thinMach } from "../../../src/domain/binaryTarget.fixture.js";
@@ -248,12 +248,18 @@ cliTest.skipIf(!["darwin", "linux"].includes(process.platform))(
     for (const name of ["ghidraRun", "support/analyzeHeadless"])
       await writeFile(join(install, name), launcher, { mode: 0o700 });
     await symlink(join(install, "ghidraRun"), join(root, "ghidra"));
+    const restrictedPath = join(root, "restricted-bin");
+    await mkdir(restrictedPath);
+    // Linux process ownership requires procps; nothing else is exposed, and
+    // the empty leading component still selects the current directory first.
+    if (process.platform === "linux")
+      await symlink("/bin/ps", join(restrictedPath, "ps"));
 
     const result = await cli.run({
       arguments: ["doctor", "--provider", "ghidra", "--json"],
       cwd: root,
       environment: {
-        PATH: "",
+        PATH: `${delimiter}${restrictedPath}`,
         JAVA_HOME: join(root, "missing-jdk"),
         REA_LOG_LEVEL: "silent",
       },

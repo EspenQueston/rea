@@ -428,6 +428,7 @@ it("public CLI uses only GET and produces a report from fixture GitHub responses
       CI_REPOSITORY_ID: "11",
       CI_DEFAULT_BRANCH: "main",
       CI_PR_HEALTH_DIRECTORY: outputDirectory,
+      CI_PR_HEALTH_NOW: new Date(observedAt).toISOString(),
       CI_GH_CALLS: ghCalls,
       CI_GH_RESPONSE: ghResponse,
     },

@@ -145,8 +145,15 @@ it.each([
   { label: "omitted", property: "", shown: "bitness unknown" },
   {
     label: "empty",
-    property: "sun.arch.data.model =\n",
+    property: "sun.arch.data.model = \n",
     shown: 'bitness unknown (sun.arch.data.model = "")',
+  },
+  {
+    // LauncherHelper prints `name = value`; a bare `=` is not its framing, so
+    // the property counts as not reported, like the omitted case.
+    label: "nonstandard framing",
+    property: "sun.arch.data.model =\n",
+    shown: "bitness unknown",
   },
   {
     label: "malformed",
