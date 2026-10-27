@@ -27,6 +27,7 @@ import { silentLogger } from "../../../src/logger.js";
 import { createServer } from "../../../src/server/createServer.js";
 import { toolContract } from "../../../src/contracts/toolContracts.js";
 import { recordUnknownInputSchema } from "../../../src/domain/residualUnknown.js";
+import { nativeInventoryRowsSchemas } from "../../../src/domain/native/nativeInventory.js";
 
 const identity = { id: "fixture", name: "Fixture", version: "1" } as const;
 const profile = createAnalysisProfile(identity, { fixture: true });
@@ -102,12 +103,14 @@ describe("MCP external command snapshot retirement", () => {
       });
 
       await writeFile(releasePath, "release");
-      const analyzed = await analysisRequest;
+      const [analyzed, closed] = await Promise.all([
+        analysisRequest,
+        closeRequest,
+      ]);
       expect(analyzed.isError, JSON.stringify(analyzed.content)).not.toBe(true);
       const evidence = toolContract("execute_rizin_command").outputSchema.parse(
         analyzed.structuredContent,
       );
-      const closed = await closeRequest;
       expect(closed.isError).toBe(true);
       expect(JSON.stringify(closed.content)).toContain(
         "Analysis snapshots are unavailable",
@@ -192,14 +195,18 @@ describe("MCP composed workflow target admission", () => {
     });
     release.resolve();
 
-    const analyzed = await analysisRequest;
+    // Settle every queued request before assertions can trigger transport teardown.
+    const [analyzed, closed, opened] = await Promise.all([
+      analysisRequest,
+      closeRequest,
+      openRequest,
+    ]);
     expect(analyzed.isError, JSON.stringify(analyzed.content)).not.toBe(true);
     const evidence = toolContract("binary_overview").outputSchema.parse(
       analyzed.structuredContent,
     );
     expect(evidence.analysis_profile).not.toBeNull();
     expect(evidence).toMatchObject({ subject: { local_path: firstPath } });
-    const closed = await closeRequest;
     expect(closed.isError, JSON.stringify(closed.content)).not.toBe(true);
     const snapshot = await readAnalysisSnapshot(snapshotPath);
     if (!snapshot.ok) throw snapshot.error;
@@ -210,7 +217,6 @@ describe("MCP composed workflow target admission", () => {
         subject: expect.objectContaining({ local_path: firstPath }),
       }),
     );
-    const opened = await openRequest;
     expect(opened.isError, JSON.stringify(opened.content)).not.toBe(true);
     expect(session.activeTarget()?.path).toBe(secondPath);
   });
@@ -643,7 +649,17 @@ const makeProvider = (
                   ]
                 : operation === "list_documents"
                   ? ["fixture"]
-                  : [{ address: "0x1000", value: "fixture" }];
+                  : operation === "list_procedures"
+                    ? ([
+                        { address: "0x1000", value: "fixture" },
+                      ] satisfies z.infer<
+                        typeof nativeInventoryRowsSchemas.names
+                      >)
+                    : ([
+                        { address: "0x1000", value: "fixture" },
+                      ] satisfies z.infer<
+                        typeof nativeInventoryRowsSchemas.strings
+                      >);
           return ok(createAnalysisExecution(result, identity));
         },
         close: () => Promise.resolve(ok(null)),

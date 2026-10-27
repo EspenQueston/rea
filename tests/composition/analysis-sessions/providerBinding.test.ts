@@ -1,10 +1,11 @@
-import { writeFile } from "node:fs/promises";
+import { mkdir, realpath, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, onTestFinished } from "vitest";
 import { z } from "zod";
 
 import { createTestTempDirectory } from "../../fixtures/temporaryDirectory.js";
+import { thinMach } from "../../../src/domain/binaryTarget.fixture.js";
 
 import {
   createAnalysisExecution,
@@ -126,14 +127,33 @@ describe("target-bound provider routing", () => {
     await session.close();
     expect(beta.clients[0]?.closed).toBe(true);
   });
+});
 
+describe("artifact subject binding", () => {
   it("preserves bundle-root identity for artifact inventory operations", async () => {
-    const target = await databaseTarget();
+    const directory = await createTestTempDirectory("rea-provider-bundle-");
+    const target = join(directory, "Fixture.app");
+    const executable = join(target, "Fixture");
+    const infoPlist = join(target, "Info.plist");
+    await mkdir(target);
+    await writeFile(
+      infoPlist,
+      "<plist><dict><key>CFBundleExecutable</key><string>Fixture</string></dict></plist>",
+    );
+    await writeFile(executable, thinMach(0xfeedfacf, 0x0100000c));
     const analysis = deepProvider("alpha");
     const artifact = auxiliaryProvider("artifact", "inventory_artifact");
     const session = selectableSession([analysis.provider], artifact);
+    onTestFinished(async () => {
+      expect((await session.close()).ok).toBe(true);
+    });
 
     expect((await session.open(target, { providerId: "alpha" })).ok).toBe(true);
+    expect(session.activeTarget()).toMatchObject({
+      path: await realpath(executable),
+      sourcePath: await realpath(target),
+      bundleInfoPlist: await realpath(infoPlist),
+    });
     const result = await session.execute("inventory_artifact", {});
     if (!result.ok) throw result.error;
 
@@ -141,7 +161,7 @@ describe("target-bound provider routing", () => {
       ok: true,
       value: {
         subject: {
-          path: target,
+          path: await realpath(target),
           sha256: "f".repeat(64),
           format: "directory",
         },
@@ -149,6 +169,30 @@ describe("target-bound provider routing", () => {
     });
   });
 
+  it("rejects a different artifact digest for a non-bundle target", async () => {
+    const target = await databaseTarget();
+    const analysis = deepProvider("alpha");
+    const session = selectableSession(
+      [analysis.provider],
+      auxiliaryProvider("artifact", "inventory_artifact"),
+    );
+    onTestFinished(async () => {
+      expect((await session.close()).ok).toBe(true);
+    });
+    expect((await session.open(target, { providerId: "alpha" })).ok).toBe(true);
+    expect(session.activeTarget()?.bundleInfoPlist).toBeUndefined();
+    expect(await session.execute("inventory_artifact", {})).toMatchObject({
+      ok: false,
+      error: {
+        _tag: "ProviderAdapterError",
+        providerId: "artifact",
+        operation: "inventory_artifact:subject",
+      },
+    });
+  });
+});
+
+describe("provider-switch cancellation", () => {
   it("preserves the active client when a provider switch is cancelled while draining", async () => {
     const target = await databaseTarget();
     const alpha = deepProvider("alpha");

@@ -409,7 +409,8 @@ it("public CLI uses only GET and produces a report from fixture GitHub responses
   await writeFile(
     ghResponse,
     JSON.stringify([
-      [rawPull(51, { mergeable: true })],
+      // The CLI owns the wall clock; keep its fixture inside the recent window.
+      [rawPull(51, { mergeable: true, created_at: new Date().toISOString() })],
       { total_count: 0, workflow_runs: [] },
     ]),
   );
@@ -430,6 +431,7 @@ it("public CLI uses only GET and produces a report from fixture GitHub responses
       CI_PR_HEALTH_DIRECTORY: outputDirectory,
       CI_GH_CALLS: ghCalls,
       CI_GH_RESPONSE: ghResponse,
+      GITHUB_STEP_SUMMARY: join(fixture.directory, "job-summary.md"),
     },
   });
   const calls = (await readFile(ghCalls, "utf8"))
@@ -445,7 +447,11 @@ it("public CLI uses only GET and produces a report from fixture GitHub responses
   const report = JSON.parse(
     await readFile(join(outputDirectory, "report.json"), "utf8"),
   );
-  expect(report.pullRequests[0].ci.category).toBe("missing");
+  expect(report.pullRequests).toHaveLength(1);
+  expect(report.pullRequests[0]).toMatchObject({
+    number: 51,
+    ci: { category: "missing" },
+  });
   await expect(
     readFile(join(outputDirectory, "summary.md"), "utf8"),
   ).resolves.toContain("missing");

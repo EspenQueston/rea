@@ -184,11 +184,12 @@ it.skipIf(process.platform === "win32").each([false, true])(
     const output = join(root, "published");
     const writer = new ZipWriter(new Uint8ArrayWriter());
     await writer.add("payload.txt", new TextReader("committed bytes"));
-    await writeFile(source, await writer.close());
+    const bytes = await writer.close();
+    await writeFile(source, bytes);
     const client = new ArtifactProvider(process.env).createClient({
       path: source,
       sourcePath: source,
-      sha256: "0".repeat(64),
+      sha256: createHash("sha256").update(bytes).digest("hex"),
       kind: "archive",
       format: "zip",
     });
@@ -198,17 +199,18 @@ it.skipIf(process.platform === "win32").each([false, true])(
       vi.restoreAllMocks();
     });
     const commit = SafeOutputTree.prototype.commit;
-    vi.spyOn(SafeOutputTree.prototype, "commit").mockImplementation(
-      async function (this: SafeOutputTree) {
+    const commitAttempt = vi
+      .spyOn(SafeOutputTree.prototype, "commit")
+      .mockImplementation(async function (this: SafeOutputTree) {
         injectedFilesystemFailures.closeNext = true;
         injectedFilesystemFailures.blockCloseRetries = persistent;
         await commit.call(this);
-      },
-    );
+      });
 
     const result = await client.execute("extract_artifact", {
       output_root: output,
     });
+    expect(commitAttempt).toHaveBeenCalledTimes(1);
     const extraction = {
       output_root: output,
       artifacts: [expect.objectContaining({ relative_path: "payload.txt" })],

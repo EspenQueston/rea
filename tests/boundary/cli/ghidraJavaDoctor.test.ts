@@ -1,5 +1,5 @@
 import { chmod, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { expect } from "vitest";
 import { elf, thinMach } from "../../../src/domain/binaryTarget.fixture.js";
@@ -253,7 +253,8 @@ cliTest.skipIf(!["darwin", "linux"].includes(process.platform))(
       arguments: ["doctor", "--provider", "ghidra", "--json"],
       cwd: root,
       environment: {
-        PATH: "",
+        // Keep the empty discovery component without hiding ownership helpers.
+        PATH: `${delimiter}${process.env.PATH ?? ""}`,
         JAVA_HOME: join(root, "missing-jdk"),
         REA_LOG_LEVEL: "silent",
       },

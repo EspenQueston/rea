@@ -1,8 +1,10 @@
 import { afterEach, expect, it } from "vitest";
+import type { z } from "zod";
 import { createAnalysisExecution } from "../../../src/application/AnalysisProvider.js";
 import { err, ok } from "../../../src/domain/result.js";
 import { AnalysisCapabilityUnavailableError } from "../../../src/domain/analysisErrorCore.js";
 import { parseEvidence } from "../../../src/domain/evidence.js";
+import type { nativeInventoryRowsSchemas } from "../../../src/domain/native/nativeInventory.js";
 import { connect, closeEnhancedToolResources } from "./enhancedToolsHarness.js";
 
 afterEach(closeEnhancedToolResources);
@@ -50,11 +52,15 @@ it("retains provider coverage caveats in a composed MCP overview without repeate
   expect(calls.length).toBe(new Set(calls).size);
 });
 
-it("counts all own inventory dictionary entries in the composed overview", async () => {
-  const procedures = JSON.parse(
-    '{"__proto__":"observed procedure","0x1000":"ordinary procedure"}',
-  );
-  const strings = JSON.parse('{"__proto__":"observed string"}');
+it("counts every canonical inventory row without losing same-address alternatives", async () => {
+  const procedures = [
+    { address: "__proto__", value: "observed procedure" },
+    { address: "0x1000", value: "ordinary procedure" },
+    { address: "0x1000", value: "same-address alternative" },
+  ] satisfies z.infer<typeof nativeInventoryRowsSchemas.names>;
+  const strings = [
+    { address: "__proto__", value: "observed string" },
+  ] satisfies z.infer<typeof nativeInventoryRowsSchemas.strings>;
   const before = [JSON.stringify(procedures), JSON.stringify(strings)];
   const client = await connect({
     execute: async (operation) => {
@@ -70,7 +76,7 @@ it("counts all own inventory dictionary entries in the composed overview", async
         operation === "current_document"
           ? "fixture"
           : operation === "list_procedures"
-            ? { procedures }
+            ? procedures
             : operation === "list_strings"
               ? strings
               : [];
@@ -91,8 +97,8 @@ it("counts all own inventory dictionary entries in the composed overview", async
   const evidence = parseEvidence(response.structuredContent);
   expect(evidence.normalized_result).toMatchObject({
     document: "fixture",
-    procedure_count: Object.keys(procedures).length,
-    string_count: Object.keys(strings).length,
+    procedure_count: procedures.length,
+    string_count: strings.length,
   });
   expect([JSON.stringify(procedures), JSON.stringify(strings)]).toEqual(before);
 });

@@ -322,10 +322,6 @@ export const objcClassImportBindingCoverageSchema =
     examined: z.number().int().nonnegative(),
     decoded: z.number().int().nonnegative(),
   });
-export type ObjcClassImportBindingCoverage = z.infer<
-  typeof objcClassImportBindingCoverageSchema
->;
-
 /** Discovery retains unknown or inapplicable import identity separately from scan coverage. */
 export const objcClassDiscoveryCoverageSchema = nativeMetadataCoverageSchema
   .pick({ status: true, reason: true })

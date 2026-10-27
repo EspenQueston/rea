@@ -17,6 +17,7 @@ import type { ToolContract } from "../../../src/contracts/toolContractTypes.js";
 import { FULL_CATALOG_IDENTITY } from "../../../src/catalogIdentity.js";
 import type { McpOutputSchemaProfile } from "../../../src/config/mcpOutputSchemaProfile.js";
 import { advertisedSchemaErrors } from "../../fixtures/mcpAdvertisedSchemaValidity.js";
+import { advertisedInputJsonSchema } from "../../../src/contracts/toolSchemaMetadata.js";
 
 const createServer = (
   outputSchemaProfile: McpOutputSchemaProfile,
@@ -179,7 +180,7 @@ it("bounds output schema advertisements and keeps canonical MCP output validatio
   }
 });
 
-it("keeps the default compact-input catalog below a measured one-megabyte frame", async () => {
+it("bounds compact-input catalogs and preserves explicitly full inputs", async () => {
   const compactInput: CompactInputSchemaPresentation = {
     budgetBytes: COMPACT_INPUT_SCHEMA_BUDGET_BYTES,
   };
@@ -203,6 +204,16 @@ it("keeps the default compact-input catalog below a measured one-megabyte frame"
     await client.connect(clientTransport);
     try {
       const listed = await client.listTools();
+      if (profile === "off" && inputPresentation === undefined) {
+        const inputs = new Map(
+          listed.tools.map((tool) => [tool.name, tool.inputSchema]),
+        );
+        expect(inputs.size).toBe(TOOL_CONTRACTS.length);
+        for (const contract of TOOL_CONTRACTS)
+          expect(inputs.get(contract.name)).toEqual(
+            advertisedInputJsonSchema(contract),
+          );
+      }
       if (profile === "compact") {
         // Validate the advertised documents as the client receives them, not
         // just their bytes: a projection that broke a reference or left an
@@ -237,7 +248,10 @@ it("keeps the default compact-input catalog below a measured one-megabyte frame"
   expect(fullBytes).toBeGreaterThan(1024 * 1024);
   expect(compactBytes).toBeLessThan(1024 * 1024);
   expect(offBytes).toBeLessThan(1024 * 1024);
-  expect(fullInputOffBytes).toBeLessThan(1024 * 1024);
+  // The frame bound applies to compact inputs. Explicit full inputs retain
+  // canonical guidance even when output schemas are omitted.
+  expect(fullInputOffBytes).toBeGreaterThan(offBytes);
+  expect(fullInputOffBytes).toBeLessThan(fullBytes);
   expect(compactBytes).toBeLessThan(fullBytes);
   expect(compactBytes).toBeGreaterThan(offBytes);
 });

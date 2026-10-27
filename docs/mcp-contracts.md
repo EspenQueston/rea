@@ -1487,10 +1487,10 @@ within the budget, so the advertised form is self-contained and omits the
 canonical contract's content-bound `$id`. The projection only widens: a valid
 canonical result still satisfies the advertised schema, but a client validating
 against it can accept a result the canonical contract rejects. REA still
-validates every result before delivery. On catalogs large enough that full
-input schemas alone approach the frame limit, keep the input profile at its
-`compact` default as well; with full input schemas the advertisement is
-dominated by the input side.
+validates every result before delivery. Frame-capped clients should keep the
+input profile at its `compact` default as well. Explicit `full` inputs preserve
+complete guidance and can exceed the frame limit even when output schemas are
+omitted; the compatibility size checks cover compact inputs.
 
 Only client-side schema discovery and validation are reduced or omitted, so
 hosts using these profiles should rely on REA's validation and retain their

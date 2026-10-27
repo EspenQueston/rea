@@ -1,7 +1,11 @@
+import { randomUUID } from "node:crypto";
 import { describe, expect, it, onTestFinished } from "vitest";
 import { ArtifactResourceScope } from "../artifacts/ArtifactResourceScope.js";
 import { spawnOwnedProviderProcess } from "../process/ProviderProcess.js";
-import { cleanupOwnedProcessGroup } from "../process/ProcessOwnership.js";
+import {
+  cleanupOwnedProcessGroup,
+  verifyNoTokenOwnedProcesses,
+} from "../process/ProcessOwnership.js";
 
 import { PRODUCT_IDENTITY } from "../identity.js";
 import {
@@ -244,35 +248,83 @@ describe("launchRegistrationRunnerCommand", () => {
 it.runIf(process.platform !== "win32")(
   "settles the prewarm deadline after a detached descendant inherits the exited runner's pipes",
   async () => {
-    const result = await launchRegistrationRunnerCommand(
-      process.execPath,
-      [
-        "-e",
-        `
+    const arguments_ = [
+      "-e",
+      `
     const { spawn } = require('node:child_process');
-    const child = spawn(process.execPath, ['-e', 'process.stdout.write("descendant:" + process.pid); setTimeout(() => process.stdout.write("natural-descendant-exit"), 60_000)'], {
+    const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
       detached: true, stdio: ['ignore', 'inherit', 'inherit']
     });
+    process.stdout.write('descendant:' + child.pid + '\\n');
     child.unref();
   `,
-      ],
+    ];
+    const runId = `rea-prewarm-pipes-${randomUUID()}`;
+    const launched = await spawnOwnedProviderProcess({
+      command: process.execPath,
+      arguments: arguments_,
+      cwd: process.cwd(),
+      hostEnvironment: process.env,
+      runId,
+      expectedCommand: null,
+      sweepTokenOwnedProcesses: true,
+    });
+    onTestFinished(async () => {
+      expect(await cleanupOwnedProcessGroup(launched.ownership)).toMatchObject({
+        cleaned: true,
+      });
+    });
+    const ownership = launched.ownership;
+    if (!ownership.sweepTokenOwnedProcesses)
+      throw new Error("Fixture must retain token-sweep ownership");
+    const inspectDescendants = () =>
+      verifyNoTokenOwnedProcesses(
+        runId,
+        undefined,
+        ownership.captureBaseline,
+        ownership,
+      );
+    // Establish the finalization phase before starting the short deadline.
+    // Subprocess startup must not compete with the behavior this case tests.
+    if (
+      launched.process.exitCode === null &&
+      launched.process.signalCode === null
+    )
+      await new Promise<void>((resolve, reject) => {
+        launched.process.once("error", reject);
+        launched.process.once("exit", () => {
+          launched.process.off("error", reject);
+          resolve();
+        });
+      });
+    expect(launched.process.exitCode).toBe(0);
+    expect(launched.process.stdout?.readableEnded).toBe(false);
+    expect(await inspectDescendants()).toMatchObject({
+      cleaned: false,
+      reason: "token-owned process remained after cleanup",
+    });
+    const resources = scope();
+    const result = await launchRegistrationRunnerCommand(
+      process.execPath,
+      arguments_,
       {
         env: process.env,
         cwd: process.cwd(),
-        // Ownership admission and two Node starts must finish before the
-        // deadline tests held output pipes rather than startup cancellation.
-        timeoutMs: 5000,
+        timeoutMs: 100,
         platform: process.platform,
-        resources: scope(),
+        resources,
+        launcher: async () => launched,
       },
     );
-    expect(result.exitCode).toBe(0);
     expect(result.timedOut).toBe(true);
-    expect(result.stdout).toContain("descendant:");
+    expect(result.exitCode).toBe(0);
+    expect(result.spawnError).toBeUndefined();
     expect(result.cleanupFailure).toBeUndefined();
-    expect(result.stdout).not.toContain("natural-descendant-exit");
+    expect(resources.hasPending).toBe(false);
+    expect(await inspectDescendants()).toMatchObject({
+      cleaned: true,
+    });
   },
-  15_000,
 );
 
 it.each([false, true])(

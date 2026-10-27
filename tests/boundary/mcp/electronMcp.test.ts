@@ -652,43 +652,26 @@ it("exposes the target-free static JavaScript application workflow", async () =>
   progress.forEach((value, index) => {
     expect(value).toBeGreaterThan(progress[index - 1] ?? 0);
   });
-  const projected = z
-    .object({
-      evidence_id: z.string(),
-      normalized_result: z.object({
-        input_path: z.string(),
-        summary: z.object({
-          browser_windows: z.number(),
-          context_bridge_apis: z.number(),
-          ipc: z.object({ paired_renderer_transmissions: z.number() }),
-        }),
-        graph: z.object({
-          graph_id: z.string(),
-          nodes: z.array(z.unknown()),
-          edges: z.array(z.unknown()),
-        }),
-        semantic_graph: z.object({
-          graph_id: z.string(),
-          nodes: z.array(z.unknown()),
-          relations: z.array(z.unknown()),
-        }),
-      }),
-      operation: z.literal("analyze_javascript_application"),
-      parameters: z.object({ format: z.string() }),
-    })
-    .parse(analyzed.structuredContent);
-  expect(projected.normalized_result).toMatchObject({
+  const projected = parseEvidence(analyzed.structuredContent);
+  const application = javascriptApplicationAnalysisResultSchema.parse(
+    projected.normalized_result,
+  );
+  expect(application).toMatchObject({
     input_path: expect.stringMatching(/rea-electron-static-mcp-/u),
     summary: {
       browser_windows: 3,
       context_bridge_apis: 2,
-      ipc: { paired_renderer_transmissions: 4 },
+      ipc: {
+        renderer_transmissions: 7,
+        paired_renderer_transmissions: 0,
+        ambiguous_renderer_transmissions: 7,
+        unpaired_literal_renderer_transmissions: 0,
+      },
     },
   });
-  expect(projected.normalized_result.graph.nodes.length).toBeGreaterThan(0);
-  expect(
-    projected.normalized_result.semantic_graph.nodes.length,
-  ).toBeGreaterThan(0);
+  expect(application.graph.nodes.length).toBeGreaterThan(0);
+  expect(application.semantic_graph.nodes.length).toBeGreaterThan(0);
+  expect(projected.parameters).toMatchObject({ format: expect.any(String) });
   expect(projected.operation).toBe("analyze_javascript_application");
   const direct = await analyzeJavaScriptApplication({ input_path: root });
   if (!direct.ok) throw direct.error;
