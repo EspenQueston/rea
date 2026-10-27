@@ -13,7 +13,7 @@ import {
   symlink,
 } from "node:fs/promises";
 import { createRequire } from "node:module";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { createTestTempDirectory } from "../../tests/fixtures/temporaryDirectory.js";
 import type {
   Browser,
@@ -350,7 +350,7 @@ it.skipIf(process.platform === "win32")(
     expect(launchedProfile?.startsWith(selectedTemp)).toBe(true);
     expect(launchedProfile?.startsWith(decoyTemp)).toBe(false);
     expect(launchOptions?.env?.TMPDIR).toBe(selectedTemp);
-    expect(await realpath(join(launchedProfile!, ".."))).toBe(
+    expect(await realpath(dirname(launchedProfile!))).toBe(
       await realpath(join(physicalPrefix, "tmp")),
     );
     expect(
