@@ -50,6 +50,24 @@ it("preserves doctor cancellation before firmware probes run", async () => {
 
 const linuxIt = it.skipIf(process.platform !== "linux");
 
+it("does not launch host probes for unconfigured optional firmware tools", async () => {
+  const prepareOwnership =
+    vi.fn<NonNullable<FirmwareDoctorHost["prepareOwnership"]>>();
+  const runCommand = vi.fn<NonNullable<FirmwareDoctorHost["runCommand"]>>();
+  const doctor = new FirmwareDoctor({}, "linux", {
+    prepareOwnership,
+    runCommand,
+  });
+  const inspections = await doctor.inspect();
+  expect(inspections.map(({ configured }) => configured)).toEqual([
+    false,
+    false,
+  ]);
+  expect(prepareOwnership).not.toHaveBeenCalled();
+  expect(runCommand).not.toHaveBeenCalled();
+  expect(await doctor.close()).toBeUndefined();
+});
+
 linuxIt(
   "exposes configured firmware readiness independently of absent native engines",
   async () => {

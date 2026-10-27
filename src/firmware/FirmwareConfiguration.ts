@@ -1,13 +1,13 @@
 import { constants } from "node:fs";
-import { access, realpath, stat } from "node:fs/promises";
+import { access, stat } from "node:fs/promises";
 import { isAbsolute } from "node:path";
 import { err, ok, type Result } from "../domain/result.js";
 
-/** Explicit tool settings shared by execution and readiness diagnostics. */
-export const FIRMWARE_COMMAND_VARIABLES = {
-  binwalk: "REA_BINWALK_COMMAND",
-  unblob: "REA_UNBLOB_COMMAND",
-} as const;
+import {
+  selectArtifactCommandPath,
+  type ArtifactCommandPath,
+} from "../process/ArtifactCommandPath.js";
+import { ArtifactReaderFailure } from "../artifacts/ArtifactReader.js";
 
 /** Match the execution adapter's default without requiring an environment override. */
 export const firmwareLimiterPath = (
@@ -19,20 +19,25 @@ export const inspectFirmwareExecutable = async (
   path: string | undefined,
   variable: string,
   readable = true,
-): Promise<Result<string, string>> => {
+  signal?: AbortSignal,
+): Promise<Result<ArtifactCommandPath, string>> => {
   if (path === undefined || !isAbsolute(path))
     return err(
       `${variable} must be an absolute path to a caller-supplied executable.`,
     );
   try {
-    const resolved = await realpath(path);
-    await access(resolved, (readable ? constants.R_OK : 0) | constants.X_OK);
-    if (!(await stat(resolved)).isFile())
+    const selected = await selectArtifactCommandPath(path, signal);
+    await access(
+      selected.invocationPath,
+      (readable ? constants.R_OK : 0) | constants.X_OK,
+    );
+    if (!(await stat(selected.invocationPath)).isFile())
       return err(
         `${variable} is not a readable executable regular file: ${path}`,
       );
-    return ok(resolved);
+    return ok(selected);
   } catch (cause: unknown) {
+    if (cause instanceof ArtifactReaderFailure) throw cause;
     return err(
       `${variable} is unavailable at ${path}: ${cause instanceof Error ? cause.message : String(cause)}`,
     );

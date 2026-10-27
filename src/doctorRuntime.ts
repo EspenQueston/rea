@@ -9,11 +9,13 @@ import { inspectSystemGhidraProvider } from "./ghidra/GhidraDoctor.js";
 import { inspectIdaRegistration } from "./ida/IdaDoctor.js";
 import { inspectKunaProvider } from "./kuna/KunaDoctor.js";
 import { readIdaConfiguration } from "./ida/IdaConfiguration.js";
-import { parseJebMcpEndpoint } from "./jeb/JebMcpEndpoint.js";
 import { selectLinuxPrivateDisplayStrategy } from "./hopper/LinuxPrivateDisplayProbe.js";
 import { ok } from "./domain/result.js";
 import { FirmwareDoctor } from "./firmware/FirmwareDoctor.js";
 import { AnalysisCancelledError } from "./domain/analysisErrorCore.js";
+import { ProviderCleanupError } from "./domain/providerCleanupError.js";
+import { AnalysisCleanupLeaseGroup } from "./artifacts/AnalysisCleanupLease.js";
+import type { RetainedResourceScope } from "./application/AnalysisProvider.js";
 import {
   inspectLinuxHopperPythonRuntime,
   linuxHopperPythonUnavailable,
@@ -25,67 +27,116 @@ export const createSystemDoctorHost = (
   signal?: AbortSignal,
   options: { readonly firmware?: boolean } = {},
 ): DoctorHost => {
-  const firmware =
-    options.firmware === false
-      ? undefined
-      : new FirmwareDoctor(environment, process.platform, {}, signal);
-  const selectedJebEndpoint = environment.REA_JEB_MCP_URL;
-  const selectedJebRegistrationEnvironment: Readonly<Record<string, string>> =
-    selectedJebEndpoint !== undefined &&
-    selectedJebEndpoint.length > 0 &&
-    parseJebMcpEndpoint(selectedJebEndpoint).ok
-      ? { REA_JEB_MCP_URL: selectedJebEndpoint }
-      : {};
-  const host = systemDoctorHost({
+  const registrationReads = new WeakMap<
+    RetainedResourceScope,
+    Map<string, ReturnType<typeof readIdaConfiguration>>
+  >();
+  const readRegistration = (
+    path: string,
+    resourceScope: RetainedResourceScope,
+    inspectionSignal: AbortSignal,
+  ) => {
+    let byPath = registrationReads.get(resourceScope);
+    if (byPath === undefined) {
+      byPath = new Map();
+      registrationReads.set(resourceScope, byPath);
+    }
+    let registration = byPath.get(path);
+    if (registration === undefined) {
+      registration = readIdaConfiguration(path, {
+        resourceScope,
+        signal: inspectionSignal,
+      });
+      byPath.set(path, registration);
+    }
+    return registration;
+  };
+  return systemDoctorHost({
     environment,
     ...(signal === undefined ? {} : { signal }),
-    providerRegistrationEnvironment: () => selectedJebRegistrationEnvironment,
-    resolveProviderRequestBudget: (
+    resolveProviderRequestBudget: async (
       analysisProvider,
       registrationEnvironment,
+      resourceScope,
+      inspectionSignal,
     ) => {
       if (analysisProvider !== "ida" && analysisProvider !== "auto")
         return ok(undefined);
       const path = registrationEnvironment.REA_IDA_MCP_CONFIG;
       if (path === undefined) return ok(undefined);
-      const registration = readIdaConfiguration(path);
+      const registration = await readRegistration(
+        path,
+        resourceScope,
+        inspectionSignal,
+      );
       if (registration.ok) return ok(registration.value.timeoutMs);
       // An invalid IDA registration cannot be selected automatically. Keep it
       // out of recommendations for another available provider, but surface the
       // parser-owned error when IDA itself was explicitly selected.
       return analysisProvider === "ida" ? registration : ok(undefined);
     },
-    providerInspections: async (fileCloseResources, inspectionSignal) => [
-      await inspectSystemGhidraProvider(
+    providerInspections: async (resourceScope, inspectionSignal) => {
+      const inspections = [
+        await inspectSystemGhidraProvider(
+          environment,
+          resourceScope,
+          inspectionSignal,
+        ),
+        await inspectIdaRegistration(
+          environment.REA_IDA_MCP_CONFIG,
+          resourceScope,
+          inspectionSignal,
+          environment.REA_IDA_MCP_CONFIG === undefined
+            ? undefined
+            : readRegistration(
+                environment.REA_IDA_MCP_CONFIG,
+                resourceScope,
+                inspectionSignal,
+              ),
+        ),
+        await inspectJadxProvider(environment, resourceScope, inspectionSignal),
+        await inspectKunaProvider(environment, process.platform, {
+          resourceScope,
+          signal: inspectionSignal,
+        }),
+      ];
+      if (options.firmware === false) return inspections;
+      const firmware = new FirmwareDoctor(
         environment,
-        fileCloseResources,
+        process.platform,
+        {},
         inspectionSignal,
-      ),
-      inspectIdaRegistration(environment.REA_IDA_MCP_CONFIG),
-      await inspectJadxProvider(
-        environment,
-        fileCloseResources,
-        inspectionSignal,
-      ),
-      await inspectKunaProvider(environment, process.platform, {
-        fileCloseResources,
-      }),
-      ...((await firmware?.inspect()) ?? []),
-    ],
-    linuxDemoRuntimeCheck: () =>
-      inspectLinuxHopperDemoRuntime(environment, signal),
-  });
-  return {
-    ...host,
-    async close() {
-      const firmwareCleanup = await firmware?.close();
-      const hostCleanup = await host.close?.();
-      const failures = [firmwareCleanup, hostCleanup].filter(
-        (value) => value !== undefined,
       );
-      return failures.length === 0 ? undefined : failures.join("; ");
+      try {
+        return [...inspections, ...(await firmware.inspect())];
+      } finally {
+        // Retain only failed cleanup after inspection: an ordinary pending
+        // owner would make nested provider work wait on this active scope.
+        if (firmware.hasPendingCleanup)
+          resourceScope.retain(
+            {
+              async close() {
+                const reason = await firmware.close();
+                if (reason !== undefined)
+                  throw new ProviderCleanupError(
+                    "firmware",
+                    ["firmware-doctor"],
+                    { reason },
+                    { operation: "doctor" },
+                  );
+              },
+            },
+            "firmware-doctor",
+          );
+      }
     },
-  };
+    linuxDemoRuntimeCheck: (resourceScope, inspectionSignal) =>
+      inspectLinuxHopperDemoRuntime(
+        environment,
+        resourceScope,
+        inspectionSignal,
+      ),
+  });
 };
 
 const HOPPER_DEMO_HELPER_PATH = fileURLToPath(
@@ -94,12 +145,57 @@ const HOPPER_DEMO_HELPER_PATH = fileURLToPath(
 
 const inspectLinuxHopperDemoRuntime = async (
   environment: Readonly<NodeJS.ProcessEnv>,
+  resourceScope: RetainedResourceScope,
   signal?: AbortSignal,
 ): Promise<DoctorCheck> => {
   const selection = await selectLinuxPrivateDisplayStrategy({
     helperPath: HOPPER_DEMO_HELPER_PATH,
     environment,
+    ...(signal === undefined ? {} : { signal }),
   });
+  if (!selection.ok && selection.cleanup !== undefined) {
+    const { lease, reason } = selection.cleanup;
+    resourceScope.retain(
+      {
+        close: () => lease.release(),
+        get cleanupResources() {
+          return lease.cleanupResources;
+        },
+      },
+      "hopper-private-display-probe",
+    );
+    const cleanup = {
+      reason,
+      resources: [
+        ...(lease.cleanupResources ?? ["hopper-private-display-probe"]),
+      ],
+    };
+    const diagnostics = {
+      hopper_demo_runtime: { private_display: { ...selection.diagnostic } },
+    };
+    const failure =
+      signal?.aborted === true
+        ? new AnalysisCancelledError("doctor", {
+            cause: signal.reason,
+            cleanup,
+            diagnostics,
+          })
+        : new ProviderCleanupError(
+            "hopper",
+            cleanup.resources,
+            { reason, ...diagnostics },
+            { operation: "doctor" },
+          );
+    new AnalysisCleanupLeaseGroup(failure, [lease]);
+    throw failure;
+  }
+  if (signal?.aborted === true)
+    throw new AnalysisCancelledError("doctor", {
+      cause: signal.reason,
+      diagnostics: {
+        hopper_demo_runtime: { private_display: { ...selection.diagnostic } },
+      },
+    });
   const python = await inspectLinuxHopperPythonRuntime(environment, signal);
   const pythonFailure = !python.ok
     ? python.error

@@ -12,15 +12,15 @@ import {
 import type { ProviderProcessSupervisor } from "../process/ProviderProcess.js";
 import { createSystemProcessOwnershipHost } from "../process/ProcessOwnershipObservation.js";
 import {
-  FIRMWARE_COMMAND_VARIABLES,
   firmwareLimiterPath,
   inspectFirmwareExecutable,
 } from "./FirmwareConfiguration.js";
 import { FIRMWARE_LIMITS } from "./FirmwareRelease.js";
+import { admitFirmwareVersion } from "./FirmwareVersion.js";
 import {
-  admitFirmwareVersion,
+  FIRMWARE_TOOL_REQUIREMENTS,
   type FirmwareEngineName,
-} from "./FirmwareVersion.js";
+} from "../contracts/firmware/firmwareToolRequirements.js";
 
 const PROBE_LIMITS = {
   timeoutMs: 5_000,
@@ -68,7 +68,11 @@ export class FirmwareDoctor {
     );
     const checks: DoctorProviderCheck[] = [platform];
     let limiter: string | undefined;
-    if (platform.ok) {
+    const hasConfiguredEngine = Object.values(FIRMWARE_TOOL_REQUIREMENTS).some(
+      ({ commandEnvironment }) =>
+        this.environment[commandEnvironment] !== undefined,
+    );
+    if (platform.ok && hasConfiguredEngine) {
       const ps = await this.#inspectPs();
       this.#throwIfCancelled();
       checks.push(ps);
@@ -76,6 +80,7 @@ export class FirmwareDoctor {
         firmwareLimiterPath(this.environment),
         "REA_FIRMWARE_PRLIMIT_COMMAND (util-linux prlimit)",
         false,
+        this.signal,
       );
       if (!path.ok) {
         checks.push(
@@ -88,7 +93,9 @@ export class FirmwareDoctor {
           ),
         );
       } else if (ps.ok) {
-        const result = await this.#probe(path.value, ["--version"]);
+        const result = await this.#probe(path.value.invocationPath, [
+          "--version",
+        ]);
         const valid =
           result.ok &&
           result.value.exitCode === 0 &&
@@ -104,7 +111,7 @@ export class FirmwareDoctor {
             "Provide a working util-linux prlimit executable and rerun doctor.",
           ),
         );
-        if (valid) limiter = path.value;
+        if (valid) limiter = path.value.invocationPath;
       } else {
         checks.push(
           diagnostic(
@@ -124,6 +131,10 @@ export class FirmwareDoctor {
     }
     this.#throwIfCancelled();
     return inspections;
+  }
+
+  get hasPendingCleanup(): boolean {
+    return this.#pendingCleanup.size > 0;
   }
 
   /** Retry retained cleanup; never silently discard ownership after a failed probe. */
@@ -182,19 +193,21 @@ export class FirmwareDoctor {
     prerequisites: readonly DoctorProviderCheck[],
     limiter: string | undefined,
   ): Promise<DoctorProviderInspection> {
-    const variable = FIRMWARE_COMMAND_VARIABLES[engine];
+    const variable = FIRMWARE_TOOL_REQUIREMENTS[engine].commandEnvironment;
     const configured = this.environment[variable] !== undefined;
     const checks = [...prerequisites];
     const command = await inspectFirmwareExecutable(
       this.environment[variable],
       variable,
+      true,
+      this.signal,
     );
     checks.push(
       diagnostic(
         "configuration",
         command.ok,
         command.ok
-          ? `${variable} resolves to ${command.value}.`
+          ? `${variable} resolves to ${command.value.resolvedPath}.`
           : command.error,
         configured ? "config_drift" : "missing_analysis_engine",
         `Set ${variable} to an absolute readable executable path to the caller-supplied ${engine} tool.`,
@@ -204,7 +217,7 @@ export class FirmwareDoctor {
     if (command.ok && limiter !== undefined) {
       const probe = await this.#probe(
         limiter,
-        limitedArguments(command.value, ["--version"]),
+        limitedArguments(command.value.invocationPath, ["--version"]),
       );
       if (!probe.ok || probe.value.exitCode !== 0) {
         checks.push(
@@ -240,7 +253,12 @@ export class FirmwareDoctor {
           ),
         );
         if (engine === "unblob" && accepted)
-          checks.push(await this.#inspectDependencies(limiter, command.value));
+          checks.push(
+            await this.#inspectDependencies(
+              limiter,
+              command.value.invocationPath,
+            ),
+          );
       }
     }
     return {
