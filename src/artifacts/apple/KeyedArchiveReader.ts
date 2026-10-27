@@ -239,19 +239,17 @@ export const inspectStandaloneKeyedArchive = (input: {
   input.resources.run(async () => {
     const selected = keyedArchiveInputSchema.parse(input.parameters);
     const selectedBasename = basename(input.selectedPath);
-    const physicalBasename = basename(input.path);
-    if (
-      selected.path !== "." &&
-      selected.path !== selectedBasename &&
-      selected.path !== physicalBasename
-    )
+    const allowedBasenames = [
+      ...new Set([selectedBasename, basename(input.path)]),
+    ];
+    if (selected.path !== "." && !allowedBasenames.includes(selected.path))
       throw new AnalysisInputError("inspect_keyed_archive", undefined, [
         {
           path: ["path"],
           reason: "invalid_value",
           message:
             "For an active plist, path must select that archive (omit path or use its basename).",
-          expected: [selectedBasename, physicalBasename],
+          expected: allowedBasenames,
         },
       ]);
     await assertStandaloneArchiveSelection(
