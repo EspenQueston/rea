@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   LATER_BULK_ROWS,
   LATER_FIELD_ROWS,
+  SOFT_DELETED_QUERY_ROWS,
   SOFT_DELETED_ROWS,
 } from "../../../tests/fixtures/environmentStateLaterReads.js";
 import { servedFrom } from "../../../tests/fixtures/environmentStateServing.js";
@@ -49,6 +50,16 @@ describe("served writes modelled on later reads", () => {
     contacts.store.removeAll(contacts.store.startedWith("/api/contacts"));
     expect(contacts.refusal("get_contacts_by_id", { id: "1" })).toMatchObject({
       code: expect.any(String),
+    });
+  });
+
+  it("reads a served-deleted contact back marked deleted when only reads with a query showed one", () => {
+    const contacts = servedFrom(SOFT_DELETED_QUERY_ROWS);
+    contacts.answer("delete_contacts_by_id", { id: "1" });
+    expect(contacts.answer("get_contacts_by_id", { id: "1" }).body).toEqual({
+      id: 1,
+      name: "Ada Finch",
+      deleted: true,
     });
   });
 

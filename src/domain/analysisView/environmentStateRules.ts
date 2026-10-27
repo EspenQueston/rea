@@ -151,7 +151,7 @@ export type StateItemView = EntityViewPlan &
   ReplayedReads & {
     readonly shape: "item";
     readonly envelope_ordinal: number;
-    /** The member later reads set `true` on an entity the application soft-deleted and still answers by id. */
+    /** The member its reads set `true` on an entity the application soft-deleted and still answers by id. */
     readonly deleted_flag?: (typeof DELETED_FLAGS)[number] | undefined;
   };
 

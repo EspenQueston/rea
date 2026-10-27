@@ -7,6 +7,7 @@ import {
 import {
   LATER_FIELD_ROWS,
   MAX_SIZE_ROWS,
+  SOFT_DELETED_QUERY_ROWS,
   SOFT_DELETED_ROWS,
 } from "../../../tests/fixtures/environmentStateLaterReads.js";
 import { environmentStateViewOf } from "../../../tests/fixtures/environmentStateWrites.js";
@@ -34,6 +35,10 @@ describe("deletes the application answers for afterwards", () => {
       viewOf(rows).views.find((view) => view.tool === "get_contacts_by_id");
     expect(item(SOFT_DELETED_ROWS)).toMatchObject({
       shape: "item",
+      deleted_flag: "deleted",
+    });
+    // Reads with a query, such as a cache-busting parameter, show the flag as well.
+    expect(item(SOFT_DELETED_QUERY_ROWS)).toMatchObject({
       deleted_flag: "deleted",
     });
     expect(item(MAX_SIZE_ROWS)).not.toHaveProperty("deleted_flag");

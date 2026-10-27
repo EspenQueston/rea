@@ -462,7 +462,7 @@ export class EnvironmentStateExtraction {
     });
   }
 
-  /** The members later plain item reads show of the entity they name, in first-seen order, and the flag they set on one the application soft-deleted. */
+  /** The members later plain item reads show of the entity they name, in first-seen order, and the flag any of its reads sets on one the application soft-deleted. */
   #laterFields(
     tool: StateToolFacts,
     type: string,
@@ -479,17 +479,20 @@ export class EnvironmentStateExtraction {
         record === undefined ||
         record.status === null ||
         record.status < 200 ||
-        record.status >= 300 ||
-        (record.query ?? "") !== "" ||
-        this.#beforeInitLimit(record, limit)
+        record.status >= 300
       )
         continue;
+      // Any read may show the soft-delete flag; only plain later reads add fields.
+      const later =
+        (record.query ?? "") === "" && !this.#beforeInitLimit(record, limit);
+      if (!later && flag !== undefined) continue;
       this.#withBody(ordinal, (body) => {
         const object =
           body === undefined ? undefined : at(body, entity.pointer);
         if (!isObject(object) || ownMember(object, entity.field) === undefined)
           return;
         flag ??= deletedFlag(object);
+        if (!later) return;
         for (const name of Object.keys(object))
           if (!seen.has(name)) {
             seen.add(name);

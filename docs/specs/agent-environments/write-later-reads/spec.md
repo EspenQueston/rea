@@ -19,7 +19,7 @@ each write back:
 
 - **Soft deletes.** An item read whose object is marked deleted (`deleted`, `isDeleted` or `is_deleted` set to `true`)
   agrees with an entity the state does not hold, as a `404` does. Replay drops the entity such a read names, and such
-  an object never seeds or adopts an entity. The item view records the flag later reads set as `deleted_flag`, and
+  an object never seeds or adopts an entity. The item view records the flag its reads set as `deleted_flag`, and
   serving keeps an entity a served delete removed from such a type until a reset or load, so a read of it by id answers
   its last fields with the flag `true`, as the application does.
 - **Page sizes.** `maxSize`, `max_results` and `maxResults` are page sizes, for a list read's whole-collection
