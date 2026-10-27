@@ -3,6 +3,7 @@ import { createAnalysisExecution } from "../../../src/application/AnalysisProvid
 import { err, ok } from "../../../src/domain/result.js";
 import { AnalysisCapabilityUnavailableError } from "../../../src/domain/analysisErrorCore.js";
 import { parseEvidence } from "../../../src/domain/evidence.js";
+import { parseMcpToolError } from "../../fixtures/mcpToolError.js";
 import { connect, closeEnhancedToolResources } from "./enhancedToolsHarness.js";
 
 afterEach(closeEnhancedToolResources);
@@ -50,7 +51,7 @@ it("retains provider coverage caveats in a composed MCP overview without repeate
   expect(calls.length).toBe(new Set(calls).size);
 });
 
-it("counts all own inventory dictionary entries in the composed overview", async () => {
+it("rejects dictionary inventories in the composed overview", async () => {
   const procedures = JSON.parse(
     '{"__proto__":"observed procedure","0x1000":"ordinary procedure"}',
   );
@@ -87,12 +88,60 @@ it("counts all own inventory dictionary entries in the composed overview", async
     name: "binary_overview",
     arguments: {},
   });
+  expect(response.isError).toBe(true);
+  expect(parseMcpToolError(response)).toMatchObject({
+    error: {
+      code: "unreadable_output",
+      details: { operation: "list_procedures" },
+    },
+  });
+  expect([JSON.stringify(procedures), JSON.stringify(strings)]).toEqual(before);
+});
+
+it("counts complete canonical inventory rows in the composed overview", async () => {
+  const procedures = [
+    { address: "0x1000", value: "ordinary procedure" },
+    { address: "0x2000", value: "__proto__" },
+  ];
+  const strings = [{ address: "0x3000", value: "observed string" }];
+  const before = [JSON.stringify(procedures), JSON.stringify(strings)];
+  const client = await connect({
+    execute: async (operation) => {
+      if (operation === "read_binary_inventory_summary")
+        return err(
+          new AnalysisCapabilityUnavailableError(
+            "fixture",
+            operation,
+            "No native overview",
+          ),
+        );
+      const value =
+        operation === "current_document"
+          ? "fixture"
+          : operation === "list_procedures"
+            ? procedures
+            : operation === "list_strings"
+              ? strings
+              : [];
+      return ok(
+        createAnalysisExecution(value, {
+          id: "fixture",
+          name: "Fixture",
+          version: "1",
+        }),
+      );
+    },
+  });
+  const response = await client.callTool({
+    name: "binary_overview",
+    arguments: {},
+  });
   expect(response.isError).not.toBe(true);
   const evidence = parseEvidence(response.structuredContent);
   expect(evidence.normalized_result).toMatchObject({
     document: "fixture",
-    procedure_count: Object.keys(procedures).length,
-    string_count: Object.keys(strings).length,
+    procedure_count: procedures.length,
+    string_count: strings.length,
   });
   expect([JSON.stringify(procedures), JSON.stringify(strings)]).toEqual(before);
 });
