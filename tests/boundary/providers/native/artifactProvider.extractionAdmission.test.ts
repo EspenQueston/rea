@@ -266,10 +266,7 @@ it.each([
     await writeFile(source, bytes());
     const pck = vi.spyOn(pckLocation, "locateGodotPck");
     const sea = vi.spyOn(seaLocation, "locateNodeSea");
-    const pyInstaller = vi.spyOn(
-      pyInstallerLocation,
-      "containsPyInstallerArchive",
-    );
+    const pyInstaller = vi.spyOn(pyInstallerLocation, "findPyInstallerCookie");
     const hashRoot = rootHash.hashStableRootArtifactHandle;
     let probesBeforeHash: number[] | undefined;
     const hash = vi
@@ -310,6 +307,10 @@ it.each([
           expect(extracted.manifest.root_format).toBe(format);
           expect(extracted.artifacts.length).toBeGreaterThan(0);
           expect(probesBeforeHash).toEqual(probes);
+          // Preflight's cookie supplies inventory and the transferred extraction
+          // admission; descriptor/path and digest checks still validate freshness.
+          if (format === "pyinstaller")
+            expect(pyInstaller).toHaveBeenCalledTimes(1);
         },
       );
     } finally {
