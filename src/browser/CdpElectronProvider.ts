@@ -206,7 +206,7 @@ export class CdpElectronProvider implements ElectronObservationPort {
                 ]),
             ...(allowed.some((target) => target.attached === null)
               ? [
-                  "Debugger attachment state is unknown for one or more targets; attached is null.",
+                  "CDP discovery could not establish debugger attachment state for one or more targets.",
                 ]
               : []),
           ],
