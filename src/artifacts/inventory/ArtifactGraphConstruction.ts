@@ -1,6 +1,7 @@
 import { hasGodotPckHeader } from "../../domain/godotPckFormat.js";
 import type { ArtifactClassificationEvidence } from "../ArtifactClassificationProbe.js";
 import { asarHeaderAdmissionFailure } from "../AsarHeader.js";
+import { classifyFirmwareTextFormat } from "../../domain/firmwareText.js";
 import { hasDestinationPath } from "../ArtifactPaths.js";
 import { compareUnicodeCodePoints } from "../../domain/unicodeCodePointOrder.js";
 import { isJavaScriptSourcePath } from "../../domain/javascript/javascriptArtifactFiles.js";
@@ -211,6 +212,7 @@ export const createRootNode = (input: {
       } & ArtifactClassificationEvidence)
     | null;
   readonly occurrences: readonly MutableOccurrence[];
+  readonly path?: string;
 }): ArtifactNode =>
   createArtifactNode({
     sha256:
@@ -233,7 +235,11 @@ export const createRootNode = (input: {
     format:
       input.digest === null
         ? "directory"
-        : classifyArtifactBytes(input.digest, input.digest.bytes),
+        : classifyArtifactBytes(
+            input.digest,
+            input.digest.bytes,
+            input.path ?? "",
+          ),
     contentState: "materialized",
   });
 
@@ -275,9 +281,16 @@ export const rootOccurrenceFor = (
   artifact_kind:
     metadata.format === "directory" ||
     isZipPackageFormat(metadata.format) ||
-    ["asar", "godot-pck", "dmg", "pkg", "pyinstaller", "node-sea"].includes(
-      metadata.format,
-    )
+    [
+      "asar",
+      "godot-pck",
+      "dmg",
+      "pkg",
+      "pyinstaller",
+      "node-sea",
+      "intel-hex",
+      "srec",
+    ].includes(metadata.format)
       ? "container"
       : artifactRoleForFormat(metadata.path, metadata.format).kind,
   artifact_format: metadata.format,
@@ -530,7 +543,7 @@ export const classifyArtifactContent = (
   readonly contentFormat: ArtifactNode["format"];
 } => {
   const { prefix, asarHeader } = evidence;
-  const contentFormat = classifyArtifactBytes(evidence, fileSize);
+  const contentFormat = classifyArtifactBytes(evidence, fileSize, path);
   const byPath = classifyArtifactPath(path);
   let role: ReturnType<typeof classifyArtifactPath>;
   if (
@@ -567,7 +580,8 @@ const artifactRoleForFormat = (
       format: zipPackageFormatForPath(path) ?? format,
     };
   if (format === "plist") return { kind: "plist", format };
-  if (format === "godot-pck") return { kind: "container", format };
+  if (format === "godot-pck" || format === "intel-hex" || format === "srec")
+    return { kind: "container", format };
   return {
     kind: ["native-addon", "dynamic-library"].includes(byPath.kind)
       ? byPath.kind
@@ -580,8 +594,11 @@ const artifactRoleForFormat = (
 export const classifyArtifactBytes = (
   evidence: ArtifactClassificationEvidence,
   fileSize = evidence.prefix.length,
+  path = "",
 ): ArtifactNode["format"] => {
   const { prefix, mzWindowsHeaderSignature } = evidence;
+  const firmwareText = classifyFirmwareTextFormat(path, prefix);
+  if (firmwareText !== undefined) return firmwareText;
   if (hasZipSignature(prefix)) return "zip";
   if (hasGodotPckHeader(prefix)) return "godot-pck";
   if (hasBinaryPlistSignature(prefix)) return "plist";

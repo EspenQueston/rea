@@ -5,6 +5,7 @@ import type { AsarHeaderAdmission } from "../config/asarHeaderAdmission.js";
 import { AsarArtifactReader } from "./AsarArtifactReader.js";
 import type { ArtifactReader } from "./ArtifactReader.js";
 import { DirectoryArtifactReader } from "./DirectoryArtifactReader.js";
+import { FirmwareTextArtifactReader } from "./FirmwareTextArtifactReader.js";
 import { GodotPckArtifactReader } from "./GodotPckArtifactReader.js";
 import { MachOSliceArtifactReader } from "./MachOSliceArtifactReader.js";
 import { NativeDmgArtifactReader } from "./NativeDmgArtifactReader.js";
@@ -25,6 +26,8 @@ export type ArtifactReaderFormat =
   | "pyinstaller"
   | "node-sea"
   | "godot-pck"
+  | "intel-hex"
+  | "srec"
   | "mach-o-universal"
   | "dmg"
   | ZipPackageFormat;
@@ -105,6 +108,9 @@ export function createArtifactReader(
           ? admission
           : rootSource,
       );
+    case "intel-hex":
+    case "srec":
+      return new FirmwareTextArtifactReader(path, format, rootSource);
     case "mach-o-universal":
       return new MachOSliceArtifactReader(
         path,

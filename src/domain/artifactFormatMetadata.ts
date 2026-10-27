@@ -127,6 +127,66 @@ export const nodeSeaEntryDeclaration = (
   metadata: z.infer<typeof nodeSeaEntryMetadataSchema>,
 ) => ({ role: metadata.role, source_path: metadata.source_path });
 
+/** Intel HEX container facts preserved from the source records. */
+export const intelHexMetadataSchema = z.strictObject({
+  kind: z.literal("intel-hex"),
+  variant: z.enum(["i8", "i16", "i32"]),
+  start_address: uint32.nullable(),
+  start_address_source: z.enum(["record-03", "record-05"]).nullable(),
+  start_segment: uint32.nullable(),
+  start_offset: uint32.nullable(),
+  records: z.strictObject({
+    data: offset,
+    end_of_file: offset,
+    extended_segment_address: offset,
+    start_segment_address: offset,
+    extended_linear_address: offset,
+    start_linear_address: offset,
+  }),
+  eof_terminated: z.boolean(),
+});
+export type IntelHexMetadata = z.infer<typeof intelHexMetadataSchema>;
+
+/** Motorola S-record container facts preserved from the source records. */
+export const srecMetadataSchema = z.strictObject({
+  kind: z.literal("srec"),
+  variant: z.enum(["s19", "s28", "s37"]).nullable(),
+  start_address: uint32.nullable(),
+  start_address_source: z.enum(["s7", "s8", "s9"]).nullable(),
+  s0_address: uint32.nullable(),
+  s0_header: z.string().nullable(),
+  s0_header_hex: z
+    .string()
+    .regex(/^[0-9a-f]*$/u)
+    .nullable(),
+  records: z.strictObject({
+    s0: offset,
+    s1: offset,
+    s2: offset,
+    s3: offset,
+    s5: offset,
+    s6: offset,
+    s7: offset,
+    s8: offset,
+    s9: offset,
+  }),
+  terminated: z.boolean(),
+});
+export type SrecMetadata = z.infer<typeof srecMetadataSchema>;
+
+/** One address-contiguous decoded region exposed as an extractable entry. */
+export const intelHexRegionMetadataSchema = z.strictObject({
+  kind: z.literal("intel-hex-region"),
+  start_address: uint32,
+  end_address: uint32,
+});
+
+export const srecRegionMetadataSchema = z.strictObject({
+  kind: z.literal("srec-region"),
+  start_address: uint32,
+  end_address: uint32,
+});
+
 /** Declaration identity that is stable across archive layout changes. */
 export const pyInstallerEntryDeclaration = (
   metadata: PyInstallerEntryMetadata,
@@ -144,6 +204,10 @@ export const artifactFormatMetadataSchema = z.discriminatedUnion("kind", [
   pyInstallerEntryMetadataSchema,
   nodeSeaMetadataSchema,
   nodeSeaEntryMetadataSchema,
+  intelHexMetadataSchema,
+  srecMetadataSchema,
+  intelHexRegionMetadataSchema,
+  srecRegionMetadataSchema,
 ]);
 export type ArtifactFormatMetadata = z.infer<
   typeof artifactFormatMetadataSchema

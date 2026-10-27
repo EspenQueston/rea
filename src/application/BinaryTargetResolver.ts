@@ -74,6 +74,7 @@ import {
   MAX_XML_PLIST_PROBE_BYTES,
 } from "../domain/apple/appleArchiveFormat.js";
 import { hasDiskImageSignature } from "../domain/apple/diskImageFormat.js";
+import { classifyFirmwareTextFormat } from "../domain/firmwareText.js";
 import { hasGodotPckHeader } from "../domain/godotPckFormat.js";
 import {
   hasZipSignature,
@@ -667,6 +668,8 @@ const detectArtifactFormat = async (
   if (hasGodotPckHeader(magic)) return "godot-pck";
   // Binary plists, including keyed archives, often use other extensions.
   if (hasBinaryPlistSignature(magic)) return "plist";
+  const firmwareText = classifyFirmwareTextFormat(lower, magic);
+  if (firmwareText !== undefined) return firmwareText;
   const named = namedArtifactFormat(lower);
   if (named !== undefined && !claimsExecutableHeader(magic, initial.size))
     return named;

@@ -343,7 +343,11 @@ const digestArtifactEntry = async (
       ? {
           kind: "universal-slice" as const,
           format: "mach-o" as const,
-          contentFormat: classifyArtifactBytes(digest, digest.bytes),
+          contentFormat: classifyArtifactBytes(
+            digest,
+            digest.bytes,
+            logicalPath,
+          ),
         }
       : classifyArtifactContent(logicalPath, digest, digest.bytes);
   return {

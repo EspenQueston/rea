@@ -597,6 +597,8 @@ const requireExtractableFormat = async (
     format !== "asar" &&
     format !== "godot-pck" &&
     format !== "mach-o-universal" &&
+    format !== "intel-hex" &&
+    format !== "srec" &&
     !isZipPackageFormat(format)
   ) {
     const detected = await withArtifactRegularFile(
@@ -664,7 +666,9 @@ const createReader = async (
   else if (
     containerFormat === "godot-pck" ||
     containerFormat === "pyinstaller" ||
-    containerFormat === "node-sea"
+    containerFormat === "node-sea" ||
+    containerFormat === "intel-hex" ||
+    containerFormat === "srec"
   )
     format = containerFormat;
   else if (

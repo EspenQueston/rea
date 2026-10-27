@@ -73,7 +73,7 @@ export const liveBinaryTargetSummaryVariants = [
   z.object({
     ...identity,
     kind: z.literal("artifact"),
-    format: z.enum(["plist", "javascript", "source-map"]),
+    format: z.enum(["plist", "javascript", "source-map", "intel-hex", "srec"]),
     architecture: z.null(),
   }),
 ] as const;

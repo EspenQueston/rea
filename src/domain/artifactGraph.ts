@@ -86,6 +86,8 @@ const artifactFormatSchema = z.enum([
   "file",
   "pyinstaller",
   "node-sea",
+  "intel-hex",
+  "srec",
   "unknown",
 ]);
 
@@ -101,6 +103,8 @@ const artifactContentFormatSchema = artifactFormatSchema.extract([
   "plist",
   "directory",
   "file",
+  "intel-hex",
+  "srec",
   "unknown",
 ]);
 

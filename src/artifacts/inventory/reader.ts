@@ -69,6 +69,11 @@ export const inventoryCoverage = (
               "Node SEA inventory establishes the injected blob, flags, fuse sentinel, main script, optional code cache, snapshot, and assets. V8 snapshots and code cache are not deserialized, and the application is not executed.",
             ]
           : []),
+        ...(reader.format === "intel-hex" || reader.format === "srec"
+          ? [
+              "Firmware text inventory establishes declared record addresses and decoded region bytes. Gaps are not zero-filled, and declared addresses are not proven entry points.",
+            ]
+          : []),
         ...traversal.limitations,
       ],
     };
@@ -92,7 +97,9 @@ export const inventoryCoverage = (
     format === "directory" ||
     format === "asar" ||
     format === "godot-pck" ||
-    format === "node-sea"
+    format === "node-sea" ||
+    format === "intel-hex" ||
+    format === "srec"
   )
     return {
       coverage: { scope: "container-entries", status: "unknown" },

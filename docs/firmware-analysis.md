@@ -13,6 +13,30 @@ On Linux, Binwalk and Unblob run as REA-owned processes and require a
 procps-compatible `ps` on REA's `PATH`; see the shared
 [Linux process prerequisite](installation.md#linux-owned-process-prerequisite).
 
+## Static text firmware containers
+
+Intel HEX (`.hex`, `.ihx`) and Motorola S-record (`.s19`, `.s28`, `.s37`,
+`.mot`, `.srec`) are recognized from their first well-formed record and parsed
+without external tools, conversion, or execution. `inspect_artifact` reports the
+declared variant (`i8`/`i16`/`i32` or `s19`/`s28`/`s37`), start address records,
+record counts, and the S0 header when present in the root `format_metadata`.
+Address-contiguous payload bytes become extractable entries named by inclusive
+address range, for example `0x08000000-0x0800001f.bin`. Gaps between declared
+regions are preserved as gaps and are never zero-filled.
+
+Checksum failures, unknown record types, record-count mismatches, conflicting
+overlaps, and content after an end/termination record fail with the source line.
+A missing Intel HEX EOF record or S-record termination record leaves inventory
+coverage `unknown`; decoded regions remain available. Declared start addresses
+are source facts, not proven CPU entry points, and no decompression is applied
+to payload bytes. Open an extracted region as `raw-binary` with its start address
+when the CPU and mapping are independently known.
+
+```sh
+rea inspect-artifact firmware.hex --json
+rea extract-artifact firmware.s37 --json
+```
+
 ## Caller-supplied tools
 
 Provide existing tools using absolute executable paths, scoped to your shell:

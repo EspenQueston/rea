@@ -406,6 +406,7 @@ const buildInventorySnapshot = async (
   const rootNode = createRootNode({
     digest: rootDigest,
     occurrences: input.occurrences,
+    path,
   });
   input.nodes.set(rootNode.artifact_id, rootNode);
   rekeyOccurrences(rootNode.artifact_id, input.occurrences);
