@@ -173,7 +173,7 @@ const viewSchema = z.discriminatedUnion("shape", [
       .enum(DELETED_FLAGS)
       .optional()
       .describe(
-        "Member later reads set true on an entity the application soft-deleted.",
+        "Member its reads set true on an entity the application soft-deleted.",
       ),
     ...replayedReadFields,
   }),

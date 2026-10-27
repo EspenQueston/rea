@@ -30,6 +30,18 @@ export const SOFT_DELETED_ROWS: readonly TimedCaptureRow[] = [
   ["GET", "/api/contacts/3", { ...RUI, deleted: true }],
 ];
 
+/** The same deletes read back only with a query, as a client that adds a cache-busting parameter does. */
+export const SOFT_DELETED_QUERY_ROWS: readonly TimedCaptureRow[] = [
+  ["GET", "/api/contacts?maxSize=20&offset=0", page([ADA, MINA, RUI])],
+  ["GET", "/api/contacts/1", ADA],
+  ["GET", "/api/contacts/2", MINA],
+  ["GET", "/api/contacts/3", RUI],
+  ["DELETE", "/api/contacts/2", true],
+  ["GET", "/api/contacts/2?_=1761520000", { ...MINA, deleted: true }],
+  ["DELETE", "/api/contacts/3", true],
+  ["GET", "/api/contacts/3?_=1761520001", { ...RUI, deleted: true }],
+];
+
 /** Contacts deleted, then listed with a page size named `maxSize` other than the initial list's. */
 export const MAX_SIZE_ROWS: readonly TimedCaptureRow[] = [
   ["GET", "/api/contacts?maxSize=20&offset=0", page([ADA, MINA, RUI])],

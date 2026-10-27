@@ -860,7 +860,7 @@ base recording, with the members the state still holds. A 400, 404 or 410, a
 `null` body, or an object marked deleted (`deleted`, `isDeleted` or `is_deleted`
 `true`, as EspoCRM answers a read of a deleted record) agrees with an entity the
 copy does not hold, and such an object never seeds or adopts one; the item view
-records the flag later reads set as `deleted_flag`, which serving answers by. A match confirms
+records the flag its reads set as `deleted_flag`, which serving answers by. A match confirms
 the writes that changed its entity or collection since it was last read, less
 those whose entity a read since showed absent, which no longer count for the
 collection; a mismatch contradicts them, or, when an unmodelled write came after them, is

@@ -67,7 +67,7 @@ export interface StatePlan {
   readonly late?: readonly LateLine[];
   /** The members later plain item reads show of the entity they name. */
   readonly laterFields?: readonly string[];
-  /** The member later plain item reads set `true` on an entity the application soft-deleted. */
+  /** The member the tool's reads set `true` on an entity the application soft-deleted. */
   readonly deletedFlag?: StateItemView["deleted_flag"];
   /** The query keys that pick calls of the replayed reads out. */
   readonly projectedKeys?: readonly ReplayKey[];
