@@ -430,7 +430,7 @@ const expectElectronSummary = (result: Reconstruction): void => {
     ipc: {
       literal_channels: 5,
       dynamic_channel_operations: 2,
-      // Native module imports leave this fixture's application owner unknown.
+      // Retained module gaps leave preload/renderer application ownership unknown.
       paired_renderer_transmissions: 0,
       ambiguous_renderer_transmissions: 7,
       unpaired_literal_renderer_transmissions: 0,
@@ -592,7 +592,7 @@ const expectElectronBoundaries = (graph: ApplicationGraph): void => {
     ({ properties }) =>
       properties.pairing_basis === "unique-exact-literal-channel",
   );
-  expect(pairingEdges).toEqual([]);
+  expect(pairingEdges).toHaveLength(0);
   expect(graph.limitations.join(" ")).toMatch(/dynamic IPC|ambiguous/iu);
 };
 
