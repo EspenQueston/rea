@@ -573,15 +573,17 @@ const followsCreateRules = (
 /** The key a made object's count is taken under in a plan's sequences. */
 const madeKey = (field: string, member: string): string => `${field}/${member}`;
 
-/** Whether a later call's made objects hold what serving makes: the exemplar's members, the entity's identity, clocks, and each count one past what held objects show or started with, past the plan's last. */
+/** Whether a later call's recorded made objects hold what serving makes: the exemplar's members, the entity's identity, clocks, and each count one past what held objects show or started with, past the plan's last. */
 const followsMadeObjects = (
   context: EffectContext,
   draft: WriteDraft,
-  created: Pick<StateEntity, "type" | "collection" | "fields">,
+  created: Pick<StateEntity, "type" | "collection" | "fields"> & {
+    readonly observed: JsonObject;
+  },
 ): boolean =>
   draft.plan.rules.every((rule) => {
     if (rule.rule !== "made-object") return true;
-    const made = ownMember(created.fields, rule.field);
+    const made = ownMember(created.observed, rule.field);
     const exemplar = ownMember(draft.observed, rule.field);
     if (!isObject(made) || !isObject(exemplar)) return false;
     const id = scalarText(
@@ -854,6 +856,7 @@ export const applyCreate = (
           ownMember(observed.object, rule.field) ?? null,
         ),
       referencedIn(context),
+      idField,
     );
   // A later call that agrees with the plan widens it, as a later update does: to members it alone sent or left out, an
   // array it showed sorted, or a clock spelling. One that disagrees leaves the plan as it was.

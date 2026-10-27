@@ -551,6 +551,7 @@ const answerCreate = (
     created,
     values.forTarget({ name: collection, collection: members, observed }),
     heldEntity(serving),
+    idField,
   );
   if (!fields.ok) return err(refused(tool, fields.error));
   const field = unloadableMember(fields.value);

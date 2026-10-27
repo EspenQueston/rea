@@ -357,6 +357,7 @@ export const createdFields = (
   sentCall: WriteCall,
   generate: GenerateValue,
   referenced?: ReferencedEntity,
+  idField?: string,
 ): Applied<JsonObject> => {
   if (plan.body === null) return err("The tool has no modelled body.");
   const call = withBlanks(plan.body, sentCall);
@@ -378,17 +379,19 @@ export const createdFields = (
     else if (rule.rule === "echo" || rule.rule === "reference")
       delete written[rule.field];
   }
-  ownMadeMembers(plan.rules, written);
+  ownMadeMembers(plan.rules, written, idField);
   const unspelled = derive(plan.rules, observed, written, call.body ?? {});
   return unspelled === undefined ? ok(written) : err(unspelled);
 };
 
-/** Set each made object's members that hold the entity's identity to the identity it was written with. */
+/** Set each made object's members that hold the entity's identity to the identity it was written with, generated or sent. */
 const ownMadeMembers = (
   rules: readonly FieldRule[],
   written: JsonObject,
+  idField: string | undefined,
 ): void => {
-  const identity = rules.find((rule) => rule.rule === "identity")?.field;
+  const identity =
+    idField ?? rules.find((rule) => rule.rule === "identity")?.field;
   const id = identity === undefined ? undefined : ownMember(written, identity);
   if (id === undefined) return;
   for (const rule of rules) {

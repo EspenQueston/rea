@@ -41,7 +41,8 @@ export const usesWriteClock = (plan: Pick<StateWritePlan, "rules">): boolean =>
     (rule) =>
       rule.rule === "clock" ||
       rule.rule === "held-clock" ||
-      rule.rule === "nested-clock",
+      rule.rule === "nested-clock" ||
+      rule.rule === "made-object",
   );
 
 /** Rules that generate a value when served; the gate takes the recorded value instead. */

@@ -17,6 +17,7 @@ import {
 } from "./environmentStateWriteRules.js";
 import {
   containsDelimited,
+  replaceDelimited,
   sequenceNumber,
 } from "./environmentStateWriteValues.js";
 
@@ -104,7 +105,7 @@ const joinedDefaults = (
 const spellsExemplar = (
   field: string,
   rule: FieldRule,
-  calls: Pick<FieldCalls, "exemplar" | "earlier">,
+  calls: Pick<FieldCalls, "exemplar" | "earlier" | "later">,
 ): FieldRule | undefined => {
   const value = ownMember(calls.exemplar, field);
   if (rule.rule === "composed")
@@ -114,9 +115,13 @@ const spellsExemplar = (
       : undefined;
   if (rule.rule === "template") {
     const token = scalarText(ownMember(calls.exemplar, rule.from));
+    const next = scalarText(ownMember(calls.later.entity, rule.from));
     return typeof value === "string" &&
       token !== undefined &&
-      containsDelimited(value, token)
+      next !== undefined &&
+      containsDelimited(value, token) &&
+      replaceDelimited(value, token, next) ===
+        ownMember(calls.later.entity, field)
       ? rule
       : undefined;
   }

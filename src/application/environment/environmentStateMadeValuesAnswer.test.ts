@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   BULK_TASK_ROWS,
+  CHOSEN_ID_TASK_ROWS,
   COUNTED_TASK_ROWS,
 } from "../../../tests/fixtures/environmentStateMadeValues.js";
 import { servedFrom } from "../../../tests/fixtures/environmentStateServing.js";
@@ -38,6 +39,16 @@ describe("served creates that count and make values", () => {
       entity: "task",
       entity_id: second["id"],
     });
+  });
+
+  it("links a made object to the id the caller chose", () => {
+    const tasks = servedFrom(CHOSEN_ID_TASK_ROWS);
+    tasks.answer("post_projects_tasks_by_id", {
+      id: "5",
+      body: { id: 99, title: "Restock the fog-horn spares" },
+    });
+    const read = objectOf(tasks.answer("get_tasks_by_id", { id: "99" }).body);
+    expect(read["subscription"]).toMatchObject({ entity_id: 99 });
   });
 
   it("answers a bulk create in the envelope it was sent in", () => {

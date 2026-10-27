@@ -7,7 +7,10 @@ import {
 import {
   BULK_TASK_ROWS,
   COUNTED_TASK_ROWS,
+  MISLINKED_TASK_ROWS,
   ONE_TASK_ROWS,
+  RESPELLED_TASK_ROWS,
+  UNCLOCKED_TASK_ROWS,
 } from "../../../tests/fixtures/environmentStateMadeValues.js";
 import { environmentStateViewOf } from "../../../tests/fixtures/environmentStateWrites.js";
 import { respondedIds } from "./environmentStateWriteLinks.js";
@@ -67,6 +70,29 @@ describe("values an application counts and makes with each created entity", () =
     });
     expect(respondedIds({ tasks: [{ id: 14 }] })).toEqual(["14"]);
     expect(respondedIds({ tasks: [{ id: 14 }, { id: 15 }] })).toEqual([]);
+  });
+
+  it("withholds a create whose only clock is its made object's when the capture has no clock anchor", () => {
+    expect(createOf(UNCLOCKED_TASK_ROWS)).toMatchObject({ served: true });
+    expect(
+      createOf([
+        ...UNCLOCKED_TASK_ROWS,
+        ["GET", "/api/health", { ready: true }, 200, undefined, -1],
+      ]),
+    ).toMatchObject({ served: false, reason: "unknown-clock" });
+  });
+
+  it("withholds the creates when a later made object names another entity", () => {
+    expect(createOf(MISLINKED_TASK_ROWS)).toMatchObject({
+      served: false,
+      reason: "unexplained-change",
+    });
+  });
+
+  it("adopts no template that would not spell the later create's value", () => {
+    const plan = createOf(RESPELLED_TASK_ROWS);
+    expect(plan).toMatchObject({ served: false, reason: "unexplained-change" });
+    expect(ruleFor(plan, "identifier")).toBeUndefined();
   });
 
   it("makes no object rule without a clock the request stamped", () => {
